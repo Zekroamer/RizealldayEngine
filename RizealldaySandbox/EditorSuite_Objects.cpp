@@ -297,7 +297,8 @@ void EditorSuite::ProcessPendingDeletes()
 					sc.instance->SetOwner(view, obj.id);
 					sc.instance->SetEngineAPI(&engineApi_);
 					sc.instance->SetHost(this, this);
-					sc.instance->OnDestroy();
+					ScriptBase* instance = sc.instance.get();
+					CallScript(instance, obj.id, "OnDestroy", [&] { instance->OnDestroy(); });
 					if (view && view->dirtyFromScript) {
 						SyncViewToGameObject(*view, obj);
 					}

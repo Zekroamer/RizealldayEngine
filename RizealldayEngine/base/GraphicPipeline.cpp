@@ -1,5 +1,6 @@
 ﻿#include "base/GraphicPipeline.h"
 #include "base/DXCManager.h"
+#include "base/DirectXCommon.h"
 #include "base/Log.h"
 #include <algorithm>
 
@@ -74,6 +75,12 @@ void GraphicPipeline::Bind(ID3D12GraphicsCommandList* commandList, BlendMode mod
 	} else {
 		commandList->SetPipelineState(psos_.standard[idx].Get());
 	}
+}
+
+void GraphicPipeline::BindForBackBuffer(ID3D12GraphicsCommandList* commandList, BlendMode mode)
+{
+	commandList->SetGraphicsRootSignature(rootSignature.Get());
+	commandList->SetPipelineState(psos_.backBuffer[std::clamp(static_cast<int>(mode), 0, static_cast<int>(BlendMode::Count) - 1)].Get());
 }
 
 void GraphicPipeline::Bind(ID3D12GraphicsCommandList* commandList, BlendMode mode, bool useGeometryShader)
@@ -278,7 +285,7 @@ bool GraphicPipeline::CreatePso(BlendMode mode, const ShaderBlobs& blobs, PsoSet
 	graphicsPipelineStateDesc.RasterizerState = rasterizerDesc;
 
 	graphicsPipelineStateDesc.NumRenderTargets = 1;
-	graphicsPipelineStateDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+	graphicsPipelineStateDesc.RTVFormats[0] = DirectXCommon::kSceneColorFormat;
 	graphicsPipelineStateDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 
 	graphicsPipelineStateDesc.SampleDesc.Count = 1;
@@ -288,6 +295,12 @@ bool GraphicPipeline::CreatePso(BlendMode mode, const ShaderBlobs& blobs, PsoSet
 	graphicsPipelineStateDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
 
 	hr = device->CreateGraphicsPipelineState(&graphicsPipelineStateDesc, IID_PPV_ARGS(&out.standard[static_cast<int>(mode)]));
+	if (FAILED(hr)) return false;
+
+	// Sprites of the title screen draw directly into the back buffer
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC backBufferDesc = graphicsPipelineStateDesc;
+	backBufferDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+	hr = device->CreateGraphicsPipelineState(&backBufferDesc, IID_PPV_ARGS(&out.backBuffer[static_cast<int>(mode)]));
 	if (FAILED(hr)) return false;
 
 	// Build Geometry Shader PSO (Pass-Through)

@@ -139,6 +139,7 @@
     <ClCompile Include="3d\CollisionManager.cpp" />
     <ClCompile Include="3d\PrimitiveDrawer.cpp" />
     <ClCompile Include="2d\UIRenderer.cpp" />
+    <ClCompile Include="render\PostProcess.cpp" />
     <ClCompile Include="3d\Skybox.cpp" />
     <!-- 2d/ -->
     <ClCompile Include="2d\Sprite.cpp" />
@@ -208,6 +209,7 @@
     <ClInclude Include="3d\ShadowMap.h" />
     <ClInclude Include="3d\PrimitiveDrawer.h" />
     <ClInclude Include="2d\UIRenderer.h" />
+    <ClInclude Include="render\PostProcess.h" />
     <ClInclude Include="3d\Skybox.h" />
     <ClInclude Include="3d\Collider.h" />
     <ClInclude Include="3d\CollisionManager.h" />

@@ -114,7 +114,7 @@ void PrimitiveDrawer::CreatePipeline(DXCManager* dxc)
 	psoDesc.DepthStencilState = depthDesc;
 	psoDesc.BlendState = blendDesc;
 	psoDesc.NumRenderTargets = 1;
-	psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+	psoDesc.RTVFormats[0] = DirectXCommon::kSceneColorFormat;
 	psoDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
 	psoDesc.SampleDesc.Count = 1;
 	psoDesc.SampleMask = D3D12_DEFAULT_SAMPLE_MASK;

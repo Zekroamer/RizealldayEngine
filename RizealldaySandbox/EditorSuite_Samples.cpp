@@ -12,6 +12,50 @@ namespace {
 	}
 }
 
+bool EditorSuite::CreateThirdPersonDemo()
+{
+	if (currentProjectRoot_.empty() || sceneState_ != EditorSceneState::Edit) {
+		LogMessage("[Samples] Open a project and stop Play mode before creating a sample.", 1);
+		return false;
+	}
+	if (!InstallSampleScripts("ThirdPerson")) return false;
+
+	NewScene(); // Main Camera + Directional Light + Ground Plane
+	GameObject& shot = CreateSphere("ThirdPersonShot", { 0.0f, 0.0f, 0.0f });
+	shot.scale = { 0.25f, 0.25f, 0.25f };
+	shot.hasSphereCollider = false;
+	shot.hasBoxCollider = false;
+	shot.isLit = false;
+	shot.materialColor = { 1.0f, 0.8f, 0.2f, 1.0f };
+	const uint32_t shotId = shot.id;
+	const bool saved = SavePrefab(shotId, "ThirdPersonShot");
+	QueueDeleteGameObjectById(shotId);
+	ProcessPendingDeletes();
+	if (!saved) return false;
+
+	// A ring of pillars to walk around and shoot at
+	for (int i = 0; i < 8; ++i) {
+		const float angle = 6.2831853f * i / 8.0f;
+		GameObject& pillar = CreateCube("Pillar", { std::cos(angle) * 9.0f, 1.0f, std::sin(angle) * 9.0f });
+		pillar.scale = { 1.5f, 3.0f, 1.5f };
+		pillar.isStatic = true;
+		pillar.materialColor = { 0.35f, 0.55f, 0.85f, 1.0f };
+	}
+	GameObject& player = CreateCube("Player", { 0.0f, 2.0f, 0.0f });
+	player.materialColor = { 0.9f, 0.35f, 0.25f, 1.0f };
+	AddScriptComponent(player, "ThirdPersonPlayer");
+	for (auto& obj : gameObjects_) {
+		if (obj.hasCamera || obj.type == GameObjectType::Camera) AddScriptComponent(obj, "ThirdPersonCamera");
+	}
+	RebuildHierarchyLinks();
+	UpdateWorldMatrices();
+	EnsureEditModeScriptInstances();
+	currentSceneName_ = "ThirdPersonDemo";
+	const bool ok = SaveScene((GetScenesDirectory() / "ThirdPersonDemo.scene.json").string());
+	ResetUndoHistory();
+	return ok;
+}
+
 bool EditorSuite::CreateBenchmarkScene()
 {
 	if (currentProjectRoot_.empty() || sceneState_ != EditorSceneState::Edit) return false;

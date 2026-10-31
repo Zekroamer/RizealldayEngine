@@ -34,7 +34,7 @@ void EditorSuite::UpdateScripts(float deltaTime)
 				instance->SetOwner(view, objId);
 				instance->SetEngineAPI(&engineApi_);
 				instance->SetHost(this, this);
-				instance->Update(deltaTime);
+				CallScript(instance, objId, "Update", [&] { instance->Update(deltaTime); });
 
 				if (view) {
 					bool eulerChanged = (view->rotation.x != prevEuler.x || view->rotation.y != prevEuler.y || view->rotation.z != prevEuler.z);
@@ -94,11 +94,14 @@ void EditorSuite::DispatchScriptCollision(uint32_t selfId, uint32_t otherId, Col
 			// Inside the DLL GameObject is an alias of ScriptGameObjectView, so the DLL receives the view.
 			// Never pass an editor GameObject here.
 			GameObject& otherRef = *reinterpret_cast<GameObject*>(otherView);
-			switch (kind) {
-			case CollisionEvent::Enter: sc.instance->OnCollisionEnter(otherRef); break;
-			case CollisionEvent::Exit: sc.instance->OnCollisionExit(otherRef); break;
-			default: sc.instance->OnCollision(otherRef); break;
-			}
+			ScriptBase* instance = sc.instance.get();
+			CallScript(instance, selfId, "OnCollision", [&] {
+				switch (kind) {
+				case CollisionEvent::Enter: instance->OnCollisionEnter(otherRef); break;
+				case CollisionEvent::Exit: instance->OnCollisionExit(otherRef); break;
+				default: instance->OnCollision(otherRef); break;
+				}
+			});
 
 			// Callbacks never resize gameObjects_ (spawns/deletes are deferred), but re-fetch anyway
 			selfObj = FindGameObjectById(selfId, false);
@@ -396,20 +399,51 @@ bool EditorSuite::GetGameViewMousePosition(float& outX, float& outY, float& outW
 	return outX >= 0.0f && outY >= 0.0f && outX < outW && outY < outH;
 }
 
+// Row-vector convention, so p * inverse(VP)
+static Vector3 UnprojectNdc(const Matrix4x4& inv, float x, float y, float z)
+{
+	const float px = x * inv.m[0][0] + y * inv.m[1][0] + z * inv.m[2][0] + inv.m[3][0];
+	const float py = x * inv.m[0][1] + y * inv.m[1][1] + z * inv.m[2][1] + inv.m[3][1];
+	const float pz = x * inv.m[0][2] + y * inv.m[1][2] + z * inv.m[2][2] + inv.m[3][2];
+	const float pw = x * inv.m[0][3] + y * inv.m[1][3] + z * inv.m[2][3] + inv.m[3][3];
+	const float invW = (std::abs(pw) > 1e-12f) ? 1.0f / pw : 0.0f;
+	return Vector3{ px * invW, py * invW, pz * invW };
+}
+
+bool EditorSuite::ScreenPointToRay(const Vector2& canvasPos, Vector3& outOrigin, Vector3& outDirection) const
+{
+	if (!gameCamera_) return false;
+	const float ndcX = canvasPos.x / kUICanvasWidth * 2.0f - 1.0f;
+	const float ndcY = 1.0f - canvasPos.y / kUICanvasHeight * 2.0f;
+	const Matrix4x4 inv = Mathematics::Inverse(gameCamera_->GetViewProjectionMatrix());
+	const Vector3 nearP = UnprojectNdc(inv, ndcX, ndcY, 0.0f);
+	const Vector3 farP = UnprojectNdc(inv, ndcX, ndcY, 1.0f);
+	const Vector3 d = { farP.x - nearP.x, farP.y - nearP.y, farP.z - nearP.z };
+	const float length = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+	if (length < 1e-8f) return false;
+	outOrigin = nearP;
+	outDirection = { d.x / length, d.y / length, d.z / length };
+	return true;
+}
+
+bool EditorSuite::WorldToCanvas(const Vector3& worldPos, Vector2& outCanvasPos) const
+{
+	if (!gameCamera_) return false;
+	const Matrix4x4 vp = gameCamera_->GetViewProjectionMatrix();
+	const float cx = worldPos.x * vp.m[0][0] + worldPos.y * vp.m[1][0] + worldPos.z * vp.m[2][0] + vp.m[3][0];
+	const float cy = worldPos.x * vp.m[0][1] + worldPos.y * vp.m[1][1] + worldPos.z * vp.m[2][1] + vp.m[3][1];
+	const float cw = worldPos.x * vp.m[0][3] + worldPos.y * vp.m[1][3] + worldPos.z * vp.m[2][3] + vp.m[3][3];
+	if (cw <= 1e-6f) return false; // behind the camera
+	outCanvasPos = { (cx / cw + 1.0f) * 0.5f * kUICanvasWidth, (1.0f - cy / cw) * 0.5f * kUICanvasHeight };
+	return true;
+}
+
 bool EditorSuite::ScreenRayToPlaneY(const Matrix4x4& viewProjection, float ndcX, float ndcY, float planeY, Vector3& outPoint)
 {
-	// Unproject the near (z = 0) and far (z = 1) points; row-vector convention, so p * inverse(VP)
+	// Unproject the near (z = 0) and far (z = 1) points
 	const Matrix4x4 inv = Mathematics::Inverse(viewProjection);
-	auto unproject = [&inv](float x, float y, float z) {
-		const float px = x * inv.m[0][0] + y * inv.m[1][0] + z * inv.m[2][0] + inv.m[3][0];
-		const float py = x * inv.m[0][1] + y * inv.m[1][1] + z * inv.m[2][1] + inv.m[3][1];
-		const float pz = x * inv.m[0][2] + y * inv.m[1][2] + z * inv.m[2][2] + inv.m[3][2];
-		const float pw = x * inv.m[0][3] + y * inv.m[1][3] + z * inv.m[2][3] + inv.m[3][3];
-		const float invW = (std::abs(pw) > 1e-12f) ? 1.0f / pw : 0.0f;
-		return Vector3{ px * invW, py * invW, pz * invW };
-	};
-	const Vector3 nearP = unproject(ndcX, ndcY, 0.0f);
-	const Vector3 farP = unproject(ndcX, ndcY, 1.0f);
+	const Vector3 nearP = UnprojectNdc(inv, ndcX, ndcY, 0.0f);
+	const Vector3 farP = UnprojectNdc(inv, ndcX, ndcY, 1.0f);
 	const float dirY = farP.y - nearP.y;
 	if (std::abs(dirY) < 1e-8f) return false; // ray parallel to the plane
 	const float t = (planeY - nearP.y) / dirY;
@@ -558,6 +592,7 @@ void EditorSuite::ProcessPendingSpawns()
 {
 	// Despawns first, so a prefab instance returned to its pool this frame is hidden before anything else runs
 	ProcessPendingDespawns();
+	ProcessPendingPrewarms();
 
 	if (pendingSpawns_.empty()) {
 		ProcessDeferredScriptRequests();
@@ -857,7 +892,8 @@ void EditorSuite::HotReloadScripts()
 					sc.instance->SetOwner(view, obj.id);
 					sc.instance->SetEngineAPI(&engineApi_);
 					sc.instance->SetHost(this, this);
-					sc.instance->OnAfterReload();
+					ScriptBase* instance = sc.instance.get();
+					CallScript(instance, obj.id, "OnAfterReload", [&] { instance->OnAfterReload(); });
 					if (view) {
 						SyncViewToGameObject(*view, obj);
 					}

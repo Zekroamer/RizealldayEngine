@@ -37,6 +37,7 @@ std::string EditorSuite::SerializeSceneToString() const
 	Json settings = Json::object();
 	WriteSceneSettingsJson(&settings);
 	root["skybox"] = std::move(settings["skybox"]);
+	root["postProcess"] = std::move(settings["postProcess"]);
 
 	Json objects = Json::array();
 	for (const auto& obj : gameObjects_) {
@@ -70,6 +71,21 @@ void EditorSuite::WriteSceneSettingsJson(void* outJson) const
 	sky["rotation"] = Num(skybox_.GetRotation());
 	sky["exposure"] = Num(skybox_.GetExposure());
 	root["skybox"] = std::move(sky);
+
+	Json post = Json::object();
+	post["enabled"] = postSettings_.enabled;
+	post["toneMapping"] = postSettings_.toneMapping;
+	post["bloom"] = postSettings_.bloom;
+	post["fxaa"] = postSettings_.fxaa;
+	post["exposure"] = Num(postSettings_.exposure);
+	post["bloomThreshold"] = Num(postSettings_.bloomThreshold);
+	post["bloomIntensity"] = Num(postSettings_.bloomIntensity);
+	post["contrast"] = Num(postSettings_.contrast);
+	post["saturation"] = Num(postSettings_.saturation);
+	post["tint"] = Arr(postSettings_.tint);
+	post["vignette"] = Num(postSettings_.vignette);
+	post["letterbox"] = Num(postSettings_.letterbox);
+	root["postProcess"] = std::move(post);
 
 	// Mapchip Data
 	Json mapchip = Json::object();
@@ -323,7 +339,8 @@ bool EditorSuite::DeserializeSceneFromString(const std::string& content)
 					sc.instance->SetOwner(GetOrUpdateScriptViewById(obj.id), obj.id);
 					sc.instance->SetEngineAPI(&engineApi_);
 					sc.instance->SetHost(this, this);
-					sc.instance->OnDestroy();
+					ScriptBase* instance = sc.instance.get();
+					CallScript(instance, obj.id, "OnDestroy", [&] { instance->OnDestroy(); });
 				}
 				sc.instance.reset();
 			}
@@ -409,6 +426,23 @@ void EditorSuite::ReadSceneSettingsJson(const void* json)
 {
 	using SceneJson::Json;
 	const Json& root = *static_cast<const Json*>(json);
+
+	// Scenes saved before post-processing existed keep their look: no key = off
+	postSettings_ = PostProcessSettings{};
+	if (const Json* post = SceneJson::Find(root, "postProcess"); post && post->is_object()) {
+		SceneJson::Read(*post, "enabled", postSettings_.enabled);
+		SceneJson::Read(*post, "toneMapping", postSettings_.toneMapping);
+		SceneJson::Read(*post, "bloom", postSettings_.bloom);
+		SceneJson::Read(*post, "fxaa", postSettings_.fxaa);
+		SceneJson::Read(*post, "exposure", postSettings_.exposure);
+		SceneJson::Read(*post, "bloomThreshold", postSettings_.bloomThreshold);
+		SceneJson::Read(*post, "bloomIntensity", postSettings_.bloomIntensity);
+		SceneJson::Read(*post, "contrast", postSettings_.contrast);
+		SceneJson::Read(*post, "saturation", postSettings_.saturation);
+		SceneJson::Read(*post, "tint", postSettings_.tint);
+		SceneJson::Read(*post, "vignette", postSettings_.vignette);
+		SceneJson::Read(*post, "letterbox", postSettings_.letterbox);
+	}
 
 	// Skybox
 	if (const Json* sky = SceneJson::Find(root, "skybox"); sky && sky->is_object()) {
@@ -798,6 +832,9 @@ void EditorSuite::NewScene()
 	skybox_.SetCubemapPath("Resources/skybox.dds");
 	skybox_.SetRotation(0.0f);
 	skybox_.SetExposure(1.0f);
+
+	postSettings_ = PostProcessSettings{};
+	postSettings_.enabled = true; // new scenes start with the filmic look
 
 	// 1. Main Camera
 	{

@@ -1,5 +1,21 @@
 # Changelog — Rizeallday Engine v2
 
+## [Belum dirilis]
+
+Project lama perlu Build Scripts ulang (`kScriptApiVersion` 10).
+
+### Fitur Baru
+- **Kamera first/third person**: `GetMouseDelta`, `GetMouseWheel`, `SetCursorLocked`.
+- **Proyeksi**: `ScreenPointToRay` dan `WorldToCanvas` untuk memilih objek 3D dan UI yang mengikuti objek.
+- **`PrewarmPrefab(nama, jumlah)`**: mengisi pool lebih awal agar spawn pertama tidak tersendat.
+- **Crash di script tidak lagi menutup editor**: Play berhenti, scene dipulihkan, DLL dimuat ulang, dan Console menunjukkan class serta objeknya. Game Release tetap membuat crash dump.
+- **Samples > Third Person Demo**.
+- **Post-processing per scene** (Lighting & Environment): tone mapping ACES, bloom, exposure, kontras, saturasi, tint, vignette, letterbox, FXAA. Scene baru aktif; scene lama tetap tampil seperti semula sampai diaktifkan.
+- **Efek layar dari script**: `SetScreenEffect` menjalankan shader buatan sendiri di atas gambar HDR dan bisa membaca depth. Bawaan: `ScreenEffect.Slash` dan `ScreenEffect.RadialBlur`. Ubah tampilan saat bermain dengan `Get/SetPostProcess`.
+
+### Performa
+- Editor saat Play jauh lebih ringan: kode editor kini dikompilasi dengan optimasi, dan mesh statis tidak lagi menyalin palette tulang (benchmark 25 ms → 17 ms).
+
 ## [2.3.0] — 2026-10-31
 
 ### Fitur Baru

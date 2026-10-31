@@ -18,6 +18,35 @@ void EditorSuite::RefreshAvailableCubemaps()
 	}
 }
 
+void EditorSuite::DrawPostProcessSettingsUI()
+{
+#ifdef USE_IMGUI
+	ImGui::Spacing();
+	ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s", Tr("Post Processing (Game view)"));
+	ImGui::Separator();
+
+	PostProcessSettings& post = postSettings_;
+	bool changed = ImGui::Checkbox(TrId("Enable Post Processing"), &post.enabled);
+	ImGui::BeginDisabled(!post.enabled);
+	changed |= ImGui::Checkbox(TrId("Tone Mapping (ACES)"), &post.toneMapping);
+	changed |= ImGui::DragFloat(TrId("Exposure"), &post.exposure, 0.01f, 0.0f, 10.0f);
+	changed |= ImGui::Checkbox(TrId("Bloom"), &post.bloom);
+	changed |= ImGui::DragFloat(TrId("Bloom Threshold"), &post.bloomThreshold, 0.01f, 0.0f, 10.0f);
+	changed |= ImGui::DragFloat(TrId("Bloom Intensity"), &post.bloomIntensity, 0.01f, 0.0f, 5.0f);
+	changed |= ImGui::DragFloat(TrId("Contrast"), &post.contrast, 0.01f, 0.0f, 3.0f);
+	changed |= ImGui::DragFloat(TrId("Saturation"), &post.saturation, 0.01f, 0.0f, 3.0f);
+	changed |= ImGui::ColorEdit3(TrId("Tint"), &post.tint.x);
+	changed |= ImGui::DragFloat(TrId("Vignette"), &post.vignette, 0.01f, 0.0f, 1.0f);
+	changed |= ImGui::DragFloat(TrId("Letterbox"), &post.letterbox, 0.002f, 0.0f, 0.45f);
+	changed |= ImGui::Checkbox(TrId("FXAA"), &post.fxaa);
+	ImGui::EndDisabled();
+	if (changed) {
+		isSceneDirty_ = true;
+		PushUndoSnapshot();
+	}
+#endif
+}
+
 void EditorSuite::DrawSkyboxSettingsUI()
 {
 #ifdef USE_IMGUI

@@ -45,6 +45,12 @@ struct EditorSuiteTestAccess {
 	static double& PhysicsAccumulator(EditorSuite& s) { return s.physicsAccumulator_; }
 	static EditorSuite::CollisionEventCounts CollisionEvents(const EditorSuite& s) { return s.lastCollisionEvents_; }
 	static uint32_t MusicVoice(const EditorSuite& s) { return s.musicVoice_; }
+	static RenderTexture& GameViewRT(EditorSuite& s) { return s.gameViewRT_; }
+	static int ScriptFaults(const EditorSuite& s) { return s.scriptFaultCount_; }
+	static bool FaultPending(const EditorSuite& s) { return s.scriptFaultPending_; }
+	static bool CursorHidden(const EditorSuite& s) { return s.cursorHidden_; }
+	static void Start(EditorSuite& s, uint32_t id) { s.StartScriptsOnSpawnedObject(id, false); }
+	static void Spawns(EditorSuite& s) { s.ProcessPendingSpawns(); }
 	static void RemoveComponent(EditorSuite& s, uint32_t objectId, Kind kind)
 	{
 		if (GameObject* obj = s.FindGameObjectById(objectId, false)) s.RemoveComponent(*obj, kind);
@@ -2202,6 +2208,49 @@ TEST_CASE(Samples, BenchmarkSceneReachesFullLoad)
 	s.StopPlayMode();
 }
 
+TEST_CASE(Samples, ThirdPersonDemoUsesCameraInputAndProjection)
+{
+	A::ProjectRoot(s) = A::TempRoot() / "ThirdPersonProject";
+	REQUIRE(s.CreateThirdPersonDemo());
+	REQUIRE(A::ScriptsLoaded(s));
+	EngineAPI& api = A::Api(s);
+	Input* input = RizeEngine::GetInput();
+
+	s.StartPlayMode();
+	REQUIRE(A::State(s) == EditorSceneState::Play);
+	CHECK(api.isCursorLocked(api.hostContext));
+	CHECK(s.GetPooledCount("ThirdPersonShot") == 16);
+	for (int frame = 0; frame < 120; ++frame) s.Update(1.0f / 60.0f, input);
+
+	const GameObject* player = s.FindGameObjectByName("Player", false);
+	REQUIRE(player != nullptr);
+	CHECK_MSG(std::abs(player->translation.y) < 0.1f, std::format("player rests on the ground plane, y = {:.3f}", player->translation.y));
+	CHECK(UIRenderer::GetInstance()->GetQuadCount() > 0); // crosshair + label
+
+	// The mouse turns the camera around the player and the wheel moves it closer
+	const GameObject* camera = s.FindGameObjectByName("Main Camera", false);
+	REQUIRE(camera != nullptr);
+	const float yawBefore = camera->rotation.y;
+	const Vector3 start = camera->translation;
+	const float distanceBefore = std::hypot(start.x - player->translation.x, start.y - player->translation.y, start.z - player->translation.z);
+	input->InjectMouseMotion(100, 0, WHEEL_DELTA);
+	s.Update(1.0f / 60.0f, input);
+	input->InjectMouseMotion(0, 0, 0);
+	camera = s.FindGameObjectByName("Main Camera", false);
+	player = s.FindGameObjectByName("Player", false);
+	CHECK_NEAR(camera->rotation.y, yawBefore + 0.4f, 0.01f);
+	CHECK(std::hypot(camera->translation.x - player->translation.x, camera->translation.y - player->translation.y, camera->translation.z - player->translation.z) < distanceBefore);
+
+	// The script's view through the screen center reaches the scene
+	Vector3 origin{};
+	Vector3 direction{};
+	REQUIRE(api.screenPointToRay(api.hostContext, { kUICanvasWidth * 0.5f, kUICanvasHeight * 0.5f }, &origin, &direction));
+	CHECK(direction.y < 0.0f); // looking down at the player
+
+	s.StopPlayMode();
+	CHECK(!api.isCursorLocked(api.hostContext));
+}
+
 TEST_CASE(Samples, SurvivorsDemoRuns)
 {
 	namespace fs = std::filesystem;
@@ -3434,6 +3483,676 @@ TEST_CASE(Project, OpensExistingSceneWithoutSampleScene)
 	REQUIRE(s.OpenProject(root.string()));
 	CHECK(s.FindGameObjectByName("LevelMarker", false) != nullptr);
 	CHECK(A::ScenePath(s).find("Level1.scene.json") != std::string::npos);
+}
+
+// ===========================================================================
+// General gameplay basics (Fase 1)
+// ===========================================================================
+
+TEST_CASE(ScriptAPI, MouseDeltaWheelAndCursorLock)
+{
+	EngineAPI& api = A::Api(s);
+	Input* input = RizeEngine::GetInput();
+	s.Update(0.0f, input);
+	Vector2 delta{};
+
+	// Edit mode cannot lock, and the mouse is outside the (never drawn) Game view: scripts read nothing
+	api.setCursorLocked(api.hostContext, true);
+	CHECK(!api.isCursorLocked(api.hostContext));
+	input->InjectMouseMotion(12, -7, WHEEL_DELTA * 2);
+	CHECK(!api.getMouseDelta(api.hostContext, &delta));
+	CHECK_NEAR(api.getMouseWheel(api.hostContext), 0.0f, 1e-6f);
+
+	// Locked in Play: raw movement in pixels, wheel in notches
+	A::State(s) = EditorSceneState::Play;
+	api.setCursorLocked(api.hostContext, true);
+	CHECK(api.isCursorLocked(api.hostContext));
+	CHECK(api.getMouseDelta(api.hostContext, &delta));
+	CHECK_NEAR(delta.x, 12.0f, 1e-6f);
+	CHECK_NEAR(delta.y, -7.0f, 1e-6f);
+	CHECK_NEAR(api.getMouseWheel(api.hostContext), 2.0f, 1e-6f);
+
+	// Leaving Play always gives the cursor back
+	s.StopPlayMode();
+	CHECK(!api.isCursorLocked(api.hostContext));
+	s.Update(0.0f, input);
+	CHECK(!A::CursorHidden(s));
+	input->InjectMouseMotion(0, 0, 0);
+}
+
+TEST_CASE(ScriptAPI, CanvasAndWorldProjectionRoundTrip)
+{
+	GameObject* camera = s.FindGameObjectByName("Main Camera", false);
+	REQUIRE(camera != nullptr);
+	camera->translation = { 2.0f, 3.0f, -10.0f };
+	camera->rotation = { 0.2f, 0.1f, 0.0f };
+	camera->rotationQuat = Quaternion::FromEuler(camera->rotation);
+	s.Update(0.0f, RizeEngine::GetInput());
+	EngineAPI& api = A::Api(s);
+
+	// A world point maps to the canvas, and the ray through that canvas point passes through it
+	const Vector3 point = { 1.0f, 1.5f, 4.0f };
+	Vector2 canvas{};
+	REQUIRE(api.worldToCanvas(api.hostContext, point, &canvas));
+	Vector3 origin{};
+	Vector3 direction{};
+	REQUIRE(api.screenPointToRay(api.hostContext, canvas, &origin, &direction));
+	CHECK_NEAR(std::sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z), 1.0f, 1e-4f);
+	const Vector3 toPoint = { point.x - origin.x, point.y - origin.y, point.z - origin.z };
+	const float along = toPoint.x * direction.x + toPoint.y * direction.y + toPoint.z * direction.z;
+	CHECK(along > 0.0f);
+	CHECK_NEAR(origin.x + direction.x * along, point.x, 0.01f);
+	CHECK_NEAR(origin.y + direction.y * along, point.y, 0.01f);
+	CHECK_NEAR(origin.z + direction.z * along, point.z, 0.01f);
+
+	// The canvas center looks along the camera, and y grows downward like the UI
+	REQUIRE(api.screenPointToRay(api.hostContext, { kUICanvasWidth * 0.5f, kUICanvasHeight * 0.5f }, &origin, &direction));
+	CHECK(direction.z > 0.9f);
+	Vector2 high{};
+	Vector2 low{};
+	REQUIRE(api.worldToCanvas(api.hostContext, { 2.0f, 5.0f, 5.0f }, &high));
+	REQUIRE(api.worldToCanvas(api.hostContext, { 2.0f, 1.0f, 5.0f }, &low));
+	CHECK(high.y < low.y);
+
+	// Behind the camera there is no canvas position
+	CHECK(!api.worldToCanvas(api.hostContext, { 2.0f, 3.0f, -30.0f }, &canvas));
+}
+
+TEST_CASE(Prefabs, PrewarmFillsThePoolWithHiddenInstances)
+{
+	A::ProjectRoot(s) = A::TempRoot() / "PrewarmProject";
+	const uint32_t templateId = s.CreateSphere("Shot", { 0.0f, 0.0f, 0.0f }).id;
+	const uint32_t childId = s.CreateSphere("ShotGlow", { 0.0f, 1.0f, 0.0f }).id;
+	REQUIRE(s.ReparentGameObject(childId, static_cast<int>(templateId), false));
+	REQUIRE(s.SavePrefab(templateId, "Shot"));
+	EngineAPI& api = A::Api(s);
+
+	CHECK(!api.prewarmPrefab(api.hostContext, "Shot", 3)); // Edit mode
+	A::State(s) = EditorSceneState::Play;
+	CHECK(!api.prewarmPrefab(api.hostContext, "NoSuchPrefab", 3));
+	CHECK(!api.prewarmPrefab(api.hostContext, "Shot", 0));
+
+	const size_t before = A::Objects(s).size();
+	REQUIRE(api.prewarmPrefab(api.hostContext, "Shot", 3));
+	CHECK(s.GetPooledCount("Shot") == 0); // deferred: scripts may be iterating gameObjects_
+	A::Spawns(s);
+	CHECK(s.GetPooledCount("Shot") == 3);
+	CHECK(A::Objects(s).size() == before + 6); // root + child per instance
+	for (size_t i = before; i < A::Objects(s).size(); ++i) CHECK(!A::Objects(s)[i].isActive);
+
+	// A spawn takes one from the pool and creates nothing
+	ScriptGameObjectView* view = s.QueuePrefabSpawn("Shot", { 5.0f, 0.0f, 0.0f });
+	REQUIRE(view != nullptr);
+	const uint32_t spawnedId = view->id;
+	A::Spawns(s);
+	CHECK(A::Objects(s).size() == before + 6);
+	CHECK(s.GetPooledCount("Shot") == 2);
+	const GameObject* spawned = s.FindGameObjectById(spawnedId, false);
+	REQUIRE(spawned != nullptr);
+	CHECK(spawned->isActive);
+	CHECK_NEAR(spawned->translation.x, 5.0f, 1e-5f);
+	CHECK(s.FindGameObjectById(spawned->childrenIds.at(0), false)->isActive);
+	A::State(s) = EditorSceneState::Edit;
+	s.ResetPrefabPools();
+}
+
+namespace {
+
+// Built into the exe instead of the DLL, so the shipped script samples do not need a crashing class
+struct CrashingScript : ScriptBase {
+	enum class Kind { NullInUpdate, ThrowInUpdate, NullInInitialize, Never } kind = Kind::Never;
+	int* updates = nullptr;
+	void Initialize() override { if (kind == Kind::NullInInitialize) Crash(); }
+	void Update(float) override {
+		if (updates) ++*updates;
+		if (kind == Kind::NullInUpdate) Crash();
+		if (kind == Kind::ThrowInUpdate) throw std::runtime_error("script error");
+	}
+	static void Crash() { volatile int* nothing = nullptr; *nothing = 1; }
+};
+
+uint32_t AddCrashingScript(EditorSuite& s, CrashingScript::Kind kind, int* updates, const Vector3& pos)
+{
+	GameObject& obj = s.CreateCube("Crasher", pos);
+	auto script = new CrashingScript();
+	script->kind = kind;
+	script->updates = updates;
+	GameObject::ScriptComponent component;
+	component.className = "CrashingScript";
+	// An unloaded module deletes nothing: the DLL must not free memory of the exe's heap (these few bytes leak in the test run)
+	static const ScriptModule sNoDll;
+	component.instance = ScriptInstancePtr(script, ScriptDeleter{ &sNoDll });
+	obj.scripts.push_back(std::move(component));
+	return obj.id;
+}
+
+} // namespace
+
+TEST_CASE(ScriptGuard, CrashStopsPlayRestoresSceneAndKeepsEditorAlive)
+{
+	Input* input = RizeEngine::GetInput();
+	for (const auto kind : { CrashingScript::Kind::NullInUpdate, CrashingScript::Kind::ThrowInUpdate }) {
+		s.NewScene();
+		const uint32_t markerId = s.CreateCube("Marker", { 1.0f, 2.0f, 3.0f }).id;
+		const int faultsBefore = A::ScriptFaults(s);
+		s.StartPlayMode();
+		REQUIRE(A::State(s) == EditorSceneState::Play);
+		s.FindGameObjectById(markerId, false)->translation = { 9.0f, 9.0f, 9.0f }; // a change Stop must undo
+
+		int laterUpdates = 0;
+		AddCrashingScript(s, kind, nullptr, { 0.0f, 50.0f, 0.0f });
+		AddCrashingScript(s, CrashingScript::Kind::Never, &laterUpdates, { 0.0f, 60.0f, 0.0f });
+		s.Update(1.0f / 60.0f, input);
+
+		CHECK(A::ScriptFaults(s) == faultsBefore + 1);
+		CHECK(!A::FaultPending(s));
+		CHECK(laterUpdates == 0); // no script runs after the crash
+		CHECK(A::State(s) == EditorSceneState::Edit);
+		const GameObject* marker = s.FindGameObjectById(markerId, false);
+		REQUIRE(marker != nullptr);
+		CHECK_NEAR(marker->translation.x, 1.0f, 1e-5f);
+		CHECK(s.FindGameObjectByName("Crasher", false) == nullptr);
+		CHECK(A::ScriptsLoaded(s)); // the DLL came back
+	}
+
+	// A crash in Initialize is handled the same way, and Play can start again afterwards
+	const int faultsBefore = A::ScriptFaults(s);
+	s.StartPlayMode();
+	A::Start(s, AddCrashingScript(s, CrashingScript::Kind::NullInInitialize, nullptr, { 0.0f, 50.0f, 0.0f }));
+	s.Update(1.0f / 60.0f, input);
+	CHECK(A::ScriptFaults(s) == faultsBefore + 1);
+	CHECK(A::State(s) == EditorSceneState::Edit);
+	s.StartPlayMode();
+	CHECK(A::State(s) == EditorSceneState::Play);
+	s.Update(1.0f / 60.0f, input);
+	CHECK(A::State(s) == EditorSceneState::Play);
+	s.StopPlayMode();
+}
+
+// ===========================================================================
+// Baselines: what later renderer and physics work must not change by accident
+// ===========================================================================
+
+namespace {
+
+constexpr int kSignatureColumns = 16;
+constexpr int kSignatureRows = 9;
+const char* const kRenderBaselineFile = "Tests/Baselines/render_scene.json";
+
+/// Renders one real frame and returns the Game view as average RGB (0..255) per grid cell.
+/// A coarse grid survives the small rasterization differences between a GPU and WARP.
+std::vector<float> CaptureGameViewSignature(EditorSuite& s)
+{
+	RenderTexture& rt = A::GameViewRT(s);
+	Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+	uint32_t rowPitch = 0;
+
+	RizeEngine::BeginFrame();
+	ID3D12GraphicsCommandList* cmdList = A::Dx(s)->GetCommandList();
+	s.RenderViewports(cmdList, false);
+	const bool recorded = rt.RecordReadback(cmdList, readback, rowPitch);
+	RizeEngine::EndFrame();
+	A::Dx(s)->SignalAndWaitFence();
+	if (!recorded) return {};
+
+	const uint8_t* pixels = nullptr;
+	if (FAILED(readback->Map(0, nullptr, reinterpret_cast<void**>(const_cast<uint8_t**>(&pixels))))) return {};
+	std::vector<double> sum(kSignatureColumns * kSignatureRows * 3, 0.0);
+	std::vector<int> count(kSignatureColumns * kSignatureRows, 0);
+	for (uint32_t y = 0; y < rt.GetHeight(); ++y) {
+		const uint8_t* row = pixels + y * rowPitch;
+		const int cellY = static_cast<int>(y * kSignatureRows / rt.GetHeight());
+		for (uint32_t x = 0; x < rt.GetWidth(); ++x) {
+			const int cell = cellY * kSignatureColumns + static_cast<int>(x * kSignatureColumns / rt.GetWidth());
+			for (int c = 0; c < 3; ++c) sum[cell * 3 + c] += row[x * 4 + c];
+			++count[cell];
+		}
+	}
+	readback->Unmap(0, nullptr);
+
+	std::vector<float> signature(sum.size());
+	for (size_t i = 0; i < sum.size(); ++i) signature[i] = static_cast<float>(sum[i] / (std::max)(count[i / 3], 1));
+	return signature;
+}
+
+float LargestSignatureDifference(const std::vector<float>& a, const std::vector<float>& b)
+{
+	if (a.size() != b.size()) return 255.0f;
+	float largest = 0.0f;
+	for (size_t i = 0; i < a.size(); ++i) largest = (std::max)(largest, std::abs(a[i] - b[i]));
+	return largest;
+}
+
+uint32_t MakeBaselineMesh(EditorSuite& s, const char* name, const Vector3& pos, int lightingType, const Vector4& color)
+{
+	GameObject& obj = s.CreateCube(name, pos);
+	obj.isLit = lightingType != 0;
+	obj.lightingType = lightingType;
+	obj.materialColor = color;
+	return obj.id;
+}
+
+/// One mesh per lighting model, an outline, a sphere and a HUD rectangle: everything the renderer rework touches.
+uint32_t BuildBaselineScene(EditorSuite& s)
+{
+	MakeBaselineMesh(s, "Unlit", { -3.0f, 0.5f, 0.0f }, 0, { 0.9f, 0.2f, 0.2f, 1.0f });
+	MakeBaselineMesh(s, "Lambert", { -1.5f, 0.5f, 0.0f }, 1, { 0.2f, 0.8f, 0.3f, 1.0f });
+	MakeBaselineMesh(s, "HalfLambert", { 0.0f, 0.5f, 0.0f }, 2, { 0.2f, 0.4f, 0.9f, 1.0f });
+	MakeBaselineMesh(s, "BlinnPhong", { 1.5f, 0.5f, 0.0f }, 4, { 0.9f, 0.8f, 0.2f, 1.0f });
+	const uint32_t toon = MakeBaselineMesh(s, "Toon", { 3.0f, 0.5f, 0.0f }, 5, { 0.9f, 0.5f, 0.8f, 1.0f });
+	s.FindGameObjectById(toon, false)->outlineWidth = 0.05f;
+	s.FindGameObjectById(toon, false)->outlineColor = { 0.0f, 0.0f, 0.0f, 1.0f };
+	s.CreateSphere("Sphere", { 0.0f, 2.0f, 0.0f });
+	// NewScene copies the camera of the previous scene, so earlier tests would otherwise move this view
+	GameObject* camera = s.FindGameObjectByName("Main Camera", false);
+	camera->translation = { 0.0f, 2.5f, -9.0f };
+	camera->rotation = { 0.15f, 0.0f, 0.0f };
+	camera->rotationQuat = Quaternion::FromEuler(camera->rotation);
+	s.Update(0.0f, RizeEngine::GetInput());
+	UIRenderer::GetInstance()->Clear();
+	UIRenderer::GetInstance()->DrawRect(40.0f, 40.0f, 240.0f, 60.0f, { 1.0f, 0.1f, 0.1f, 1.0f });
+	s.PostSettings() = PostProcessSettings{}; // the reference is the scene without post-processing
+	return toon;
+}
+
+float SignatureCell(const std::vector<float>& signature, int column, int row, int channel)
+{
+	return signature[(row * kSignatureColumns + column) * 3 + channel];
+}
+
+} // namespace
+
+TEST_CASE(Post, LookSettingsChangeTheViewButNotTheHud)
+{
+	BuildBaselineScene(s);
+	A::State(s) = EditorSceneState::Play;
+	UIRenderer* ui = UIRenderer::GetInstance();
+	// Fills canvas cells (1,1) and (2,1) of the signature grid exactly
+	auto capture = [&] {
+		ui->Clear();
+		ui->DrawRect(80.0f, 80.0f, 160.0f, 80.0f, { 1.0f, 0.0f, 0.0f, 1.0f });
+		return CaptureGameViewSignature(s);
+	};
+	const std::vector<float> plain = capture();
+	REQUIRE(plain.size() == kSignatureColumns * kSignatureRows * 3);
+	CHECK(SignatureCell(plain, 1, 1, 0) > 250.0f);
+
+	PostProcessSettings look{};
+	look.enabled = true;
+	look.toneMapping = false;
+	look.bloom = false;
+	look.fxaa = false;
+	s.PostSettings() = look;
+	// Enabled with neutral values changes nothing
+	CHECK_NEAR(LargestSignatureDifference(plain, capture()), 0.0f, 3.0f);
+
+	// Exposure darkens the 3D view, the HUD on top keeps its color
+	s.PostSettings().exposure = 0.25f;
+	std::vector<float> result = capture();
+	const int skyColumn = 8;
+	CHECK(SignatureCell(result, skyColumn, 0, 2) < SignatureCell(plain, skyColumn, 0, 2) - 30.0f);
+	CHECK_NEAR(SignatureCell(result, 1, 1, 0), SignatureCell(plain, 1, 1, 0), 1.5f);
+	CHECK_NEAR(SignatureCell(result, 1, 1, 1), SignatureCell(plain, 1, 1, 1), 1.5f);
+
+	// Letterbox: black bars at the top and bottom only
+	s.PostSettings() = look;
+	s.PostSettings().letterbox = 0.12f;
+	result = capture();
+	CHECK(SignatureCell(result, skyColumn, 0, 2) < 3.0f);
+	CHECK(SignatureCell(result, skyColumn, 8, 2) < 3.0f);
+	CHECK_NEAR(SignatureCell(result, skyColumn, 4, 2), SignatureCell(plain, skyColumn, 4, 2), 3.0f);
+
+	// Saturation 0: every view cell is gray
+	s.PostSettings() = look;
+	s.PostSettings().saturation = 0.0f;
+	result = capture();
+	CHECK_NEAR(SignatureCell(result, skyColumn, 0, 0), SignatureCell(result, skyColumn, 0, 2), 2.0f);
+
+	// Vignette darkens the corners, not the center
+	s.PostSettings() = look;
+	s.PostSettings().vignette = 1.0f;
+	result = capture();
+	CHECK(SignatureCell(result, 15, 0, 2) < SignatureCell(plain, 15, 0, 2) - 20.0f);
+	CHECK_NEAR(SignatureCell(result, 8, 4, 2), SignatureCell(plain, 8, 4, 2), 3.0f);
+
+	// Tint keeps only the chosen channel
+	s.PostSettings() = look;
+	s.PostSettings().tint = { 0.0f, 0.0f, 1.0f };
+	result = capture();
+	CHECK(SignatureCell(result, skyColumn, 0, 0) < 3.0f);
+	CHECK(SignatureCell(result, skyColumn, 0, 2) > 100.0f);
+
+	// FXAA only softens edges
+	s.PostSettings() = look;
+	s.PostSettings().fxaa = true;
+	CHECK_NEAR(LargestSignatureDifference(plain, capture()), 0.0f, 6.0f);
+
+	ui->Clear();
+	A::State(s) = EditorSceneState::Edit;
+}
+
+TEST_CASE(Post, HdrValuesSurviveAndBloomSpreadsThem)
+{
+	BuildBaselineScene(s);
+	UIRenderer::GetInstance()->Clear();
+	// A bright block filling the center of the view (camera at (0, 2.5, -9), looking at about y = 1.2)
+	GameObject& lamp = s.CreateCube("Lamp", { 0.0f, 1.2f, -3.0f });
+	lamp.scale = { 1.5f, 1.5f, 1.5f };
+	lamp.isLit = false;
+	lamp.lightingType = 0;
+	lamp.materialColor = { 8.0f, 8.0f, 8.0f, 1.0f };
+	s.Update(0.0f, RizeEngine::GetInput());
+
+	PostProcessSettings look{};
+	look.enabled = true;
+	look.toneMapping = false;
+	look.bloom = false;
+	look.fxaa = false;
+	look.exposure = 0.125f; // 8 * 0.125 = 1: white only if values above 1 reached the post-process
+	s.PostSettings() = look;
+	std::vector<float> result = CaptureGameViewSignature(s);
+	REQUIRE(result.size() == kSignatureColumns * kSignatureRows * 3);
+	CHECK_MSG(SignatureCell(result, 8, 4, 1) > 245.0f, std::format("center cell {:.1f}", SignatureCell(result, 8, 4, 1)));
+
+	// Bloom lifts the surroundings of the lamp, and more near it than far away
+	look.exposure = 1.0f;
+	s.PostSettings() = look;
+	const std::vector<float> without = CaptureGameViewSignature(s);
+	look.bloom = true;
+	look.bloomIntensity = 1.0f;
+	s.PostSettings() = look;
+	const std::vector<float> with = CaptureGameViewSignature(s);
+	const float near_ = SignatureCell(with, 5, 4, 1) - SignatureCell(without, 5, 4, 1);
+	const float far_ = SignatureCell(with, 0, 8, 1) - SignatureCell(without, 0, 8, 1);
+	CHECK_MSG(near_ > 3.0f, std::format("near the lamp +{:.2f}", near_));
+	CHECK_MSG(near_ > far_, std::format("near +{:.2f}, far +{:.2f}", near_, far_));
+}
+
+TEST_CASE(Post, SettingsAreSavedPerSceneAndOldScenesStayOff)
+{
+	CHECK(s.PostSettings().enabled); // NewScene
+	s.PostSettings().exposure = 1.75f;
+	s.PostSettings().letterbox = 0.1f;
+	s.PostSettings().fxaa = false;
+	s.PostSettings().tint = { 1.0f, 0.5f, 0.25f };
+	std::string json = s.SerializeSceneToString();
+	s.PostSettings() = PostProcessSettings{};
+	REQUIRE(s.DeserializeSceneFromString(json));
+	CHECK(s.PostSettings().enabled);
+	CHECK(!s.PostSettings().fxaa);
+	CHECK_NEAR(s.PostSettings().exposure, 1.75f, 1e-5f);
+	CHECK_NEAR(s.PostSettings().letterbox, 0.1f, 1e-5f);
+	CHECK_NEAR(s.PostSettings().tint.y, 0.5f, 1e-5f);
+
+	// A scene file from before post-processing
+	nlohmann::json old = nlohmann::json::parse(json);
+	old.erase("postProcess");
+	REQUIRE(s.DeserializeSceneFromString(old.dump()));
+	CHECK(!s.PostSettings().enabled);
+
+	// Script changes do not outlive Play
+	s.PostSettings().enabled = true;
+	s.PostSettings().exposure = 1.0f;
+	s.StartPlayMode();
+	EngineAPI& api = A::Api(s);
+	ScriptPostProcess fromScript{};
+	REQUIRE(api.getPostProcess(api.hostContext, &fromScript));
+	CHECK(fromScript.enabled);
+	fromScript.exposure = 0.1f;
+	fromScript.letterbox = 3.0f; // clamped
+	REQUIRE(api.setPostProcess(api.hostContext, &fromScript));
+	CHECK_NEAR(s.PostSettings().exposure, 0.1f, 1e-5f);
+	CHECK_NEAR(s.PostSettings().letterbox, 0.5f, 1e-5f);
+	s.StopPlayMode();
+	CHECK_NEAR(s.PostSettings().exposure, 1.0f, 1e-5f);
+}
+
+TEST_CASE(Post, ScreenEffectsRunReadDepthAndSurviveBrokenShaders)
+{
+	namespace fs = std::filesystem;
+	BuildBaselineScene(s);
+	UIRenderer::GetInstance()->Clear();
+	A::State(s) = EditorSceneState::Play;
+	EngineAPI& api = A::Api(s);
+	const std::vector<float> plain = CaptureGameViewSignature(s);
+	REQUIRE(plain.size() == kSignatureColumns * kSignatureRows * 3);
+
+	const fs::path dir = A::TempRoot() / "Effects";
+	fs::create_directories(dir);
+	auto write = [&](const char* name, const char* body) {
+		const fs::path file = dir / name;
+		std::ofstream(file) << "#include \"Post.hlsli\"\nfloat4 main(PostVSOutput input) : SV_TARGET {\n" << body << "\n}\n";
+		return file.string();
+	};
+
+	// A parameter reaches the shader, and the effect replaces the scene
+	const std::string solid = write("Solid.PS.hlsl", "return float4(gParams[0].rgb, 1.0f);");
+	float params[16] = { 0.0f, 1.0f, 0.0f };
+	REQUIRE(api.setScreenEffect(api.hostContext, 0, solid.c_str(), params));
+	std::vector<float> result = CaptureGameViewSignature(s);
+	CHECK(SignatureCell(result, 8, 4, 1) > 250.0f);
+	CHECK(SignatureCell(result, 8, 4, 0) < 3.0f);
+
+	// Slots run in order: slot 1 reads the output of slot 0
+	const std::string swap = write("Swap.PS.hlsl", "return gScene.Sample(gLinearSampler, input.uv).gbra;");
+	REQUIRE(api.setScreenEffect(api.hostContext, 1, swap.c_str(), nullptr));
+	result = CaptureGameViewSignature(s);
+	CHECK(SignatureCell(result, 8, 4, 0) > 250.0f);
+	CHECK(SignatureCell(result, 8, 4, 1) < 3.0f);
+	api.setScreenEffect(api.hostContext, 1, nullptr, nullptr);
+
+	// Depth is readable: the sky is at the far plane, the ground is nearer
+	const std::string depth = write("Depth.PS.hlsl", "float d = gDepth.Sample(gPointSampler, input.uv); return float4(d >= 0.9999f ? 1.0f : 0.0f, 0.0f, 0.0f, 1.0f);");
+	REQUIRE(api.setScreenEffect(api.hostContext, 0, depth.c_str(), nullptr));
+	result = CaptureGameViewSignature(s);
+	CHECK_MSG(SignatureCell(result, 8, 0, 0) > 200.0f, std::format("sky {:.1f}", SignatureCell(result, 8, 0, 0)));
+	CHECK_MSG(SignatureCell(result, 8, 8, 0) < 50.0f, std::format("ground {:.1f}", SignatureCell(result, 8, 8, 0)));
+
+	// A broken shader or a missing file: false, nothing changes, the frame still renders
+	const std::string broken = write("Broken.PS.hlsl", "this is not hlsl;");
+	CHECK(!api.setScreenEffect(api.hostContext, 2, broken.c_str(), nullptr));
+	CHECK(!api.setScreenEffect(api.hostContext, 2, broken.c_str(), nullptr));
+	CHECK(!api.setScreenEffect(api.hostContext, 2, "no/such/file.hlsl", nullptr));
+	CHECK(!s.PostEffects().HasScreenEffect(2));
+	CHECK(!api.setScreenEffect(api.hostContext, 9, solid.c_str(), nullptr));
+	api.setScreenEffect(api.hostContext, 0, nullptr, nullptr);
+	CHECK_NEAR(LargestSignatureDifference(plain, CaptureGameViewSignature(s)), 0.0f, 1.0f);
+
+	// The built-in effects compile and change the picture
+	const float slash[16] = { 0.5f, 0.5f, 0.0f, 1.0f, 6.0f, 0.3f, 0.2f, 1.0f };
+	REQUIRE(api.setScreenEffect(api.hostContext, 0, "shaders/ScreenEffect.Slash.PS.hlsl", slash));
+	CHECK(LargestSignatureDifference(plain, CaptureGameViewSignature(s)) > 50.0f);
+	const float radial[16] = { 0.5f, 0.5f, 0.6f };
+	REQUIRE(api.setScreenEffect(api.hostContext, 0, "shaders/ScreenEffect.RadialBlur.PS.hlsl", radial));
+	CHECK(LargestSignatureDifference(plain, CaptureGameViewSignature(s)) > 5.0f);
+
+	// Effects end with the session
+	s.ResetScriptRuntimeState();
+	CHECK(!s.PostEffects().HasScreenEffect(0));
+	A::State(s) = EditorSceneState::Edit;
+}
+
+TEST_CASE(Baseline, RenderedSceneMatchesReference)
+{
+	const uint32_t toon = BuildBaselineScene(s);
+	A::State(s) = EditorSceneState::Play; // the HUD only renders outside Edit
+	const std::vector<float> first = CaptureGameViewSignature(s);
+	REQUIRE(first.size() == kSignatureColumns * kSignatureRows * 3);
+	// Two frames of the same scene must agree, otherwise a reference image means nothing
+	CHECK_NEAR(LargestSignatureDifference(first, CaptureGameViewSignature(s)), 0.0f, 0.5f);
+
+	if (std::strstr(GetCommandLineA(), "--update-baselines")) {
+		std::filesystem::create_directories(std::filesystem::path(kRenderBaselineFile).parent_path());
+		std::ofstream(kRenderBaselineFile) << nlohmann::json{ { "columns", kSignatureColumns }, { "rows", kSignatureRows }, { "rgb", first } }.dump(1);
+	}
+	std::ifstream file(kRenderBaselineFile);
+	CHECK_MSG(file.good(), std::string("missing ") + kRenderBaselineFile + ": run --run-tests Baseline --update-baselines");
+	if (file.good()) {
+		const nlohmann::json reference = nlohmann::json::parse(file, nullptr, false);
+		REQUIRE(!reference.is_discarded());
+		const float difference = LargestSignatureDifference(first, reference.value("rgb", std::vector<float>{}));
+		CHECK_MSG(difference <= 6.0f, std::format("largest cell difference {:.2f} / 255", difference));
+	}
+
+	// The comparison must notice real changes, separately for the 3D scene and the HUD
+	s.FindGameObjectById(toon, false)->materialColor = { 0.0f, 1.0f, 0.0f, 1.0f };
+	const std::vector<float> recolored = CaptureGameViewSignature(s);
+	const float meshChange = LargestSignatureDifference(first, recolored);
+	CHECK_MSG(meshChange > 6.0f, std::format("recoloring one mesh changed a cell by {:.2f}", meshChange));
+	UIRenderer::GetInstance()->Clear();
+	const float hudChange = LargestSignatureDifference(recolored, CaptureGameViewSignature(s));
+	CHECK_MSG(hudChange > 20.0f, std::format("removing the HUD changed a cell by {:.2f}", hudChange));
+	A::State(s) = EditorSceneState::Edit;
+}
+
+namespace {
+
+constexpr float kPhysicsFloorTop = 50.0f;
+
+uint32_t MakePhysicsFloor(EditorSuite& s)
+{
+	GameObject& floor = s.CreateGameObject("PhysicsFloor", GameObjectType::Empty);
+	floor.translation = { 0.0f, kPhysicsFloorTop - 0.5f, 0.0f };
+	floor.hasBoxCollider = true;
+	floor.boxSize = { 40.0f, 1.0f, 40.0f };
+	floor.isStatic = true;
+	return floor.id;
+}
+
+uint32_t MakePhysicsBox(EditorSuite& s, const char* name, const Vector3& pos, float bounciness = 0.0f)
+{
+	GameObject& box = s.CreateGameObject(name, GameObjectType::Empty);
+	box.translation = pos;
+	box.hasBoxCollider = true;
+	box.boxSize = { 1.0f, 1.0f, 1.0f };
+	box.hasRigidbody = true;
+	box.useGravity = true;
+	box.bounciness = bounciness;
+	return box.id;
+}
+
+void StepPhysicsSeconds(EditorSuite& s, float seconds)
+{
+	for (int i = 0; i < static_cast<int>(seconds * 60.0f); ++i) A::Physics(s, 1.0f / 60.0f);
+}
+
+} // namespace
+
+// Behaviour every physics backend must keep. Tolerances are wide on purpose: they state the rule, not one solver's numbers.
+TEST_CASE(PhysicsBaseline, FreeFallFollowsGravity)
+{
+	const uint32_t id = MakePhysicsBox(s, "Faller", { 0.0f, 100.0f, 0.0f });
+	s.FindGameObjectById(id, false)->hasBoxCollider = false;
+	StepPhysicsSeconds(s, 1.0f);
+	const float dropped = 100.0f - s.FindGameObjectById(id, false)->translation.y;
+	CHECK_MSG(dropped > 4.2f && dropped < 5.2f, std::format("dropped {:.3f}", dropped)); // 0.5 * 9.81 = 4.9
+}
+
+TEST_CASE(PhysicsBaseline, BoxLandsAndRests)
+{
+	MakePhysicsFloor(s);
+	const uint32_t id = MakePhysicsBox(s, "Lander", { 0.0f, kPhysicsFloorTop + 3.0f, 0.0f });
+	StepPhysicsSeconds(s, 3.0f);
+	const GameObject* box = s.FindGameObjectById(id, false);
+	CHECK_NEAR(box->translation.y, kPhysicsFloorTop + 0.5f, 0.05f);
+	CHECK_NEAR(box->velocity.y, 0.0f, 0.5f);
+	CHECK(box->isGrounded);
+}
+
+TEST_CASE(PhysicsBaseline, BouncinessBouncesLowerThanTheDrop)
+{
+	MakePhysicsFloor(s);
+	const uint32_t id = MakePhysicsBox(s, "Bouncer", { 0.0f, kPhysicsFloorTop + 3.0f, 0.0f }, 0.8f);
+	float lowest = 1000.0f;
+	float highestAfterHit = -1000.0f;
+	for (int i = 0; i < 240; ++i) {
+		A::Physics(s, 1.0f / 60.0f);
+		const float y = s.FindGameObjectById(id, false)->translation.y;
+		if (y < kPhysicsFloorTop + 0.6f) lowest = (std::min)(lowest, y);
+		if (lowest < 1000.0f) highestAfterHit = (std::max)(highestAfterHit, y);
+	}
+	CHECK_MSG(lowest >= kPhysicsFloorTop + 0.4f, std::format("lowest {:.3f}", lowest));
+	CHECK_MSG(highestAfterHit > kPhysicsFloorTop + 1.0f && highestAfterHit < kPhysicsFloorTop + 3.0f, std::format("rebound {:.3f}", highestAfterHit));
+}
+
+TEST_CASE(PhysicsBaseline, WallStopsAMovingBox)
+{
+	GameObject& wall = s.CreateGameObject("Wall", GameObjectType::Empty);
+	wall.translation = { 3.0f, 70.0f, 0.0f };
+	wall.hasBoxCollider = true;
+	wall.boxSize = { 1.0f, 10.0f, 10.0f };
+	wall.isStatic = true;
+	const uint32_t id = MakePhysicsBox(s, "Mover", { 0.0f, 70.0f, 0.0f });
+	GameObject* mover = s.FindGameObjectById(id, false);
+	mover->useGravity = false;
+	mover->velocity = { 5.0f, 0.0f, 0.0f };
+	StepPhysicsSeconds(s, 2.0f);
+	mover = s.FindGameObjectById(id, false);
+	CHECK_NEAR(mover->translation.x, 2.0f, 0.05f); // wall face at 2.5, box half width 0.5
+	CHECK_NEAR(mover->velocity.x, 0.0f, 0.5f);
+}
+
+TEST_CASE(PhysicsBaseline, TriggersReportButDoNotBlock)
+{
+	A::State(s) = EditorSceneState::Play;
+	const uint32_t floorId = MakePhysicsFloor(s);
+	s.FindGameObjectById(floorId, false)->isTrigger = true;
+	const uint32_t id = MakePhysicsBox(s, "Passer", { 0.0f, kPhysicsFloorTop + 1.0f, 0.0f });
+	int entered = 0;
+	for (int i = 0; i < 120; ++i) {
+		A::Physics(s, 1.0f / 60.0f);
+		entered += A::CollisionEvents(s).enter;
+	}
+	CHECK(s.FindGameObjectById(id, false)->translation.y < kPhysicsFloorTop - 1.0f);
+	CHECK_MSG(entered == 2, std::format("enter events {}", entered)); // one per direction of the pair
+	A::State(s) = EditorSceneState::Edit;
+	s.ResetScriptRuntimeState();
+}
+
+TEST_CASE(PhysicsBaseline, LayerMaskLetsABoxPassThrough)
+{
+	const uint32_t floorId = MakePhysicsFloor(s);
+	s.FindGameObjectById(floorId, false)->layer = 2;
+	const uint32_t id = MakePhysicsBox(s, "Ghost", { 0.0f, kPhysicsFloorTop + 1.0f, 0.0f });
+	s.FindGameObjectById(id, false)->collisionMask &= ~(1u << 2);
+	StepPhysicsSeconds(s, 2.0f);
+	CHECK(s.FindGameObjectById(id, false)->translation.y < kPhysicsFloorTop - 1.0f);
+}
+
+TEST_CASE(PhysicsBaseline, StaticAndKinematicDoNotFall)
+{
+	const uint32_t kinematic = MakePhysicsBox(s, "Kinematic", { 0.0f, 80.0f, 0.0f });
+	s.FindGameObjectById(kinematic, false)->isKinematic = true;
+	const uint32_t fixedBox = MakePhysicsBox(s, "Static", { 5.0f, 80.0f, 0.0f });
+	s.FindGameObjectById(fixedBox, false)->isStatic = true;
+	StepPhysicsSeconds(s, 1.0f);
+	CHECK_NEAR(s.FindGameObjectById(kinematic, false)->translation.y, 80.0f, 1e-4f);
+	CHECK_NEAR(s.FindGameObjectById(fixedBox, false)->translation.y, 80.0f, 1e-4f);
+}
+
+TEST_CASE(PhysicsBaseline, ChildRigidbodyFollowsItsParent)
+{
+	const uint32_t parent = s.CreateGameObject("Parent", GameObjectType::Empty).id;
+	s.FindGameObjectById(parent, false)->translation = { 0.0f, 80.0f, 0.0f };
+	const uint32_t child = MakePhysicsBox(s, "Child", { 1.0f, 0.0f, 0.0f });
+	s.FindGameObjectById(child, false)->parentId = static_cast<int>(parent);
+	s.RebuildHierarchyLinks();
+	StepPhysicsSeconds(s, 1.0f);
+	CHECK_NEAR(s.FindGameObjectById(child, false)->translation.y, 0.0f, 1e-4f); // local position untouched
+}
+
+// Known bug of the internal solver: the falling box passes the lower one and pushes it up, so they swap and the
+// lower one sinks into the floor. Fase 3 (Jolt) must fix this and turn the last check into CHECK(stacked).
+TEST_CASE(PhysicsBaseline, TwoBoxesDoNotStackYet)
+{
+	MakePhysicsFloor(s);
+	const uint32_t lower = MakePhysicsBox(s, "Lower", { 0.0f, kPhysicsFloorTop + 0.5f, 0.0f });
+	const uint32_t upper = MakePhysicsBox(s, "Upper", { 0.0f, kPhysicsFloorTop + 3.0f, 0.0f });
+	StepPhysicsSeconds(s, 4.0f);
+	const float lowerY = s.FindGameObjectById(lower, false)->translation.y;
+	const float upperY = s.FindGameObjectById(upper, false)->translation.y;
+	const bool stacked = std::abs(lowerY - (kPhysicsFloorTop + 0.5f)) < 0.1f && std::abs(upperY - (kPhysicsFloorTop + 1.5f)) < 0.1f;
+	CHECK(!stacked);
 }
 
 // ===========================================================================

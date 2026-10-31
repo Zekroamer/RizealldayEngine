@@ -31,6 +31,8 @@ public:
 	bool IsPressMouse(int button) const { return button >= 0 && button < 4 && (mouseState_.rgbButtons[button] & 0x80) != 0; }
 	bool PushMouseButton(int button) const { return IsPressMouse(button); }
 	bool IsTriggerMouse(int button) const { return button >= 0 && button < 4 && (mouseState_.rgbButtons[button] & 0x80) && !(preMouseState_.rgbButtons[button] & 0x80); }
+	// Self-tests have no real mouse movement; the next Update overwrites these values
+	void InjectMouseMotion(int dx, int dy, int wheel) { mouseState_.lX = dx; mouseState_.lY = dy; mouseState_.lZ = wheel; }
 
 	// Gamepad (XInput)
 	bool IsGamepadConnected(int padIndex = 0) const;

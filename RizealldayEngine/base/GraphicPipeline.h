@@ -15,6 +15,8 @@ public:
     void Initialize(ID3D12Device* pDevice, DXCManager* dxc);
     void Bind(ID3D12GraphicsCommandList* commandList, BlendMode mode = BlendMode::Opaque, GeometryShaderMode gsMode = GeometryShaderMode::None);
     void Bind(ID3D12GraphicsCommandList* commandList, BlendMode mode, bool useGeometryShader);
+    /// Same shaders for the 8-bit back buffer; Bind() targets the HDR scene format
+    void BindForBackBuffer(ID3D12GraphicsCommandList* commandList, BlendMode mode = BlendMode::Opaque);
     ID3D12RootSignature* GetRootSignature() const { return rootSignature.Get(); }
     /// Switches to the outline PSO after a mesh was drawn with Bind() (root arguments stay bound)
     void BindOutline(ID3D12GraphicsCommandList* commandList);
@@ -31,6 +33,7 @@ private:
     };
     struct PsoSet {
         Microsoft::WRL::ComPtr<ID3D12PipelineState> standard[static_cast<int>(BlendMode::Count)];
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> backBuffer[static_cast<int>(BlendMode::Count)];
         Microsoft::WRL::ComPtr<ID3D12PipelineState> gs[static_cast<int>(BlendMode::Count)];
         Microsoft::WRL::ComPtr<ID3D12PipelineState> explode[static_cast<int>(BlendMode::Count)];
         Microsoft::WRL::ComPtr<ID3D12PipelineState> outline;

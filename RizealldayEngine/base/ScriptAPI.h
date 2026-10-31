@@ -108,6 +108,22 @@ struct ScriptCharacterMove {
 	bool hitCeiling = false;              // upward motion was blocked
 };
 
+/// Scene look readable/writable from scripts (damage flash, slow-motion grading, cinematic bars). Stop restores the scene's values.
+struct ScriptPostProcess {
+	bool enabled = false;
+	bool toneMapping = true;
+	bool bloom = true;
+	bool fxaa = true;
+	float exposure = 1.0f;
+	float bloomThreshold = 1.0f;
+	float bloomIntensity = 0.4f;
+	float contrast = 1.0f;
+	float saturation = 1.0f;
+	Vector3 tint = { 1.0f, 1.0f, 1.0f };
+	float vignette = 0.0f;
+	float letterbox = 0.0f; // fraction of the height covered at the top and at the bottom
+};
+
 /// Mesh Renderer settings readable/writable from scripts (hit flash, fade, hide)
 struct ScriptMaterialData {
 	Vector4 color = { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -311,12 +327,26 @@ struct EngineAPI {
 
 	// Scenes (API v8): the object (a root) and its children survive LoadScene; their scripts keep running
 	bool (*keepAcrossScenes)(void* ctx, uint32_t id) = nullptr;
+
+	// Camera input and projection (API v10). Canvas = the 1280x720 UI canvas stretched over the game view.
+	bool (*getMouseDelta)(void* ctx, Vector2* outPixels) = nullptr;
+	float (*getMouseWheel)(void* ctx) = nullptr; // notches, positive = away from the user
+	void (*setCursorLocked)(void* ctx, bool locked) = nullptr;
+	bool (*isCursorLocked)(void* ctx) = nullptr;
+	bool (*screenPointToRay)(void* ctx, Vector2 canvasPos, Vector3* outOrigin, Vector3* outDirection) = nullptr;
+	bool (*worldToCanvas)(void* ctx, Vector3 worldPos, Vector2* outCanvasPos) = nullptr;
+	bool (*prewarmPrefab)(void* ctx, const char* prefabName, int count) = nullptr;
+
+	// Post-processing and screen effects (API v10)
+	bool (*getPostProcess)(void* ctx, ScriptPostProcess* out) = nullptr;
+	bool (*setPostProcess)(void* ctx, const ScriptPostProcess* value) = nullptr;
+	bool (*setScreenEffect)(void* ctx, int slot, const char* shaderFile, const float* params16) = nullptr; // shaderFile null = clear the slot
 };
 
 /// Engine <-> GameScripts.dll compatibility check. Bump kScriptApiVersion when the meaning of the API changes;
 /// layout changes of EngineAPI / ScriptGameObjectView / ScriptBase are caught automatically by the sizes.
 /// The fingerprint is defined at the end of this header (it needs the complete ScriptBase).
-constexpr uint32_t kScriptApiVersion = 9; // 4: Animator, 5: ShakeCamera / Hitstop / input actions, 6: MoveCharacter, 7: FindPath, 8: KeepAcrossScenes, 9: material outline
+constexpr uint32_t kScriptApiVersion = 10; // 4: Animator, 5: ShakeCamera / Hitstop / input actions, 6: MoveCharacter, 7: FindPath, 8: KeepAcrossScenes, 9: material outline, 10: camera input + projection + prewarm + post-processing
 
 /// Size of the UI canvas used by the UI* helpers (stretched over the game view)
 constexpr float kUICanvasWidth = 1280.0f;
@@ -690,6 +720,54 @@ public:
 	/// Point on the ground plane y = planeY under the mouse (aim direction for top-down shooters)
 	bool GetMouseWorldPosition(Vector3& outPoint, float planeY = 0.0f) const {
 		return engineApi_ && engineApi_->getMouseWorldOnPlane && engineApi_->getMouseWorldOnPlane(engineApi_->hostContext, planeY, &outPoint);
+	}
+	/// Mouse movement this frame in raw pixels (right / down positive). Zero unless the cursor is locked or inside the game view.
+	Vector2 GetMouseDelta() const {
+		Vector2 delta{};
+		if (engineApi_ && engineApi_->getMouseDelta) engineApi_->getMouseDelta(engineApi_->hostContext, &delta);
+		return delta;
+	}
+	/// Wheel notches this frame (positive = away from the user), with the same condition as GetMouseDelta
+	float GetMouseWheel() const {
+		return (engineApi_ && engineApi_->getMouseWheel) ? engineApi_->getMouseWheel(engineApi_->hostContext) : 0.0f;
+	}
+	/// Hides the cursor and keeps it inside the game view (first / third person cameras). Ends with Play;
+	/// Esc also releases it in the editor. Read the movement with GetMouseDelta.
+	void SetCursorLocked(bool locked) const {
+		if (engineApi_ && engineApi_->setCursorLocked) engineApi_->setCursorLocked(engineApi_->hostContext, locked);
+	}
+	bool IsCursorLocked() const {
+		return engineApi_ && engineApi_->isCursorLocked && engineApi_->isCursorLocked(engineApi_->hostContext);
+	}
+	/// World ray of the game camera through a UI canvas position. Use with Raycast for 3D picking.
+	bool ScreenPointToRay(const Vector2& canvasPos, Vector3& outOrigin, Vector3& outDirection) const {
+		return engineApi_ && engineApi_->screenPointToRay && engineApi_->screenPointToRay(engineApi_->hostContext, canvasPos, &outOrigin, &outDirection);
+	}
+	/// UI canvas position of a world point (name tags, health bars). False when it is behind the camera; the result may be off screen.
+	bool WorldToCanvas(const Vector3& worldPos, Vector2& outCanvasPos) const {
+		return engineApi_ && engineApi_->worldToCanvas && engineApi_->worldToCanvas(engineApi_->hostContext, worldPos, &outCanvasPos);
+	}
+	/// Creates `count` hidden instances in the prefab's pool at the end of this frame, so later spawns do not hitch.
+	/// Their Initialize runs when they are spawned. Play only; false if the prefab does not exist.
+	bool PrewarmPrefab(const char* prefabName, int count) const {
+		return engineApi_ && engineApi_->prewarmPrefab && prefabName && engineApi_->prewarmPrefab(engineApi_->hostContext, prefabName, count);
+	}
+
+	// ---- Post-processing ----------------------------------------------------
+	bool GetPostProcess(ScriptPostProcess& out) const {
+		return engineApi_ && engineApi_->getPostProcess && engineApi_->getPostProcess(engineApi_->hostContext, &out);
+	}
+	bool SetPostProcess(const ScriptPostProcess& value) const {
+		return engineApi_ && engineApi_->setPostProcess && engineApi_->setPostProcess(engineApi_->hostContext, &value);
+	}
+	/// Runs a pixel shader over the HDR scene (slots 0..3, in order) until ClearScreenEffect or Stop. Files: Assets/... of the
+	/// project or the built-in shaders/ScreenEffect.*.PS.hlsl. params16 fills gParams[4] (see shaders/Post.hlsli); nullptr keeps
+	/// the previous values, so calling it every frame to animate is cheap. False if the shader does not compile (see Console).
+	bool SetScreenEffect(int slot, const char* shaderFile, const float* params16 = nullptr) const {
+		return engineApi_ && engineApi_->setScreenEffect && shaderFile && engineApi_->setScreenEffect(engineApi_->hostContext, slot, shaderFile, params16);
+	}
+	void ClearScreenEffect(int slot) const {
+		if (engineApi_ && engineApi_->setScreenEffect) engineApi_->setScreenEffect(engineApi_->hostContext, slot, nullptr, nullptr);
 	}
 
 	// ---- Gamepad ------------------------------------------------------------

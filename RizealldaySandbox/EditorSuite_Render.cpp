@@ -286,7 +286,7 @@ void EditorSuite::RenderScene3D(ID3D12GraphicsCommandList* cmdList, Camera& came
 			obj3d->Update(0.0f);
 		} else {
 			obj3d->Update(0.0f);
-			if (obj.editObject3d) {
+			if (obj.editObject3d && model && model->HasBones()) { // static meshes draw with the shared identity palette
 				obj3d->CopyBonePaletteFrom(*obj.editObject3d);
 			}
 		}
@@ -337,7 +337,9 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 #ifdef USE_IMGUI
 	// 1. Render to EDIT VIEW (Scene Camera)
 	const uint32_t sceneViewScope = Profiler::GetInstance()->BeginGpu(cmdList, "Scene View");
-	editViewRT_.BeginRender();
+	{
+	RIZE_PROFILE_CPU("Record Scene View");
+	editSceneRT_.BeginRender();
 	editorCamera_.Update();
 	skybox_.Draw(cmdList, editorCamera_);
 	RenderScene3D(cmdList, editorCamera_, true);
@@ -359,12 +361,19 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 			}
 		}
 	}
+	editSceneRT_.EndRender();
+	// The Scene view shows the scene itself: post-processing is the game's look
+	editViewRT_.BeginRender(false);
+	postProcess_.Resolve(cmdList, editSceneRT_);
 	editViewRT_.EndRender();
+	}
 	Profiler::GetInstance()->EndGpu(cmdList, sceneViewScope);
 
 	// 2. Render to GAME VIEW (Player Game Camera)
 	const uint32_t gameViewScope = Profiler::GetInstance()->BeginGpu(cmdList, "Game View");
-	gameViewRT_.BeginRender();
+	{
+	RIZE_PROFILE_CPU("Record Game View");
+	gameSceneRT_.BeginRender();
 	if (gameCamera_) {
 		gameCamera_->Update();
 		skybox_.Draw(cmdList, *gameCamera_);
@@ -378,17 +387,26 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 			}
 		}
 	}
-	// Game UI (HUD/menus from scripts) on top of the 3D view
+	gameSceneRT_.EndRender();
+	{
+		RIZE_PROFILE_CPU("Post Process");
+		RIZE_PROFILE_GPU(cmdList, "Post Process");
+		postProcess_.Prepare(cmdList, gameSceneRT_, postSettings_, static_cast<float>(gameTime_));
+		gameViewRT_.BeginRender(false);
+		postProcess_.Composite(cmdList);
+	}
+	// Game UI (HUD/menus from scripts) stays sharp on top of the post-processed view
 	if (sceneState_ != EditorSceneState::Edit || IsStandaloneMode()) {
 		UIRenderer::GetInstance()->Render(cmdList);
 	}
 	gameViewRT_.EndRender();
+	}
 	Profiler::GetInstance()->EndGpu(cmdList, gameViewScope);
 
 	// 3. Render 3D Asset Preview (if a 3D model is currently selected in the Asset Browser)
 	if (previewModel_ && previewObject3d_ && modelPreviewRT_.IsInitialized() && !IsStandaloneMode()) {
 		RIZE_PROFILE_GPU(cmdList, "Asset Preview");
-		modelPreviewRT_.BeginRender();
+		previewSceneRT_.BeginRender();
 		TextureManager::GetInstance()->SetDescriptorHeaps(cmdList);
 		previewCamera_.Update();
 
@@ -420,15 +438,22 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 		if (lights_) {
 			Object3d::StaticSetLightGroup(lights_);
 		}
+		previewSceneRT_.EndRender();
+		modelPreviewRT_.BeginRender(false);
+		postProcess_.Resolve(cmdList, previewSceneRT_);
 		modelPreviewRT_.EndRender();
 	}
 
 	// 4. Restore to swapchain backbuffer for ImGui UI drawing
 	dxCommon_->BindMainRenderTarget();
 #else
-	// Standalone Release build without ImGui: render Game View directly to the main swapchain backbuffer
-	dxCommon_->BindMainRenderTarget();
+	// Release build without ImGui: same scene -> post-process -> UI path as the editor's Game view, at the window's size
+	if (dxCommon_->GetClientWidth() != gameSceneRT_.GetWidth() || dxCommon_->GetClientHeight() != gameSceneRT_.GetHeight()) {
+		dxCommon_->SignalAndWaitFence(); // the scene descriptors are rewritten in place
+		InitializeGameSceneTarget(dxCommon_->GetClientWidth(), dxCommon_->GetClientHeight());
+	}
 	RIZE_PROFILE_GPU(cmdList, "Game View");
+	gameSceneRT_.BeginRender();
 	if (gameCamera_) {
 		gameCamera_->Update();
 		skybox_.Draw(cmdList, *gameCamera_);
@@ -442,7 +467,25 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 			}
 		}
 	}
+	gameSceneRT_.EndRender();
+	{
+		RIZE_PROFILE_CPU("Post Process");
+		postProcess_.Prepare(cmdList, gameSceneRT_, postSettings_, static_cast<float>(gameTime_));
+		dxCommon_->BindMainRenderTarget();
+		postProcess_.Composite(cmdList);
+	}
 	UIRenderer::GetInstance()->Render(cmdList);
 #endif
+}
+
+void EditorSuite::InitializeGameSceneTarget(uint32_t width, uint32_t height)
+{
+	if (gameDepthSrvIndex_ == DirectXCommon::kInvalidSrvIndex) {
+		gameSceneSrvIndex_ = dxCommon_->AllocateSrvIndex();
+		gameDepthSrvIndex_ = dxCommon_->AllocateSrvIndex();
+	}
+	const float clearColor[4] = { 0.08f, 0.18f, 0.35f, 1.0f };
+	gameSceneRT_.Initialize(dxCommon_, width, height, DirectXCommon::kSceneRtvBaseIndex + 1, DirectXCommon::kSceneDsvBaseIndex + 1,
+		gameSceneSrvIndex_, clearColor, true, gameDepthSrvIndex_);
 }
 

@@ -152,7 +152,7 @@ if exist "$(ProjectDir)Resources" xcopy "$(ProjectDir)Resources" "$(OutDir)Resou
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\RizealldayEngine;$(ProjectDir)..\RizealldayEngine\base;$(ProjectDir)..\externals\imgui\backends;$(ProjectDir)..\externals\imgui;$(ProjectDir)..\externals\assimp\include;$(ProjectDir)..\externals\DirectXTex\DirectXTex;$(ProjectDir)..\externals;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <Optimization>Disabled</Optimization>
+      <Optimization>MaxSpeed</Optimization>
       <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
     <Link>

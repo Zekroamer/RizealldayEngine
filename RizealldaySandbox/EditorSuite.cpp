@@ -386,6 +386,14 @@ void EditorSuite::Initialize(
 	editViewRT_.Initialize(dxCommon_, 1920, 1080, 2, 1, 128, editClearColor);
 	gameViewRT_.Initialize(dxCommon_, 1920, 1080, 3, 2, 129, gameClearColor);
 	modelPreviewRT_.Initialize(dxCommon_, 256, 256, 4, 4, 132, previewClearColor);
+	postProcess_.Initialize(dxCommon_, &dxc_);
+#ifdef USE_IMGUI
+	editSceneRT_.Initialize(dxCommon_, 1920, 1080, DirectXCommon::kSceneRtvBaseIndex, DirectXCommon::kSceneDsvBaseIndex, dxCommon_->AllocateSrvIndex(), editClearColor, true);
+	previewSceneRT_.Initialize(dxCommon_, 256, 256, DirectXCommon::kSceneRtvBaseIndex + 2, DirectXCommon::kSceneDsvBaseIndex + 2, dxCommon_->AllocateSrvIndex(), previewClearColor, true);
+	InitializeGameSceneTarget(1920, 1080);
+#else
+	InitializeGameSceneTarget(dxCommon_->GetClientWidth(), dxCommon_->GetClientHeight());
+#endif
 
 	previewCamera_.Initialize();
 	previewCamera_.fovY = 0.45f;
@@ -545,6 +553,7 @@ void EditorSuite::Initialize(
 				const std::wstring sample = EngineUpdate::CommandLineValue(L"--sample");
 				if (ok && sample == L"survivors") ok = CreateSurvivorsDemo();
 				if (ok && sample == L"benchmark") ok = CreateBenchmarkScene();
+				if (ok && sample == L"thirdperson") ok = CreateThirdPersonDemo();
 			}
 			if (ok && !exportDir.empty()) {
 				strncpy_s(buildOutputDirBuf_, exportDir.string().c_str(), sizeof(buildOutputDirBuf_) - 1);
@@ -918,6 +927,11 @@ void EditorSuite::Update(float deltaTime, Input* input)
 
 	// LoadScene() from a script: swap scenes between frames, never inside a script callback
 	ProcessPendingSceneLoad();
+
+#ifdef USE_IMGUI
+	if (scriptFaultPending_) HandleScriptFault();
+#endif
+	UpdateCursorLock();
 
 	// Action states of this frame, for IsActionTriggered / IsActionReleased next frame
 	GetInputActions();

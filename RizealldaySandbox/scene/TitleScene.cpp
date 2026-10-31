@@ -107,7 +107,7 @@ void TitleScene::Draw() {
 	}
 
 	if (auto* pipeline = RizeEngine::GetGraphicPipeline()) {
-		pipeline->Bind(cmdList, BlendMode::AlphaBlend);
+		pipeline->BindForBackBuffer(cmdList, BlendMode::AlphaBlend);
 	}
 
 	const float screenW = static_cast<float>(WinApp::kClientWidth);

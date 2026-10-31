@@ -17,11 +17,20 @@ public:
 		uint32_t rtvIndex,
 		uint32_t dsvIndex,
 		uint32_t srvIndex,
-		const float clearColor[4] = nullptr
+		const float clearColor[4] = nullptr,
+		bool hdrScene = false, // linear DirectXCommon::kSceneColorFormat instead of sRGB 8-bit
+		uint32_t depthSrvIndex = 0xFFFFFFFFu // lets shaders read the depth buffer (BeginDepthRead)
 	);
 
-	void BeginRender();
+	void BeginRender(bool clearColor = true);
 	void EndRender();
+	/// Depth becomes readable through GetDepthSrvGPUHandle until the next BeginRender
+	void BeginDepthRead(ID3D12GraphicsCommandList* cmdList);
+	D3D12_GPU_DESCRIPTOR_HANDLE GetDepthSrvGPUHandle() const { return depthSrvGpuHandle_; }
+
+	/// Records a copy of the color target into a new readback buffer (call after EndRender, map it after the frame's fence).
+	/// The buffer holds tightly addressed RGBA8 rows of outRowPitch bytes.
+	bool RecordReadback(ID3D12GraphicsCommandList* cmdList, Microsoft::WRL::ComPtr<ID3D12Resource>& outBuffer, uint32_t& outRowPitch);
 
 	bool IsInitialized() const { return isInitialized_; }
 	D3D12_GPU_DESCRIPTOR_HANDLE GetSrvGPUHandle() const { return srvGpuHandle_; }
@@ -35,6 +44,9 @@ private:
 	float clearColor_[4] = { 0.12f, 0.12f, 0.15f, 1.0f };
 	bool isInitialized_ = false;
 	D3D12_RESOURCE_STATES currentState_ = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+	bool depthReadable_ = false;
+	bool depthInReadState_ = false;
+	D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpuHandle_{};
 
 	Microsoft::WRL::ComPtr<ID3D12Resource> colorResource_ = nullptr;
 	Microsoft::WRL::ComPtr<ID3D12Resource> depthResource_ = nullptr;

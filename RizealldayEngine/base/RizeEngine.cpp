@@ -116,7 +116,7 @@ void BeginFrame() {
 	sDxCommon->PreDraw();
 
 	// Bind the graphics pipeline
-	sGraphicPipeline->Bind(sDxCommon->GetCommandList());
+	sGraphicPipeline->BindForBackBuffer(sDxCommon->GetCommandList());
 
 	// Set Descriptor Heaps for textures
 	TextureManager::GetInstance()->SetDescriptorHeaps(sDxCommon->GetCommandList());

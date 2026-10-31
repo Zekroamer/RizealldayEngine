@@ -24,6 +24,7 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 					ImGui::TextDisabled("No GameObject Selected");
 					ImGui::Separator();
 					DrawSkyboxSettingsUI();
+					DrawPostProcessSettingsUI();
 					ImGui::EndTabItem();
 					ImGui::EndTabBar();
 					ImGui::End();
@@ -294,7 +295,8 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 								obj.scripts[sIdx].instance->SetOwner(GetOrUpdateScriptViewById(obj.id), obj.id);
 								obj.scripts[sIdx].instance->SetEngineAPI(&engineApi_);
 								obj.scripts[sIdx].instance->SetHost(this, this);
-								obj.scripts[sIdx].instance->OnDestroy();
+								ScriptBase* instance = obj.scripts[sIdx].instance.get();
+								CallScript(instance, obj.id, "OnDestroy", [&] { instance->OnDestroy(); });
 							}
 							obj.scripts[sIdx].instance.reset();
 						}

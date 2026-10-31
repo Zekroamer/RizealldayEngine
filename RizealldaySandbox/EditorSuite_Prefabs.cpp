@@ -197,14 +197,14 @@ void EditorSuite::StartScriptsOnSpawnedObject(uint32_t id, bool createInstances)
 		instance->SetOwner(view, id);
 		instance->SetEngineAPI(&engineApi_);
 		instance->SetHost(this, this);
-		instance->Initialize();
+		CallScript(instance, id, "Initialize", [&] { instance->Initialize(); });
 		if (view) {
 			if (GameObject* again = FindGameObjectById(id, false)) SyncViewToGameObject(*view, *again);
 		}
 	}
 }
 
-uint32_t EditorSuite::InstantiatePrefabNow(const std::string& prefabName, const Vector3& position, uint32_t rootId, const ScriptGameObjectView* rootOverride)
+uint32_t EditorSuite::InstantiatePrefabNow(const std::string& prefabName, const Vector3& position, uint32_t rootId, const ScriptGameObjectView* rootOverride, bool hidden)
 {
 	using SceneJson::Json;
 	if (!prefabCache_) prefabCache_ = std::make_shared<PrefabCache>();
@@ -231,6 +231,14 @@ uint32_t EditorSuite::InstantiatePrefabNow(const std::string& prefabName, const 
 		ReadGameObjectJson(&objects[i], obj);
 		obj.prefabSource = prefabName;
 		obj.prefabNodeIndex = static_cast<int>(i);
+		if (hidden) {
+			obj.isActive = false; // StartScriptsOnSpawnedObject skips Initialize until the instance is spawned
+			// The first draw of a model would load it: do that now instead
+			if (obj.meshType == GameObject::MeshType::CustomModel && !obj.modelPath.empty()) {
+				const std::filesystem::path modelFile(ResolveAssetPath(obj.modelPath));
+				Model::CreateFromFile(modelFile.parent_path().string(), modelFile.filename().string());
+			}
+		}
 		if (i == 0) {
 			obj.parentId = -1;
 			obj.translation = position;
@@ -255,7 +263,9 @@ uint32_t EditorSuite::InstantiatePrefabNow(const std::string& prefabName, const 
 	const bool gameRunning = (sceneState_ != EditorSceneState::Edit) || IsStandaloneMode();
 	if (gameRunning) {
 		for (uint32_t id : newIds) StartScriptsOnSpawnedObject(id, true);
-		for (uint32_t id : newIds) BurstOneShotParticles(id);
+		if (!hidden) {
+			for (uint32_t id : newIds) BurstOneShotParticles(id);
+		}
 	} else {
 		EnsureEditModeScriptInstances();
 	}
@@ -396,6 +406,35 @@ void EditorSuite::ResetPrefabPools()
 {
 	prefabPools_.clear();
 	pendingDespawns_.clear();
+	pendingPrewarms_.clear();
+}
+
+bool EditorSuite::QueuePrefabPrewarm(const char* prefabName, int count)
+{
+	const bool gameRunning = (sceneState_ != EditorSceneState::Edit) || IsStandaloneMode();
+	if (!gameRunning || !prefabName || prefabName[0] == '\0' || count <= 0) return false;
+	if (!prefabCache_) prefabCache_ = std::make_shared<PrefabCache>();
+	std::string error;
+	const std::string name = prefabName;
+	const bool found = LoadPrefab(*prefabCache_, [this](const std::string& n) { return ResolvePrefabFile(n); }, name, error) != nullptr;
+	if (!error.empty()) LogMessage(error, 1);
+	if (found) pendingPrewarms_.emplace_back(name, (std::min)(count, 4096));
+	return found;
+}
+
+void EditorSuite::ProcessPendingPrewarms()
+{
+	if (pendingPrewarms_.empty()) return;
+	std::vector<std::pair<std::string, int>> prewarms;
+	prewarms.swap(pendingPrewarms_);
+	for (const auto& [name, count] : prewarms) {
+		for (int i = 0; i < count; ++i) {
+			const uint32_t id = InstantiatePrefabNow(name, { 0.0f, 0.0f, 0.0f }, 0, nullptr, true);
+			if (id == 0) break;
+			prefabPools_[name].push_back(id);
+		}
+	}
+	RefreshAllScriptObjectViews();
 }
 
 size_t EditorSuite::GetPooledCount(const std::string& prefabName) const

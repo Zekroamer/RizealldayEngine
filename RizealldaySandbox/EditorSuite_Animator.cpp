@@ -253,7 +253,8 @@ void EditorSuite::DispatchScriptAnimationEvent(uint32_t objectId, const char* ev
 		sc.instance->SetOwner(view, obj->id);
 		sc.instance->SetEngineAPI(&engineApi_);
 		sc.instance->SetHost(this, this);
-		sc.instance->OnAnimationEvent(eventName);
+		ScriptBase* instance = sc.instance.get();
+		CallScript(instance, objectId, "OnAnimationEvent", [&] { instance->OnAnimationEvent(eventName); });
 		obj = FindGameObjectById(objectId, false); // callbacks never resize gameObjects_, but stay safe
 		if (!obj) return;
 		SyncViewToGameObject(*view, *obj);

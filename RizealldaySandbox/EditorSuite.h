@@ -2,6 +2,8 @@
 #include <d3d12.h>
 #include "ParticleQuad.h"
 #include "base/RenderTexture.h"
+#include "base/DirectXCommon.h"
+#include "render/PostProcess.h"
 #include "3d/Camera.h"
 #include "3d/ShadowMap.h"
 #include "3d/Skybox.h"
@@ -465,7 +467,7 @@ public:
 	bool HasPrefab(const std::string& prefabName);
 	void ClearPrefabCache();
 	// Creates the prefab's objects right away (editor use / deferred spawn processing). Returns the root id or 0.
-	uint32_t InstantiatePrefabNow(const std::string& prefabName, const Vector3& position, uint32_t rootId = 0, const ScriptGameObjectView* rootOverride = nullptr);
+	uint32_t InstantiatePrefabNow(const std::string& prefabName, const Vector3& position, uint32_t rootId = 0, const ScriptGameObjectView* rootOverride = nullptr, bool hidden = false);
 	void StartScriptsOnSpawnedObject(uint32_t id, bool createInstances);
 	void ResetPooledPrefabInstance(uint32_t rootId, const ScriptGameObjectView* rootView);
 	// Script entry points: deferred like QueueScriptSpawn. Reuses a despawned instance when one is pooled.
@@ -475,6 +477,11 @@ public:
 	void ProcessPendingDespawns();
 	void ResetPrefabPools();
 	size_t GetPooledCount(const std::string& prefabName) const;
+	PostProcessSettings& PostSettings() { return postSettings_; }
+	const PostProcess& PostEffects() const { return postProcess_; }
+	// Script entry point: hidden instances go into the pool in ProcessPendingSpawns (no Initialize until they are spawned)
+	bool QueuePrefabPrewarm(const char* prefabName, int count);
+	void ProcessPendingPrewarms();
 
 	// Runtime scene switching + save data (EditorSuite_Runtime.cpp)
 	std::filesystem::path ResolveSceneRequest(const std::string& nameOrPath) const;
@@ -495,6 +502,7 @@ public:
 	bool CreateSurvivorsDemo();
 	/// Fixed load for performance runs: 300 chasing enemies + 500 bullets (scripts BenchScripts.*, not in the sample menu)
 	bool CreateBenchmarkScene();
+	bool CreateThirdPersonDemo();
 	bool CancelPendingSpawn(uint32_t id);
 	void ProcessPendingSpawns();
 	void RetireScriptView(uint32_t id);
@@ -703,6 +711,7 @@ private:
 	void DrawSaveSceneAsModal();
 	void DrawOpenSceneModal();
 	void DrawSkyboxSettingsUI();
+	void DrawPostProcessSettingsUI();
 	void RefreshAvailableCubemaps();
 	void DrawTetrisHUD(const ImVec2& vpPos, const ImVec2& vpSize);
 	void SelectAssetForPreview(const std::filesystem::path& assetPath);
@@ -784,6 +793,38 @@ private:
 	bool GetGameViewMousePosition(float& outX, float& outY, float& outW, float& outH) const;
 	// Intersects the game camera's ray through the mouse with the horizontal plane y = planeY
 	bool GetMouseWorldOnPlane(float planeY, Vector3& outPoint) const;
+	bool ScreenPointToRay(const Vector2& canvasPos, Vector3& outOrigin, Vector3& outDirection) const;
+	bool WorldToCanvas(const Vector3& worldPos, Vector2& outCanvasPos) const;
+	// Cursor lock requested by a script; applied every frame while the window has focus (EditorSuite_ScriptQueries.cpp)
+	bool cursorLocked_ = false;
+	bool cursorHidden_ = false;
+	bool MouseInputAllowed() const; // locked, or inside the game view
+	void UpdateCursorLock();
+
+	// Script callbacks. Editor builds turn a crash in a script into a stopped Play session; Release keeps the crash dump.
+#ifdef USE_IMGUI
+	static bool RunScriptGuarded(void (*fn)(void*), void* ctx, unsigned long& outCode);
+	void OnScriptFault(ScriptBase* instance, uint32_t objectId, const char* callback, unsigned long code);
+	void HandleScriptFault(); // at a safe point in Update: stop Play, restore the scene, reload the DLL
+	bool scriptFaultPending_ = false;
+	std::string scriptFaultMessage_;
+	int scriptFaultCount_ = 0;
+#endif
+	template <typename F>
+	void CallScript(ScriptBase* instance, uint32_t objectId, const char* callback, F&& fn)
+	{
+#ifdef USE_IMGUI
+		if (scriptFaultPending_) return; // nothing else runs until the session is stopped
+		using Fn = std::remove_reference_t<F>;
+		unsigned long code = 0;
+		if (!RunScriptGuarded([](void* ctx) { (*static_cast<Fn*>(ctx))(); }, &fn, code)) {
+			OnScriptFault(instance, objectId, callback, code);
+		}
+#else
+		(void)instance; (void)objectId; (void)callback;
+		fn();
+#endif
+	}
 public:
 	// Pure helper (tested): ray through NDC (x right, y up) intersected with y = planeY
 	static bool ScreenRayToPlaneY(const Matrix4x4& viewProjection, float ndcX, float ndcY, float planeY, Vector3& outPoint);
@@ -799,6 +840,16 @@ private:
 	RenderTexture editViewRT_{};
 	RenderTexture gameViewRT_{};
 	RenderTexture modelPreviewRT_{};
+	// Every view renders linear HDR here; PostProcess resolves it into the 8-bit targets above (Release: the back buffer)
+	RenderTexture editSceneRT_{};
+	RenderTexture gameSceneRT_{};
+	RenderTexture previewSceneRT_{};
+	uint32_t gameSceneSrvIndex_ = DirectXCommon::kInvalidSrvIndex;
+	uint32_t gameDepthSrvIndex_ = DirectXCommon::kInvalidSrvIndex;
+	void InitializeGameSceneTarget(uint32_t width, uint32_t height);
+	PostProcess postProcess_{};
+	PostProcessSettings postSettings_{}; // saved per scene
+	PostProcessSettings playModePostSettings_{};
 	Camera previewCamera_{};
 	std::unique_ptr<LightGroup> previewLights_;
 	std::unique_ptr<Model> previewModel_;
@@ -845,6 +896,7 @@ private:
 		bool reusePooled = false; // id refers to an existing, despawned prefab instance
 	};
 	std::vector<PendingSpawn> pendingSpawns_;
+	std::vector<std::pair<std::string, int>> pendingPrewarms_;
 
 	// Prefabs (EditorSuite_Prefabs.cpp). Files: <project>/Assets/Prefabs/<Name>.prefab.json
 public:

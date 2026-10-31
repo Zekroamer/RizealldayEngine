@@ -139,7 +139,7 @@ void CircleShadow::CreatePipelineState(DXCManager* dxc)
     psoDesc.RasterizerState = rastDesc;
     psoDesc.DepthStencilState = dsDesc;
     psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0]  = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    psoDesc.RTVFormats[0]  = DirectXCommon::kSceneColorFormat;
     psoDesc.DSVFormat      = DXGI_FORMAT_D24_UNORM_S8_UINT;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.SampleDesc.Count = 1;

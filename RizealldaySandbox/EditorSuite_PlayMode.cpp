@@ -16,6 +16,7 @@ void EditorSuite::StartPlayMode()
 	}
 
 	SavePlayModeSnapshot();
+	playModePostSettings_ = postSettings_;
 	DestroyAllScriptInstances();
 	sceneState_ = EditorSceneState::Play;
 	timeScale_ = 1.0f;
@@ -66,7 +67,8 @@ void EditorSuite::StartPlayMode()
 				sc.instance->SetOwner(view, gameObjects_[i].id);
 				sc.instance->SetEngineAPI(&engineApi_);
 				sc.instance->SetHost(this, this);
-				sc.instance->Initialize();
+				ScriptBase* instance = sc.instance.get();
+				CallScript(instance, gameObjects_[i].id, "Initialize", [&] { instance->Initialize(); });
 
 				if (view) {
 					bool eulerChanged = (view->rotation.x != prevEuler.x || view->rotation.y != prevEuler.y || view->rotation.z != prevEuler.z);
@@ -121,7 +123,8 @@ void EditorSuite::StopPlayMode()
 				sc.instance->SetOwner(GetOrUpdateScriptViewById(obj.id), obj.id);
 				sc.instance->SetEngineAPI(&engineApi_);
 				sc.instance->SetHost(this, this);
-				sc.instance->OnDestroy();
+				ScriptBase* instance = sc.instance.get();
+				CallScript(instance, obj.id, "OnDestroy", [&] { instance->OnDestroy(); });
 				sc.instance.reset();
 			}
 		}
@@ -142,6 +145,7 @@ void EditorSuite::StopPlayMode()
 	pendingSceneLoad_.clear();
 	RestorePlayModeSnapshot();
 	RestoreRuntimeSceneOrigin(); // scene path/name/settings if a script switched scenes
+	postSettings_ = playModePostSettings_; // scripts may have changed the look
 
 	// 3. Re-create Edit-mode script instances so Inspector can display exposed fields
 	EnsureEditModeScriptInstances();

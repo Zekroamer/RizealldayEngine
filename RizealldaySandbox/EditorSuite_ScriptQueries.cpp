@@ -359,8 +359,95 @@ const GameObject* EditorSuite::FindNearestObject(const Vector3& position, const 
 // ---------------------------------------------------------------------------
 // Deferred requests & runtime state
 // ---------------------------------------------------------------------------
+bool EditorSuite::MouseInputAllowed() const
+{
+	if (cursorLocked_) return true;
+	float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+	return GetGameViewMousePosition(x, y, w, h);
+}
+
+void EditorSuite::UpdateCursorLock()
+{
+	const bool inPlay = sceneState_ != EditorSceneState::Edit || IsStandaloneMode();
+	if (!inPlay) cursorLocked_ = false;
+	HWND hwnd = WinApp::GetInstance()->GetHWND();
+#ifdef USE_IMGUI
+	// A locked cursor must never trap the user inside the editor
+	if (cursorLocked_ && !IsStandaloneMode() && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) cursorLocked_ = false;
+#endif
+	RECT client{};
+	const bool active = cursorLocked_ && hwnd && GetForegroundWindow() == hwnd && GetClientRect(hwnd, &client);
+	if (active) {
+		POINT center{ (client.right - client.left) / 2, (client.bottom - client.top) / 2 };
+#ifdef USE_IMGUI
+		if (gameViewRect_[2] > 0.0f && gameViewRect_[3] > 0.0f) {
+			center.x = static_cast<LONG>(gameViewRect_[0] + gameViewRect_[2] * 0.5f);
+			center.y = static_cast<LONG>(gameViewRect_[1] + gameViewRect_[3] * 0.5f);
+		}
+		ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+#endif
+		ClientToScreen(hwnd, &center);
+		const RECT clip{ center.x, center.y, center.x + 1, center.y + 1 };
+		ClipCursor(&clip);
+		if (!cursorHidden_) {
+			ShowCursor(FALSE);
+			cursorHidden_ = true;
+		}
+	} else if (cursorHidden_) {
+		ClipCursor(nullptr);
+		ShowCursor(TRUE);
+		cursorHidden_ = false;
+#ifdef USE_IMGUI
+		ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+#endif
+	}
+}
+
+#ifdef USE_IMGUI
+// No C++ objects in here: __try cannot share a function with destructors
+bool EditorSuite::RunScriptGuarded(void (*fn)(void*), void* ctx, unsigned long& outCode)
+{
+	__try {
+		fn(ctx);
+		return true;
+	} __except (outCode = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+		if (outCode == EXCEPTION_STACK_OVERFLOW) _resetstkoflw();
+		return false;
+	}
+}
+
+void EditorSuite::OnScriptFault(ScriptBase* instance, uint32_t objectId, const char* callback, unsigned long code)
+{
+	std::string className = "?";
+	std::string objectName = "?";
+	if (GameObject* obj = FindGameObjectById(objectId, false)) {
+		objectName = obj->name;
+		for (auto& sc : obj->scripts) {
+			if (sc.instance.get() != instance) continue;
+			className = sc.className;
+			// shortcut: the broken instance is leaked, its destructor could crash again; freed when the DLL unloads
+			(void)sc.instance.release();
+		}
+	}
+	scriptFaultPending_ = true;
+	++scriptFaultCount_;
+	scriptFaultMessage_ = std::format("[Scripts] Crash (0x{:08X}) in {}::{} on '{}'. Play was stopped and the scene restored.", code, className, callback, objectName);
+}
+
+void EditorSuite::HandleScriptFault()
+{
+	LogMessage(scriptFaultMessage_, 2);
+	if (sceneState_ != EditorSceneState::Edit) StopPlayMode(); // the fault flag keeps OnDestroy of the other scripts from running
+	scriptFaultPending_ = false;
+	// Static data of the DLL may be damaged: start from a fresh copy
+	HotReloadScripts();
+}
+#endif
+
 void EditorSuite::ResetScriptRuntimeState()
 {
+	cursorLocked_ = false;
+	postProcess_.ClearScreenEffects();
 	navGridValid_ = false; // the next FindPath sees the current level
 	frameContacts_.clear();
 	frameContactSet_.clear();
@@ -444,6 +531,64 @@ void EditorSuite::ProcessDeferredScriptRequests()
 // ---------------------------------------------------------------------------
 void EditorSuite::SetupEngineAPIExtensions()
 {
+	// ---- Camera input and projection ----
+	engineApi_.getMouseDelta = [](void* ctx, Vector2* outPixels) -> bool {
+		auto* self = static_cast<EditorSuite*>(ctx);
+		if (!self || !outPixels || !self->currentInput_ || !self->MouseInputAllowed()) return false;
+		*outPixels = { static_cast<float>(self->currentInput_->GetMouseMoveX()), static_cast<float>(self->currentInput_->GetMouseMoveY()) };
+		return true;
+	};
+	engineApi_.getMouseWheel = [](void* ctx) -> float {
+		auto* self = static_cast<EditorSuite*>(ctx);
+		if (!self || !self->currentInput_ || !self->MouseInputAllowed()) return 0.0f;
+		return static_cast<float>(self->currentInput_->GetMouseWheel()) / WHEEL_DELTA;
+	};
+	engineApi_.setCursorLocked = [](void* ctx, bool locked) {
+		auto* self = static_cast<EditorSuite*>(ctx);
+		if (self && (self->sceneState_ != EditorSceneState::Edit || self->IsStandaloneMode())) self->cursorLocked_ = locked;
+	};
+	engineApi_.isCursorLocked = [](void* ctx) -> bool {
+		return ctx && static_cast<EditorSuite*>(ctx)->cursorLocked_;
+	};
+	engineApi_.screenPointToRay = [](void* ctx, Vector2 canvasPos, Vector3* outOrigin, Vector3* outDirection) -> bool {
+		return ctx && outOrigin && outDirection && static_cast<EditorSuite*>(ctx)->ScreenPointToRay(canvasPos, *outOrigin, *outDirection);
+	};
+	engineApi_.worldToCanvas = [](void* ctx, Vector3 worldPos, Vector2* outCanvasPos) -> bool {
+		return ctx && outCanvasPos && static_cast<EditorSuite*>(ctx)->WorldToCanvas(worldPos, *outCanvasPos);
+	};
+	engineApi_.prewarmPrefab = [](void* ctx, const char* prefabName, int count) -> bool {
+		return ctx && static_cast<EditorSuite*>(ctx)->QueuePrefabPrewarm(prefabName, count);
+	};
+
+	// ---- Post-processing ----
+	engineApi_.getPostProcess = [](void* ctx, ScriptPostProcess* out) -> bool {
+		if (!ctx || !out) return false;
+		const PostProcessSettings& p = static_cast<EditorSuite*>(ctx)->postSettings_;
+		*out = { p.enabled, p.toneMapping, p.bloom, p.fxaa, p.exposure, p.bloomThreshold, p.bloomIntensity, p.contrast, p.saturation, p.tint, p.vignette, p.letterbox };
+		return true;
+	};
+	engineApi_.setPostProcess = [](void* ctx, const ScriptPostProcess* value) -> bool {
+		if (!ctx || !value) return false;
+		PostProcessSettings& p = static_cast<EditorSuite*>(ctx)->postSettings_;
+		p = { value->enabled, value->toneMapping, value->bloom, value->fxaa, (std::max)(value->exposure, 0.0f), value->bloomThreshold, (std::max)(value->bloomIntensity, 0.0f),
+			(std::max)(value->contrast, 0.0f), (std::max)(value->saturation, 0.0f), value->tint, std::clamp(value->vignette, 0.0f, 1.0f), std::clamp(value->letterbox, 0.0f, 0.5f) };
+		return true;
+	};
+	engineApi_.setScreenEffect = [](void* ctx, int slot, const char* shaderFile, const float* params16) -> bool {
+		auto* self = static_cast<EditorSuite*>(ctx);
+		if (!self) return false;
+		if (!shaderFile) {
+			self->postProcess_.ClearScreenEffect(slot);
+			return true;
+		}
+		std::error_code ec;
+		const std::filesystem::path file = std::filesystem::exists(shaderFile, ec) ? std::filesystem::path(shaderFile) : std::filesystem::path(self->ResolveAssetPath(shaderFile));
+		std::string error;
+		const bool ok = self->postProcess_.SetScreenEffect(slot, file.wstring(), params16, &error);
+		if (!error.empty()) self->LogMessage(std::format("[ScreenEffect] {}: {}", shaderFile, error), 2);
+		return ok;
+	};
+
 	// ---- Audio ----
 	engineApi_.playSound = [](void* ctx, const char* path, float volume, bool loop) -> uint32_t {
 		auto* self = static_cast<EditorSuite*>(ctx);

@@ -58,6 +58,7 @@ void EditorSuite::DrawEditorUI(float deltaTime, bool& showParticles)
 		ImGui::SetNextWindowSize(ImVec2(380.0f, 420.0f), ImGuiCond_FirstUseEver);
 		if (ImGui::Begin(TrId("Lighting & Environment"), &showLightingSettings_)) {
 			DrawSkyboxSettingsUI();
+			DrawPostProcessSettingsUI();
 		}
 		ImGui::End();
 	}
@@ -800,6 +801,9 @@ void EditorSuite::DrawHierarchyCreationMenu()
 		const bool canCreate = (sceneState_ == EditorSceneState::Edit) && !currentProjectRoot_.empty();
 		if (ImGui::MenuItem(TrId("Survivors Demo (new scene)"), nullptr, false, canCreate)) {
 			CreateSurvivorsDemo();
+		}
+		if (ImGui::MenuItem(TrId("Third Person Demo (new scene)"), nullptr, false, canCreate)) {
+			CreateThirdPersonDemo();
 		}
 		ImGui::SetItemTooltip("Creates Assets/Scenes/SurvivorsDemo.scene.json and the Enemy / Bullet prefabs,\n"
 			"using the Survivors* sample scripts in GameScripts. Unsaved changes in the current scene are discarded.");

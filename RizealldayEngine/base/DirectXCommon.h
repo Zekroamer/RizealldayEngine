@@ -18,7 +18,13 @@ public:
 	//                  [128] Scene RT, [129] Game RT, [130] ShadowMap, [131] Cubemap, [132] Asset Preview RT,
 	//                  [133..136] Preview Texture Ring (fixed range 128..139)
 	//                  everything else: dynamic free-list (textures, ...) via AllocateSrvIndex()
-	static constexpr uint32_t kMaxRtvDescriptors = 8;
+	static constexpr uint32_t kMaxRtvDescriptors = 32;
+	// Every 3D pass renders linear HDR color into this format; PostProcess turns it into the 8-bit output
+	static constexpr DXGI_FORMAT kSceneColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	// RTV [8..10] / DSV [5..7]: HDR scene targets of the Scene, Game and preview views. RTV [12..] PostProcess.
+	static constexpr uint32_t kSceneRtvBaseIndex = 8;
+	static constexpr uint32_t kSceneDsvBaseIndex = 5;
+	static constexpr uint32_t kPostRtvBaseIndex = 12;
 	static constexpr uint32_t kMaxDsvDescriptors = 8;
 	static constexpr uint32_t kMaxSrvDescriptors = 1024;
 	static constexpr uint32_t kFixedSrvBegin = 128;
