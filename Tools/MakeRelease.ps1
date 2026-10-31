@@ -61,6 +61,8 @@ Copy-Item -Recurse "$repo\Templates" "$out\Templates"
 New-Item -ItemType Directory -Force "$out\Templates\ScriptsProject\Scripts", "$out\Templates\Samples\Survivors" | Out-Null
 Copy-Item "$repo\GameScripts\Scripts\dllmain.cpp" "$out\Templates\ScriptsProject\Scripts"
 Copy-Item "$repo\GameScripts\Scripts\Survivors*" "$out\Templates\Samples\Survivors"
+New-Item -ItemType Directory -Force "$out\Templates\Samples\Bench" | Out-Null
+Copy-Item "$repo\GameScripts\Scripts\Bench*" "$out\Templates\Samples\Bench"
 
 Copy-Item "$repo\Tools\README_TEAM.md", "$repo\Tools\GUIDE_JA.md", "$repo\CHANGELOG.md", "$repo\SCRIPTING_GUIDE.md" "$out"
 $built = (Get-Date).ToString('yyyy-MM-dd')

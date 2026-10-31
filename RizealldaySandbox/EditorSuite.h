@@ -493,6 +493,8 @@ public:
 
 	// GameObject > Samples (EditorSuite_Samples.cpp)
 	bool CreateSurvivorsDemo();
+	/// Fixed load for performance runs: 300 chasing enemies + 500 bullets (scripts BenchScripts.*, not in the sample menu)
+	bool CreateBenchmarkScene();
 	bool CancelPendingSpawn(uint32_t id);
 	void ProcessPendingSpawns();
 	void RetireScriptView(uint32_t id);
@@ -929,6 +931,12 @@ private:
 	int smokeFramesLeft_ = 0;
 	std::string smokeError_;
 	void FinishSmokeRun();
+	void RecordSmokeFrame();
+	std::string SmokeTimingReport() const;
+	int smokeFrameIndex_ = 0;
+	std::vector<float> smokeFrameMs_;
+	std::map<std::string, double> smokeScopeMs_;
+	uint32_t smokeDrawCalls_ = 0;
 	char buildGameTitleBuf_[128] = "RizealldayGame";
 	int buildResolutionIndex_ = 0; // 0: 1920x1080, 1: 1280x720, 2: 2560x1440
 	bool buildFullscreen_ = false;

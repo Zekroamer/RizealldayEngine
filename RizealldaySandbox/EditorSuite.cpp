@@ -542,7 +542,9 @@ void EditorSuite::Initialize(
 				newProjectInitGit_ = false;
 				ok = CreateNewProject(newProject.parent_path().string(), newProject.filename().string());
 				if (!ok) LogMessage("[Automation] " + projectModalError_, 2);
-				if (ok && EngineUpdate::CommandLineValue(L"--sample") == L"survivors") ok = CreateSurvivorsDemo();
+				const std::wstring sample = EngineUpdate::CommandLineValue(L"--sample");
+				if (ok && sample == L"survivors") ok = CreateSurvivorsDemo();
+				if (ok && sample == L"benchmark") ok = CreateBenchmarkScene();
 			}
 			if (ok && !exportDir.empty()) {
 				strncpy_s(buildOutputDirBuf_, exportDir.string().c_str(), sizeof(buildOutputDirBuf_) - 1);
@@ -647,7 +649,10 @@ void EditorSuite::Update(float deltaTime, Input* input)
 	currentDeltaTime_ = deltaTime;
 	unscaledDeltaTime_ = deltaTime;
 	ProcessPendingImports(); // files dropped from Explorer
-	if (smokeFramesLeft_ > 0 && --smokeFramesLeft_ == 0) FinishSmokeRun();
+	if (smokeFramesLeft_ > 0) {
+		RecordSmokeFrame();
+		if (--smokeFramesLeft_ == 0) FinishSmokeRun();
+	}
 
 	// Record edits deferred during the previous frame (e.g. object creation) as one undo command
 	if (undoPushPending_) {

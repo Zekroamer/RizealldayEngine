@@ -19,6 +19,30 @@ std::filesystem::path EditorSuite::ResolveSceneRequest(const std::string& nameOr
 	return std::filesystem::path(ResolveAssetPath(nameOrPath));
 }
 
+void EditorSuite::RecordSmokeFrame()
+{
+	if (++smokeFrameIndex_ <= 30) return; // loading hitches are not the steady state
+	const ProfilerSnapshot& frame = Profiler::GetInstance()->GetLastFrame();
+	smokeFrameMs_.push_back(frame.frameMs);
+	for (const ProfilerScopeResult& scope : frame.cpu) smokeScopeMs_[scope.name] += scope.ms;
+	smokeScopeMs_["GPU Frame"] += frame.gpuFrameMs;
+	smokeDrawCalls_ = frame.drawCalls;
+}
+
+std::string EditorSuite::SmokeTimingReport() const
+{
+	if (smokeFrameMs_.empty()) return {};
+	std::vector<float> sorted = smokeFrameMs_;
+	std::sort(sorted.begin(), sorted.end());
+	const float count = static_cast<float>(sorted.size());
+	float total = 0.0f;
+	for (float ms : sorted) total += ms;
+	std::string report = std::format("\nFrames {}, avg {:.2f} ms ({:.0f} FPS), p95 {:.2f} ms, max {:.2f} ms, draw calls {}",
+		sorted.size(), total / count, 1000.0f * count / total, sorted[static_cast<size_t>(count * 0.95f)], sorted.back(), smokeDrawCalls_);
+	for (const auto& [name, ms] : smokeScopeMs_) report += std::format("\n  {}: {:.2f} ms", name, ms / count);
+	return report;
+}
+
 void EditorSuite::FinishSmokeRun()
 {
 	std::string error = smokeError_;
@@ -29,7 +53,7 @@ void EditorSuite::FinishSmokeRun()
 			if (error.empty() && !sc.className.empty() && !sc.instance) error = std::format("Script '{}' on '{}' did not load.", sc.className, obj.name);
 		}
 	}
-	std::ofstream(kSmokeResultFile, std::ios::trunc) << (error.empty() ? std::format("OK: {} objects", gameObjects_.size()) : "FAILED: " + error) << "\n";
+	std::ofstream(kSmokeResultFile, std::ios::trunc) << (error.empty() ? std::format("OK: {} objects", gameObjects_.size()) : "FAILED: " + error) << SmokeTimingReport() << "\n";
 	sSelfTestExitCode = error.empty() ? 0 : 1;
 	PostQuitMessage(0);
 }

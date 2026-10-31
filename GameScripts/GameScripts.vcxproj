@@ -142,6 +142,7 @@
   <ItemGroup>
     <ClCompile Include="Scripts\PlayerController.cpp" />
     <ClCompile Include="Scripts\SceneManager.cpp" />
+    <ClCompile Include="Scripts\BenchScripts.cpp" />
     <ClCompile Include="Scripts\dllmain.cpp" />
     <ClCompile Include="Scripts\OscillateScript.cpp" />
     <ClCompile Include="Scripts\RotateScript.cpp" />
@@ -163,6 +164,7 @@
     <ClInclude Include="Scripts\SurvivorsGameManager.h" />
     <ClInclude Include="Scripts\SurvivorsPlayer.h" />
     <ClInclude Include="Scripts\SurvivorsShared.h" />
+    <ClInclude Include="Scripts\BenchScripts.h" />
     <ClInclude Include="Scripts\SceneManager.h" />
     <ClInclude Include="..\RizealldayEngine\base\ScriptAPI.h" />
   </ItemGroup>

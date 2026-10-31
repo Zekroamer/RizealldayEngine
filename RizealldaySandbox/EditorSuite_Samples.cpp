@@ -12,6 +12,58 @@ namespace {
 	}
 }
 
+bool EditorSuite::CreateBenchmarkScene()
+{
+	if (currentProjectRoot_.empty() || sceneState_ != EditorSceneState::Edit) return false;
+	if (!InstallSampleScripts("Bench")) return false;
+
+	NewScene();
+	GameObject& enemy = CreateCube("BenchEnemy", { 0.0f, 0.5f, 0.0f });
+	enemy.layer = LAYER_ENEMY;
+	enemy.collisionMask = LayerBit(LAYER_PLAYER) | LayerBit(LAYER_PLAYER_BULLET);
+	enemy.materialColor = { 0.85f, 0.22f, 0.2f, 1.0f };
+	AddScriptComponent(enemy, "BenchEnemy");
+	const uint32_t enemyId = enemy.id;
+	GameObject& bullet = CreateSphere("BenchBullet", { 0.0f, 0.5f, 0.0f });
+	bullet.layer = LAYER_PLAYER_BULLET;
+	bullet.collisionMask = LayerBit(LAYER_ENEMY);
+	bullet.scale = { 0.3f, 0.3f, 0.3f };
+	bullet.materialColor = { 1.0f, 0.85f, 0.25f, 1.0f };
+	bullet.hasSphereCollider = true;
+	AddScriptComponent(bullet, "BenchBullet");
+	const uint32_t bulletId = bullet.id;
+	const bool saved = SavePrefab(enemyId, "BenchEnemy") && SavePrefab(bulletId, "BenchBullet");
+	QueueDeleteGameObjectById(enemyId);
+	QueueDeleteGameObjectById(bulletId);
+	ProcessPendingDeletes();
+	if (!saved) return false;
+
+	// Everything in view: nothing is saved by culling
+	for (auto& obj : gameObjects_) {
+		if (obj.hasCamera || obj.type == GameObjectType::Camera) {
+			obj.translation = { 0.0f, 55.0f, -30.0f };
+			obj.rotation = { 1.05f, 0.0f, 0.0f };
+			obj.rotationQuat = Quaternion::FromEuler(obj.rotation);
+		}
+		if (obj.hasMesh && obj.meshType == GameObject::MeshType::Plane) {
+			obj.translation = { 0.0f, 0.0f, 0.0f };
+			obj.scale = { 40.0f, 1.0f, 40.0f };
+		}
+	}
+	GameObject& player = CreateCube("Player", { 0.0f, 0.5f, 0.0f });
+	player.layer = LAYER_PLAYER;
+	player.collisionMask = LayerBit(LAYER_ENEMY);
+	GameObject& spawner = CreateGameObject("BenchSpawner", GameObjectType::Empty);
+	AddScriptComponent(spawner, "BenchSpawner");
+	RebuildHierarchyLinks();
+	UpdateWorldMatrices();
+	EnsureEditModeScriptInstances();
+	currentSceneName_ = "Benchmark";
+	const bool ok = SaveScene((GetScenesDirectory() / "Benchmark.scene.json").string());
+	ResetUndoHistory();
+	return ok;
+}
+
 bool EditorSuite::CreateSurvivorsDemo()
 {
 	if (currentProjectRoot_.empty() || sceneState_ != EditorSceneState::Edit) {

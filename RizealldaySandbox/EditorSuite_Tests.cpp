@@ -2177,6 +2177,31 @@ TEST_CASE(Runtime, KeepAcrossScenesSurvivesLoadScene)
 // Samples
 // ===========================================================================
 
+TEST_CASE(Samples, BenchmarkSceneReachesFullLoad)
+{
+	A::ProjectRoot(s) = A::TempRoot() / "BenchmarkProject";
+	REQUIRE(s.CreateBenchmarkScene());
+	REQUIRE(A::ScriptsLoaded(s));
+	s.StartPlayMode();
+	for (int frame = 0; frame < 5; ++frame) s.Update(1.0f / 60.0f, RizeEngine::GetInput());
+	int enemies = 0, bullets = 0;
+	Vector3 firstEnemy{};
+	uint32_t enemyId = 0;
+	for (const GameObject& obj : A::Objects(s)) {
+		if (obj.prefabSource == "BenchEnemy" && obj.isActive) {
+			if (++enemies == 1) { enemyId = obj.id; firstEnemy = obj.translation; }
+		}
+		if (obj.prefabSource == "BenchBullet" && obj.isActive) ++bullets;
+	}
+	CHECK_MSG(enemies == 300, std::to_string(enemies));
+	CHECK_MSG(bullets == 500, std::to_string(bullets));
+	for (int frame = 0; frame < 5; ++frame) s.Update(1.0f / 60.0f, RizeEngine::GetInput());
+	const GameObject* moved = s.FindGameObjectById(enemyId, false);
+	REQUIRE(moved != nullptr);
+	CHECK_MSG(std::abs(moved->translation.x - firstEnemy.x) + std::abs(moved->translation.z - firstEnemy.z) > 1e-3f, "enemies chase through MoveCharacter");
+	s.StopPlayMode();
+}
+
 TEST_CASE(Samples, SurvivorsDemoRuns)
 {
 	namespace fs = std::filesystem;

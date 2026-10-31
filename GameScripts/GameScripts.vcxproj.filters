@@ -15,6 +15,9 @@
     <ClCompile Include="Scripts\SceneManager.cpp">
       <Filter>Scripts</Filter>
     </ClCompile>
+    <ClCompile Include="Scripts\BenchScripts.cpp">
+      <Filter>Scripts</Filter>
+    </ClCompile>
     <ClCompile Include="Scripts\dllmain.cpp">
       <Filter>Scripts</Filter>
     </ClCompile>

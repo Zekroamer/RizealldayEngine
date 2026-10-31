@@ -2,7 +2,8 @@
 #   new project + Survivors demo -> export (editor exe) -> copy to a clean folder -> run N frames (Release runtime).
 # Needs both configurations built, or pass the editor of an unpacked release zip.
 #   powershell -ExecutionPolicy Bypass -File Tools\SmokeTestExport.ps1 [-EditorExe <path>] [-Warp] [-KeepFiles]
-param([string]$EditorExe, [switch]$Warp, [switch]$KeepFiles, [int]$Frames = 120)
+#   Performance run: add -Sample benchmark -Frames 900 (300 enemies + 500 bullets); prints the frame timings.
+param([string]$EditorExe, [switch]$Warp, [switch]$KeepFiles, [int]$Frames = 120, [string]$Sample = 'survivors')
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path -Parent $PSScriptRoot
@@ -28,7 +29,7 @@ $warpArg = @(); if ($Warp) { $warpArg = @('--warp') }
 try {
     # 1. Project + export: the arguments are quoted because the temp path may contain spaces
     $editorDir = Split-Path -Parent (Resolve-Path $EditorExe).Path
-    $code = Invoke-Timed (Resolve-Path $EditorExe).Path (@('--new-project', "`"$project`"", '--sample', 'survivors', '--export', "`"$exportDir`"") + $warpArg) $editorDir 600
+    $code = Invoke-Timed (Resolve-Path $EditorExe).Path (@('--new-project', "`"$project`"", '--sample', $Sample, '--export', "`"$exportDir`"") + $warpArg) $editorDir 600
     if ($code -ne 0) { throw "Export failed (exit code $code)." }
 
     # 2. A clean folder elsewhere: nothing of the project or engine is next to the game
