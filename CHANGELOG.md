@@ -12,6 +12,20 @@ Project lama perlu Build Scripts ulang (`kScriptApiVersion` 10).
 - **Samples > Third Person Demo**.
 - **Post-processing per scene** (Lighting & Environment): tone mapping ACES, bloom, exposure, kontras, saturasi, tint, vignette, letterbox, FXAA. Scene baru aktif; scene lama tetap tampil seperti semula sampai diaktifkan.
 - **Efek layar dari script**: `SetScreenEffect` menjalankan shader buatan sendiri di atas gambar HDR dan bisa membaca depth. Bawaan: `ScreenEffect.Slash` dan `ScreenEffect.RadialBlur`. Ubah tampilan saat bermain dengan `Get/SetPostProcess`.
+- **Fisika Jolt** menggantikan solver lama: benda bisa berputar dan bertumpuk stabil, collider kotak mengikuti rotasi objek, dan Sphere Collider kini ikut menahan benda.
+- **Komponen baru**: Capsule Collider, Mesh Collider (segitiga model; tidak pernah disimulasikan), Joint (Fixed, Point, Hinge, Distance).
+- **Rigidbody**: Friction, Freeze Rotation, Continuous Collision (peluru cepat tidak menembus dinding tipis). Gerakan Rigidbody kini halus di monitor di atas 60 Hz.
+- **`Raycast` dan `OverlapSphere`** kini mengikuti rotasi, kapsul, dan mesh.
+
+### Perubahan Perilaku
+- Scene lama tetap tanpa gesekan dan rotasi fisika (Friction 0, Freeze Rotation aktif) sampai diubah. Objek baru: Friction 0.5, boleh berputar.
+- Collider tanpa Rigidbody yang digerakkan script melaporkan kontak barunya satu step fisika kemudian (1/60 detik).
+- Dua objek yang sama-sama bertanda Static tidak lagi saling melaporkan tabrakan.
+- `Raycast` dan `OverlapSphere` melihat posisi objek sejak awal frame; gerakan yang dibuat script lain di frame yang sama baru terlihat di frame berikutnya.
+- `MoveCharacter` dan navigasi masih memakai kotak tegak dan belum mengenal kapsul, mesh collider, atau kotak yang diputar (Fase 5).
+
+### Perbaikan
+- Hot reload shader tidak lagi menghapus PSO yang mungkin masih dipakai GPU (bisa membuat driver crash).
 
 ### Performa
 - Editor saat Play jauh lebih ringan: kode editor kini dikompilasi dengan optimasi, dan mesh statis tidak lagi menyalin palette tulang (benchmark 25 ms → 17 ms).

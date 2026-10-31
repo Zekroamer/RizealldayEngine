@@ -5,6 +5,7 @@
 #ifdef USE_IMGUI
 
 #include "EditorSuiteInternal.h"
+#include "PhysicsComponents.h"
 #include "SceneJson.h"
 #include "Tests/TestFramework.h"
 #include "base/DirectXCommon.h"
@@ -43,6 +44,7 @@ struct EditorSuiteTestAccess {
 	}
 	static void Physics(EditorSuite& s, float dt) { s.UpdatePhysics(dt); }
 	static double& PhysicsAccumulator(EditorSuite& s) { return s.physicsAccumulator_; }
+	static void RestorePoses(EditorSuite& s) { s.RestoreSimulatedPoses(); }
 	static EditorSuite::CollisionEventCounts CollisionEvents(const EditorSuite& s) { return s.lastCollisionEvents_; }
 	static uint32_t MusicVoice(const EditorSuite& s) { return s.musicVoice_; }
 	static RenderTexture& GameViewRT(EditorSuite& s) { return s.gameViewRT_; }
@@ -1085,136 +1087,8 @@ TEST_CASE(Export, StandaloneFolderIsMinimalAndUsesRuntime)
 }
 
 // ===========================================================================
-// Collision / object lookup
+// Object lookup
 // ===========================================================================
-
-namespace {
-
-// Test collider that records every pair it is told about
-struct RecordingCollider : ICollidable {
-	ColliderShape shape = ColliderShape::Sphere;
-	SphereCollider sphere{};
-	AABBCollider box{};
-	OBBCollider obb{};
-	uint32_t index = 0;
-	std::set<std::pair<uint32_t, uint32_t>>* hits = nullptr;
-
-	ColliderShape GetColliderShape() const override { return shape; }
-	const SphereCollider& GetSphereCollider() const override { return sphere; }
-	const AABBCollider& GetAABBCollider() const override { return box; }
-	const OBBCollider& GetOBBCollider() const override { return obb; }
-	void OnCollision(ICollidable* other) override
-	{
-		const uint32_t o = static_cast<RecordingCollider*>(other)->index;
-		if (hits) hits->insert({ (std::min)(index, o), (std::max)(index, o) });
-	}
-};
-
-void SetFilter(RecordingCollider& c, uint32_t attribute, uint32_t mask)
-{
-	c.sphere.attribute = c.box.attribute = c.obb.attribute = attribute;
-	c.sphere.mask = c.box.mask = c.obb.mask = mask;
-}
-
-std::set<std::pair<uint32_t, uint32_t>> RunCollisions(std::vector<RecordingCollider>& colliders, bool broadphase)
-{
-	std::set<std::pair<uint32_t, uint32_t>> hits;
-	CollisionManager* mgr = CollisionManager::GetInstance();
-	const bool previous = mgr->IsBroadphaseEnabled();
-	mgr->SetBroadphaseEnabled(broadphase);
-	mgr->Clear();
-	for (auto& c : colliders) {
-		c.hits = &hits;
-		mgr->RegisterCollider(&c);
-	}
-	mgr->CheckAllCollisions();
-	mgr->SetBroadphaseEnabled(previous);
-	return hits;
-}
-
-} // namespace
-
-TEST_CASE(Collision, LayerMaskFilter)
-{
-	std::vector<RecordingCollider> pair(2);
-	for (uint32_t i = 0; i < 2; ++i) {
-		pair[i].index = i;
-		pair[i].sphere.center = { 0.5f * static_cast<float>(i), 0.0f, 0.0f };
-		pair[i].sphere.radius = 1.0f;
-	}
-	// Player bullet vs enemy: both accept each other -> hit
-	SetFilter(pair[0], LayerBit(LAYER_PLAYER_BULLET), LayerBit(LAYER_ENEMY));
-	SetFilter(pair[1], LayerBit(LAYER_ENEMY), LayerBit(LAYER_PLAYER) | LayerBit(LAYER_PLAYER_BULLET));
-	CHECK(RunCollisions(pair, false).size() == 1);
-
-	// One side does not accept the other -> no hit
-	SetFilter(pair[1], LayerBit(LAYER_ENEMY), LayerBit(LAYER_PLAYER));
-	CHECK(RunCollisions(pair, false).empty());
-
-	// Same layer, mask excludes own layer (enemies ignore enemies) -> no hit
-	SetFilter(pair[0], LayerBit(LAYER_ENEMY), kCollideWithAll & ~LayerBit(LAYER_ENEMY));
-	SetFilter(pair[1], LayerBit(LAYER_ENEMY), kCollideWithAll & ~LayerBit(LAYER_ENEMY));
-	CHECK(RunCollisions(pair, false).empty());
-	CHECK(RunCollisions(pair, true).empty());
-}
-
-TEST_CASE(Collision, BroadphaseMatchesBruteForce)
-{
-	std::mt19937 rng(1234);
-	std::uniform_real_distribution<float> pos(-60.0f, 60.0f);
-	std::uniform_real_distribution<float> size(0.2f, 1.5f);
-	std::uniform_real_distribution<float> angle(-3.14f, 3.14f);
-	std::uniform_int_distribution<int> shapePick(0, 2);
-	std::uniform_int_distribution<int> layerPick(0, 3);
-
-	constexpr uint32_t kCount = 600;
-	std::vector<RecordingCollider> colliders(kCount);
-	for (uint32_t i = 0; i < kCount; ++i) {
-		RecordingCollider& c = colliders[i];
-		c.index = i;
-		const Vector3 center = { pos(rng), pos(rng) * 0.05f, pos(rng) }; // mostly flat, like a top-down arena
-		const float s = size(rng);
-		switch (shapePick(rng)) {
-		case 0:
-			c.shape = ColliderShape::Sphere;
-			c.sphere.center = center;
-			c.sphere.radius = s;
-			break;
-		case 1:
-			c.shape = ColliderShape::AABB;
-			c.box.SetCenterSize(center, { s, s * 0.7f, s * 1.3f });
-			break;
-		default:
-			c.shape = ColliderShape::OBB;
-			c.obb.center = center;
-			c.obb.size = { s, s * 0.5f, s * 1.2f };
-			c.obb.SetRotation({ 0.0f, angle(rng), 0.0f });
-			break;
-		}
-		const uint32_t layer = static_cast<uint32_t>(layerPick(rng));
-		// Layer 2 (enemies) ignore each other, everyone else collides with all
-		SetFilter(c, LayerBit(layer), (layer == 2) ? (kCollideWithAll & ~LayerBit(2)) : kCollideWithAll);
-	}
-	// A huge ground box and a long wall exercise the "large proxy" path
-	colliders[0].shape = ColliderShape::AABB;
-	colliders[0].box.SetCenterSize({ 0.0f, -1.0f, 0.0f }, { 80.0f, 1.0f, 80.0f });
-	colliders[1].shape = ColliderShape::AABB;
-	colliders[1].box.SetCenterSize({ 0.0f, 0.0f, 30.0f }, { 70.0f, 3.0f, 0.5f });
-
-	const auto brute = RunCollisions(colliders, false);
-	const CollisionManager::Stats bruteStats = CollisionManager::GetInstance()->GetLastStats();
-	const auto fast = RunCollisions(colliders, true);
-	const CollisionManager::Stats fastStats = CollisionManager::GetInstance()->GetLastStats();
-
-	CHECK(!bruteStats.usedBroadphase);
-	CHECK(fastStats.usedBroadphase);
-	CHECK_MSG(brute == fast, std::format("brute-force hits {}, broadphase hits {}", brute.size(), fast.size()));
-	CHECK(brute.size() > 50); // the scene must actually produce contacts
-	CHECK(bruteStats.collisions == fastStats.collisions);
-	// The broadphase must prune most pairs (brute force tests every layer-compatible pair)
-	CHECK_MSG(fastStats.narrowphaseTests * 10 < bruteStats.narrowphaseTests,
-		std::format("narrowphase tests: broadphase {}, brute force {}", fastStats.narrowphaseTests, bruteStats.narrowphaseTests));
-}
 
 TEST_CASE(Objects, IdLookupSurvivesVectorChanges)
 {
@@ -2323,13 +2197,16 @@ TEST_CASE(ScriptAPI, CollisionEnterStayExit)
 	ev = A::CollisionEvents(s);
 	CHECK_MSG(ev.enter == 0 && ev.stay == 2 && ev.exit == 0, std::format("frame 2: {}/{}/{}", ev.enter, ev.stay, ev.exit));
 
+	// A moved collider sweeps during the step, so its new contacts are reported by the next one
 	s.FindGameObjectById(b, false)->translation = { 5.0f, 50.0f, 0.0f };
+	A::Physics(s, 1.0f / 60.0f);
 	A::Physics(s, 1.0f / 60.0f);
 	ev = A::CollisionEvents(s);
 	CHECK_MSG(ev.enter == 0 && ev.stay == 0 && ev.exit == 2, std::format("separated: {}/{}/{}", ev.enter, ev.stay, ev.exit));
 
 	// Deactivating (despawning) one side ends the contact too
 	s.FindGameObjectById(b, false)->translation = { 0.6f, 50.0f, 0.0f };
+	A::Physics(s, 1.0f / 60.0f);
 	A::Physics(s, 1.0f / 60.0f);
 	CHECK(A::CollisionEvents(s).enter == 2);
 	s.FindGameObjectById(a, false)->isActive = false;
@@ -3687,12 +3564,15 @@ std::vector<float> CaptureGameViewSignature(EditorSuite& s)
 	Microsoft::WRL::ComPtr<ID3D12Resource> readback;
 	uint32_t rowPitch = 0;
 
+	// Self-tests run inside the app's first frame: close it, render one whole frame, and leave a frame open again
+	RizeEngine::EndFrame();
 	RizeEngine::BeginFrame();
 	ID3D12GraphicsCommandList* cmdList = A::Dx(s)->GetCommandList();
 	s.RenderViewports(cmdList, false);
 	const bool recorded = rt.RecordReadback(cmdList, readback, rowPitch);
 	RizeEngine::EndFrame();
 	A::Dx(s)->SignalAndWaitFence();
+	RizeEngine::BeginFrame();
 	if (!recorded) return {};
 
 	const uint8_t* pixels = nullptr;
@@ -4141,9 +4021,7 @@ TEST_CASE(PhysicsBaseline, ChildRigidbodyFollowsItsParent)
 	CHECK_NEAR(s.FindGameObjectById(child, false)->translation.y, 0.0f, 1e-4f); // local position untouched
 }
 
-// Known bug of the internal solver: the falling box passes the lower one and pushes it up, so they swap and the
-// lower one sinks into the floor. Fase 3 (Jolt) must fix this and turn the last check into CHECK(stacked).
-TEST_CASE(PhysicsBaseline, TwoBoxesDoNotStackYet)
+TEST_CASE(PhysicsBaseline, TwoBoxesStack)
 {
 	MakePhysicsFloor(s);
 	const uint32_t lower = MakePhysicsBox(s, "Lower", { 0.0f, kPhysicsFloorTop + 0.5f, 0.0f });
@@ -4152,9 +4030,193 @@ TEST_CASE(PhysicsBaseline, TwoBoxesDoNotStackYet)
 	const float lowerY = s.FindGameObjectById(lower, false)->translation.y;
 	const float upperY = s.FindGameObjectById(upper, false)->translation.y;
 	const bool stacked = std::abs(lowerY - (kPhysicsFloorTop + 0.5f)) < 0.1f && std::abs(upperY - (kPhysicsFloorTop + 1.5f)) < 0.1f;
-	CHECK(!stacked);
+	CHECK_MSG(stacked, std::format("lower {:.3f} upper {:.3f}", lowerY, upperY));
 }
 
+TEST_CASE(PhysicsBaseline, FreeRotationTipsABoxOverAnEdgeAndFrozenDoesNot)
+{
+	MakePhysicsFloor(s);
+	// Centre beyond the edge of a low step: a free box topples off it, a frozen one lands flat
+	GameObject& step = s.CreateGameObject("Step", GameObjectType::Empty);
+	step.translation = { 0.0f, kPhysicsFloorTop + 0.5f, 0.0f };
+	step.hasBoxCollider = true;
+	step.boxSize = { 2.0f, 1.0f, 2.0f };
+	step.isStatic = true;
+	const uint32_t freeBox = MakePhysicsBox(s, "Free", { 1.3f, kPhysicsFloorTop + 1.6f, 0.0f });
+	const uint32_t frozenBox = MakePhysicsBox(s, "Frozen", { -1.3f, kPhysicsFloorTop + 1.6f, 0.0f });
+	s.FindGameObjectById(frozenBox, false)->freezeRotation = true;
+	StepPhysicsSeconds(s, 2.0f);
+	const GameObject* freeObj = s.FindGameObjectById(freeBox, false);
+	const GameObject* frozenObj = s.FindGameObjectById(frozenBox, false);
+	CHECK(std::abs(freeObj->rotationQuat.w) < 0.999f);
+	CHECK_NEAR(frozenObj->rotationQuat.w, 1.0f, 1e-4f);
+	CHECK_NEAR(frozenObj->translation.y, kPhysicsFloorTop + 1.5f, 0.05f);
+}
+
+TEST_CASE(PhysicsBaseline, ContinuousCollisionStopsAFastBoxAtAThinWall)
+{
+	GameObject& wall = s.CreateGameObject("ThinWall", GameObjectType::Empty);
+	wall.translation = { 5.0f, 70.0f, 0.0f };
+	wall.hasBoxCollider = true;
+	wall.boxSize = { 0.05f, 10.0f, 10.0f };
+	wall.isStatic = true;
+	const uint32_t id = MakePhysicsBox(s, "Bullet", { 0.0f, 70.0f, 0.0f });
+	GameObject* bullet = s.FindGameObjectById(id, false);
+	bullet->useGravity = false;
+	bullet->boxSize = { 0.1f, 0.1f, 0.1f };
+	bullet->velocity = { 300.0f, 0.0f, 0.0f };
+	bullet->continuousCollision = true;
+	StepPhysicsSeconds(s, 0.5f);
+	CHECK(s.FindGameObjectById(id, false)->translation.x < 5.0f);
+}
+
+TEST_CASE(PhysicsBaseline, MovedColliderReportsContactWithoutRigidbody)
+{
+	A::State(s) = EditorSceneState::Play;
+	GameObject& a = s.CreateGameObject("MovedA", GameObjectType::Empty);
+	a.translation = { 0.0f, 70.0f, 0.0f };
+	a.hasBoxCollider = true;
+	GameObject& b = s.CreateGameObject("MovedB", GameObjectType::Empty);
+	b.translation = { 5.0f, 70.0f, 0.0f };
+	b.hasBoxCollider = true;
+	const uint32_t bId = b.id;
+	A::Physics(s, 1.0f / 60.0f);
+	CHECK(A::CollisionEvents(s).enter == 0);
+	s.FindGameObjectById(bId, false)->translation.x = 0.5f;
+	A::Physics(s, 1.0f / 60.0f);
+	A::Physics(s, 1.0f / 60.0f);
+	CHECK(s.FindGameObjectById(bId, false)->isColliding);
+	A::State(s) = EditorSceneState::Edit;
+	s.ResetScriptRuntimeState();
+}
+
+TEST_CASE(PhysicsBaseline, RestingContactSurvivesSleepUntilTheBodyWakes)
+{
+	A::State(s) = EditorSceneState::Play;
+	const uint32_t trigger = MakePhysicsFloor(s);
+	s.FindGameObjectById(trigger, false)->isTrigger = true;
+	GameObject& still = s.CreateGameObject("StillCollider", GameObjectType::Empty);
+	still.translation = { 0.0f, kPhysicsFloorTop, 0.0f };
+	still.hasBoxCollider = true;
+	const uint32_t id = still.id;
+	int exits = 0;
+	for (int i = 0; i < 180; ++i) { // long enough for the body to fall asleep
+		A::Physics(s, 1.0f / 60.0f);
+		exits += A::CollisionEvents(s).exit;
+	}
+	CHECK_MSG(exits == 0, std::format("false exits {}", exits));
+	CHECK(s.FindGameObjectById(id, false)->isColliding);
+	s.FindGameObjectById(id, false)->translation = { 0.0f, kPhysicsFloorTop + 20.0f, 0.0f };
+	A::Physics(s, 1.0f / 60.0f);
+	A::Physics(s, 1.0f / 60.0f);
+	CHECK(!s.FindGameObjectById(id, false)->isColliding);
+	A::State(s) = EditorSceneState::Edit;
+	s.ResetScriptRuntimeState();
+}
+
+TEST_CASE(PhysicsBaseline, CapsuleLandsOnItsEnd)
+{
+	MakePhysicsFloor(s);
+	const uint32_t id = MakePhysicsBox(s, "Capsule", { 0.0f, kPhysicsFloorTop + 3.0f, 0.0f });
+	GameObject* obj = s.FindGameObjectById(id, false);
+	obj->hasBoxCollider = false;
+	obj->freezeRotation = true;
+	CHECK(s.AddComponentByName(*obj, "Capsule Collider"));
+	StepPhysicsSeconds(s, 3.0f);
+	CHECK_NEAR(s.FindGameObjectById(id, false)->translation.y, kPhysicsFloorTop + 1.0f, 0.05f); // default height 2
+}
+
+TEST_CASE(PhysicsBaseline, MeshColliderIsSolidAndOverridesDynamic)
+{
+	GameObject& ground = s.CreateGameObject("MeshGround", GameObjectType::Empty);
+	ground.translation = { 0.0f, kPhysicsFloorTop - 1.0f, 0.0f };
+	ground.scale = { 10.0f, 1.0f, 10.0f };
+	ground.meshType = GameObject::MeshType::CustomModel;
+	ground.modelPath = "Resources/Model/cube.obj";
+	ground.hasRigidbody = true; // must not fall: a triangle mesh is never simulated
+	const uint32_t groundId = ground.id;
+	CHECK(s.AddComponentByName(ground, "Mesh Collider"));
+	const uint32_t id = MakePhysicsBox(s, "OnMesh", { 0.0f, kPhysicsFloorTop + 3.0f, 0.0f });
+	StepPhysicsSeconds(s, 3.0f);
+	CHECK_NEAR(s.FindGameObjectById(groundId, false)->translation.y, kPhysicsFloorTop - 1.0f, 1e-4f);
+	const float y = s.FindGameObjectById(id, false)->translation.y;
+	CHECK_MSG(y > kPhysicsFloorTop - 1.0f, std::format("box at {:.3f}", y));
+	CHECK_NEAR(s.FindGameObjectById(id, false)->velocity.y, 0.0f, 0.5f);
+}
+
+TEST_CASE(PhysicsBaseline, QueriesFollowRotationAndSkipTheInside)
+{
+	GameObject& box = s.CreateGameObject("Turned", GameObjectType::Empty);
+	box.translation = { 5.0f, 70.0f, 0.0f };
+	box.rotationQuat = Quaternion::FromEuler({ 0.0f, 0.7853982f, 0.0f });
+	box.hasBoxCollider = true;
+	const uint32_t id = box.id;
+	ScriptRaycastHit hit;
+	CHECK(s.ScriptRaycast({ 0.0f, 70.0f, 0.0f }, { 2.0f, 0.0f, 0.0f }, 20.0f, 0xFFFFFFFFu, 0, hit));
+	CHECK(hit.objectId == id);
+	CHECK_NEAR(hit.distance, 5.0f - 0.7071f, 0.01f); // the corner of the turned box points at the ray
+	CHECK(!s.ScriptRaycast({ 5.0f, 70.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }, 20.0f, 0xFFFFFFFFu, 0, hit));
+	CHECK(!s.ScriptRaycast({ 0.0f, 70.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }, 20.0f, 0xFFFFFFFFu, id, hit));
+
+	uint32_t ids[4] = {};
+	CHECK(s.ScriptOverlapSphere({ 5.0f + 0.9f, 70.0f, 0.0f }, 0.25f, 0xFFFFFFFFu, ids, 4) == 1); // reaches only the corner
+	CHECK(s.ScriptOverlapSphere({ 5.0f + 0.9f, 70.0f, 0.9f }, 0.25f, 0xFFFFFFFFu, ids, 4) == 0);
+}
+
+TEST_CASE(PhysicsBaseline, HingeKeepsItsAnchorWhileSwinging)
+{
+	const uint32_t id = MakePhysicsBox(s, "Door", { 2.0f, 80.0f, 0.0f });
+	GameObject* door = s.FindGameObjectById(id, false);
+	CHECK(s.AddComponentByName(*door, "Joint"));
+	auto* joint = door->components.Get<JointComponent>("Joint");
+	joint->jointType = 2;
+	joint->anchor = { -2.0f, 0.0f, 0.0f }; // hinge at world (0, 80, 0)
+	float lowest = 80.0f;
+	for (int i = 0; i < 60; ++i) {
+		A::Physics(s, 1.0f / 60.0f);
+		const Vector3 p = s.FindGameObjectById(id, false)->translation;
+		const float fromAnchor = std::sqrt(p.x * p.x + (p.y - 80.0f) * (p.y - 80.0f));
+		CHECK_NEAR(fromAnchor, 2.0f, 0.05f);
+		lowest = (std::min)(lowest, p.y);
+	}
+	CHECK(lowest < 79.0f);
+}
+
+TEST_CASE(PhysicsBaseline, RemovingAJointedBodyIsSafe)
+{
+	const uint32_t a = MakePhysicsBox(s, "JointA", { 0.0f, 80.0f, 0.0f });
+	const uint32_t b = MakePhysicsBox(s, "JointB", { 2.0f, 80.0f, 0.0f });
+	GameObject* owner = s.FindGameObjectById(a, false);
+	CHECK(s.AddComponentByName(*owner, "Joint"));
+	auto* joint = owner->components.Get<JointComponent>("Joint");
+	joint->jointType = 3;
+	joint->connectedObjectId = static_cast<int>(b);
+	A::Physics(s, 1.0f / 60.0f);
+	s.FindGameObjectById(b, false)->isActive = false;
+	A::Physics(s, 1.0f / 60.0f);
+	s.FindGameObjectById(b, false)->isActive = true;
+	StepPhysicsSeconds(s, 0.5f);
+	const Vector3 pa = s.FindGameObjectById(a, false)->translation;
+	const Vector3 pb = s.FindGameObjectById(b, false)->translation;
+	const float dx = pa.x - pb.x, dy = pa.y - pb.y, dz = pa.z - pb.z;
+	CHECK(std::sqrt(dx * dx + dy * dy + dz * dz) < 3.0f); // the joint is back and holds them together
+}
+
+TEST_CASE(PhysicsBaseline, RenderingBlendsBetweenStepsAndScriptsSeeTheSimulatedPose)
+{
+	const uint32_t id = MakePhysicsBox(s, "Blended", { 0.0f, 100.0f, 0.0f });
+	s.FindGameObjectById(id, false)->hasBoxCollider = false;
+	s.FindGameObjectById(id, false)->velocity = { 60.0f, 0.0f, 0.0f };
+	s.FindGameObjectById(id, false)->useGravity = false;
+	s.FindGameObjectById(id, false)->drag = 0.0f;
+	A::PhysicsAccumulator(s) = 0.0;
+	s.StepPhysics(1.5f / 60.0f); // one step (1 unit) and half a step left
+	CHECK_NEAR(s.FindGameObjectById(id, false)->translation.x, 0.5f, 0.01f); // shown: halfway through that step
+	A::RestorePoses(s);
+	CHECK_NEAR(s.FindGameObjectById(id, false)->translation.x, 1.0f, 0.01f); // simulated
+	A::PhysicsAccumulator(s) = 0.0;
+	s.ResetScriptRuntimeState();
+}
 // ===========================================================================
 // Runner
 // ===========================================================================

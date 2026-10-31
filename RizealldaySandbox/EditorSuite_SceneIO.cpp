@@ -176,6 +176,9 @@ void EditorSuite::WriteGameObjectJson(const GameObject& obj, void* outJson) cons
 	o["useGravity"] = obj.useGravity;
 	o["isKinematic"] = obj.isKinematic;
 	o["bounciness"] = Num(obj.bounciness);
+	o["friction"] = Num(obj.friction);
+	o["freezeRotation"] = obj.freezeRotation;
+	o["continuousCollision"] = obj.continuousCollision;
 
 	// Camera
 	o["hasCamera"] = obj.hasCamera;
@@ -586,6 +589,12 @@ void EditorSuite::ReadGameObjectJson(const void* json, GameObject& obj)
 	SceneJson::Read(j, "useGravity", obj.useGravity);
 	SceneJson::Read(j, "isKinematic", obj.isKinematic);
 	SceneJson::Read(j, "bounciness", obj.bounciness);
+	// Scenes saved before Jolt keep the old behaviour: no friction, never rotated by physics
+	obj.friction = 0.0f;
+	obj.freezeRotation = true;
+	SceneJson::Read(j, "friction", obj.friction);
+	SceneJson::Read(j, "freezeRotation", obj.freezeRotation);
+	SceneJson::Read(j, "continuousCollision", obj.continuousCollision);
 
 	// Camera
 	SceneJson::Read(j, "hasCamera", obj.hasCamera);
@@ -818,7 +827,6 @@ void EditorSuite::NewScene()
 	ResetScriptRuntimeState();
 	UIRenderer::GetInstance()->Clear();
 	pendingDuplicateIndex_ = -1;
-	CollisionManager::GetInstance()->Clear();
 	gameObjects_.clear();
 	currentSceneName_ = "SampleScene";
 	currentScenePath_ = (GetScenesDirectory() / "SampleScene.scene.json").string();

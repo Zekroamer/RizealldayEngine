@@ -1,4 +1,5 @@
 ﻿#include "EditorSuiteInternal.h"
+#include "PhysicsComponents.h"
 
 // Sample content generators (GameObject > Samples). Everything they create is ordinary scene /
 // prefab data, so the result can be edited freely afterwards.
@@ -40,6 +41,25 @@ bool EditorSuite::CreateThirdPersonDemo()
 		pillar.scale = { 1.5f, 3.0f, 1.5f };
 		pillar.isStatic = true;
 		pillar.materialColor = { 0.35f, 0.55f, 0.85f, 1.0f };
+	}
+	// Physics to play with: a stack to knock over and a door on a hinge
+	for (int i = 0; i < 4; ++i) {
+		GameObject& crate = CreateCube("Crate", { 4.0f, 0.5f + i * 1.01f, 3.0f });
+		crate.hasRigidbody = true;
+		crate.mass = 2.0f;
+		crate.materialColor = { 0.8f, 0.6f, 0.3f, 1.0f };
+	}
+	GameObject& door = CreateCube("Door", { -4.0f, 1.3f, 3.0f });
+	door.scale = { 2.0f, 2.4f, 0.2f };
+	door.hasRigidbody = true;
+	door.useGravity = false;
+	door.drag = 1.0f;
+	door.materialColor = { 0.4f, 0.75f, 0.45f, 1.0f };
+	if (AddComponentByName(door, "Joint")) {
+		auto* joint = door.components.Get<JointComponent>("Joint");
+		joint->jointType = 2;
+		joint->anchor = { -0.5f, 0.0f, 0.0f }; // left edge, in local units
+		joint->axis = { 0.0f, 1.0f, 0.0f };
 	}
 	GameObject& player = CreateCube("Player", { 0.0f, 2.0f, 0.0f });
 	player.materialColor = { 0.9f, 0.35f, 0.25f, 1.0f };

@@ -3,6 +3,8 @@
 
 void EditorSuite::UpdateScripts(float deltaTime)
 {
+	RestoreSimulatedPoses(); // scripts see the simulated pose, not the blended one
+	physicsQueryDirty_ = true;
 	if (sceneState_ == EditorSceneState::Edit && !IsStandaloneMode()) {
 		return;
 	}
@@ -590,6 +592,7 @@ bool EditorSuite::CancelPendingSpawn(uint32_t id)
 
 void EditorSuite::ProcessPendingSpawns()
 {
+	physicsQueryDirty_ = true;
 	// Despawns first, so a prefab instance returned to its pool this frame is hidden before anything else runs
 	ProcessPendingDespawns();
 	ProcessPendingPrewarms();

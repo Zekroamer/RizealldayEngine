@@ -135,7 +135,6 @@ void EditorSuite::StopPlayMode()
 	ResetPrefabPools();
 	ResetScriptRuntimeState();
 	UIRenderer::GetInstance()->Clear();
-	CollisionManager::GetInstance()->Clear();
 	sceneState_ = EditorSceneState::Edit;
 	timeScale_ = 1.0f;
 	gameTime_ = 0.0;

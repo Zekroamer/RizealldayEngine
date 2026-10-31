@@ -113,82 +113,23 @@ Vector3 EditorSuite::GetWorldPositionOf(const GameObject& obj) const
 }
 
 bool EditorSuite::ScriptRaycast(const Vector3& origin, const Vector3& direction, float maxDistance,
-	uint32_t layerMask, uint32_t ignoreId, ScriptRaycastHit& outHit) const
+	uint32_t layerMask, uint32_t ignoreId, ScriptRaycastHit& outHit)
 {
 	outHit = ScriptRaycastHit{};
 	const float len = std::sqrt(Dot3(direction, direction));
-	if (!(len > 1.0e-6f) || !(maxDistance > 0.0f) || !std::isfinite(len)) return false;
-	const Vector3 dir = direction / len;
+	if (!(len > 1.0e-6f) || !(maxDistance > 0.0f) || !std::isfinite(len) || !std::isfinite(maxDistance)) return false;
 
+	SyncPhysicsForQueries();
 	const auto excluded = CollectQueryExclusions(gameObjects_, pendingDeletes_, pendingDespawns_);
-	float best = maxDistance;
-	bool found = false;
-
-	for (const auto& obj : gameObjects_) {
-		if (!obj.isActive || obj.id == ignoreId || !HasCollider(obj)) continue;
-		if ((layerMask & LayerBit(obj.layer)) == 0 || excluded.count(obj.id) != 0) continue;
-
-		if (obj.hasBoxCollider && obj.boxColliderEnabled) {
-			Vector3 bmin{};
-			Vector3 bmax{};
-			ComputeBoxColliderBounds(obj, true, bmin, bmax);
-			// Slab test; remembers which axis the ray entered through for the normal
-			float tNear = -1.0e30f;
-			float tFar = 1.0e30f;
-			int nearAxis = -1;
-			bool miss = false;
-			const float o[3] = { origin.x, origin.y, origin.z };
-			const float d[3] = { dir.x, dir.y, dir.z };
-			const float mn[3] = { bmin.x, bmin.y, bmin.z };
-			const float mx[3] = { bmax.x, bmax.y, bmax.z };
-			for (int axis = 0; axis < 3 && !miss; ++axis) {
-				if (std::abs(d[axis]) < 1.0e-8f) {
-					if (o[axis] < mn[axis] || o[axis] > mx[axis]) miss = true;
-					continue;
-				}
-				float t1 = (mn[axis] - o[axis]) / d[axis];
-				float t2 = (mx[axis] - o[axis]) / d[axis];
-				if (t1 > t2) std::swap(t1, t2);
-				if (t1 > tNear) { tNear = t1; nearAxis = axis; }
-				tFar = (std::min)(tFar, t2);
-				if (tNear > tFar) miss = true;
-			}
-			// tNear < 0: the origin is inside the box (ignored, like the shooter's own collider)
-			if (!miss && nearAxis >= 0 && tNear >= 0.0f && tNear <= best) {
-				best = tNear;
-				found = true;
-				outHit.objectId = obj.id;
-				outHit.distance = tNear;
-				outHit.point = origin + dir * tNear;
-				Vector3 n{ 0.0f, 0.0f, 0.0f };
-				const float sign = d[nearAxis] > 0.0f ? -1.0f : 1.0f;
-				if (nearAxis == 0) n.x = sign; else if (nearAxis == 1) n.y = sign; else n.z = sign;
-				outHit.normal = n;
-			}
-		}
-
-		if (obj.hasSphereCollider && obj.sphereColliderEnabled) {
-			Vector3 c{};
-			float r = 0.0f;
-			ComputeSphereColliderWorld(obj, c, r);
-			const Vector3 oc = origin - c;
-			const float b = Dot3(oc, dir);
-			const float cc = Dot3(oc, oc) - r * r;
-			const float disc = b * b - cc;
-			if (cc > 0.0f && disc >= 0.0f) {
-				const float t = -b - std::sqrt(disc);
-				if (t >= 0.0f && t <= best) {
-					best = t;
-					found = true;
-					outHit.objectId = obj.id;
-					outHit.distance = t;
-					outHit.point = origin + dir * t;
-					outHit.normal = (r > 1.0e-6f) ? (outHit.point - c) / r : Vector3{ 0.0f, 1.0f, 0.0f };
-				}
-			}
-		}
+	Physics::RayHit hit;
+	if (!physicsWorld_->Raycast(origin, direction / len, maxDistance, [&](uint32_t id) { return AcceptQueryHit(id, layerMask, ignoreId, excluded); }, hit)) {
+		return false;
 	}
-	return found;
+	outHit.objectId = hit.id;
+	outHit.distance = hit.distance;
+	outHit.point = hit.point;
+	outHit.normal = hit.normal;
+	return true;
 }
 
 void EditorSuite::BuildNavGrid(const Vector3& agentPosition)
@@ -307,36 +248,26 @@ bool EditorSuite::ScriptMoveCharacter(uint32_t id, const Vector3& motion, float 
 	return true;
 }
 
-int EditorSuite::ScriptOverlapSphere(const Vector3& center, float radius, uint32_t layerMask, uint32_t* outIds, int maxCount) const
+int EditorSuite::ScriptOverlapSphere(const Vector3& center, float radius, uint32_t layerMask, uint32_t* outIds, int maxCount)
 {
-	if (!outIds || maxCount <= 0 || !(radius >= 0.0f)) return 0;
+	if (!outIds || maxCount <= 0 || !(radius >= 0.0f) || !std::isfinite(radius)) return 0;
+	SyncPhysicsForQueries();
 	const auto excluded = CollectQueryExclusions(gameObjects_, pendingDeletes_, pendingDespawns_);
-	int count = 0;
-	for (const auto& obj : gameObjects_) {
-		if (count >= maxCount) break;
-		if (!obj.isActive || !HasCollider(obj)) continue;
-		if ((layerMask & LayerBit(obj.layer)) == 0 || excluded.count(obj.id) != 0) continue;
-
-		bool touches = false;
-		if (obj.hasBoxCollider && obj.boxColliderEnabled) {
-			Vector3 bmin{};
-			Vector3 bmax{};
-			ComputeBoxColliderBounds(obj, true, bmin, bmax);
-			const Vector3 closest{ std::clamp(center.x, bmin.x, bmax.x), std::clamp(center.y, bmin.y, bmax.y), std::clamp(center.z, bmin.z, bmax.z) };
-			const Vector3 delta = closest - center;
-			touches = Dot3(delta, delta) <= radius * radius;
-		}
-		if (!touches && obj.hasSphereCollider && obj.sphereColliderEnabled) {
-			Vector3 c{};
-			float r = 0.0f;
-			ComputeSphereColliderWorld(obj, c, r);
-			const Vector3 delta = c - center;
-			const float reach = r + radius;
-			touches = Dot3(delta, delta) <= reach * reach;
-		}
-		if (touches) outIds[count++] = obj.id;
-	}
+	std::vector<uint32_t> ids;
+	physicsWorld_->OverlapSphere(center, radius, [&](uint32_t id) { return AcceptQueryHit(id, layerMask, 0, excluded); }, ids);
+	const int count = (std::min)(static_cast<int>(ids.size()), maxCount);
+	std::copy_n(ids.begin(), count, outIds);
 	return count;
+}
+
+bool EditorSuite::AcceptQueryHit(uint32_t id, uint32_t layerMask, uint32_t ignoreId, const std::unordered_set<uint32_t>& excluded) const
+{
+	if (id == ignoreId || excluded.count(id) != 0) return false;
+	const GameObject* obj = const_cast<EditorSuite*>(this)->FindGameObjectById(id, false);
+	if (!obj || !obj->isActive) return false; // removed since the last step: its body is still in the world
+	if ((layerMask & LayerBit(obj->layer)) == 0) return false;
+	// A body that exists only to move (Rigidbody without collider) has no surface to hit
+	return HasCollider(*obj) || !obj->components.Empty();
 }
 
 const GameObject* EditorSuite::FindNearestObject(const Vector3& position, const char* tag, float maxDistance, uint32_t ignoreId) const
@@ -463,6 +394,10 @@ void EditorSuite::ResetScriptRuntimeState()
 	shakeLeft_ = 0.0f;
 	hitstopLeft_ = 0.0f;
 	physicsAccumulator_ = 0.0;
+	if (physicsWorld_) physicsWorld_->Clear();
+	physicsQueryDirty_ = true;
+	renderPoses_.clear();
+	renderPosesApplied_ = false;
 	musicPath_.clear();
 }
 

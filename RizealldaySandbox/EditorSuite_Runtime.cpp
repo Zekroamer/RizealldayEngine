@@ -111,7 +111,6 @@ bool EditorSuite::ProcessPendingSceneLoad()
 
 	Audio::GetInstance()->StopAllAudio();
 	pendingDeletes_.clear();
-	CollisionManager::GetInstance()->Clear();
 
 	// KeepAcrossScenes objects (with their children) step out before the scene is replaced; their scripts keep running
 	std::vector<GameObject> kept;

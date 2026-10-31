@@ -4,7 +4,6 @@
 #include "base/DXCManager.h"
 #include "base/TextureManager.h"
 #include "3d/Camera.h"
-#include "3d/Collider.h"
 #include <cassert>
 #include <algorithm>
 #include <cmath>

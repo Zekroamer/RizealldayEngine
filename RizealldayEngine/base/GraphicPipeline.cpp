@@ -55,7 +55,7 @@ bool GraphicPipeline::Reload(DXCManager* dxc, const std::wstring& shaderDir, std
 		}
 	}
 	for (int i = 0; i < static_cast<int>(BlendMode::Count); i++) {
-		for (Microsoft::WRL::ComPtr<ID3D12PipelineState>* pso : { psos_.standard + i, psos_.gs + i, psos_.explode + i }) {
+		for (Microsoft::WRL::ComPtr<ID3D12PipelineState>* pso : { psos_.standard + i, psos_.backBuffer + i, psos_.gs + i, psos_.explode + i }) {
 			if (*pso) retired.push_back(*pso);
 		}
 	}

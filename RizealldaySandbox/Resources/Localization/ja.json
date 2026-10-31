@@ -1,5 +1,10 @@
 {
 	"_language": "日本語",
+	"Friction": "摩擦",
+	"Freeze Rotation": "回転を固定",
+	"Keep the object upright: collisions move it but never turn it": "衝突で移動しても回転しないようにします",
+	"Continuous Collision": "連続衝突検出",
+	"Stops fast objects from passing through thin colliders (costs more)": "高速な物体が薄いコライダーをすり抜けるのを防ぎます（負荷増）",
 	"_note": "Key = English text in the editor code. Missing keys are shown in English.",
 
 	"File": "ファイル",

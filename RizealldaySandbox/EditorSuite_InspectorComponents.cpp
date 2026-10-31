@@ -276,6 +276,15 @@ void EditorSuite::DrawRigidbodyComponentInspector(GameObject& obj)
 		if (ImGui::SliderFloat("Bounciness", &obj.bounciness, 0.0f, 1.0f, "%.2f")) isSceneDirty_ = true;
 		if (ImGui::IsItemDeactivatedAfterEdit()) PushUndoSnapshot();
 		ImGui::SetItemTooltip("Coefficient of restitution for collisions");
+
+		if (ImGui::SliderFloat(TrId("Friction"), &obj.friction, 0.0f, 1.0f, "%.2f")) isSceneDirty_ = true;
+		if (ImGui::IsItemDeactivatedAfterEdit()) PushUndoSnapshot();
+
+		if (ImGui::Checkbox(TrId("Freeze Rotation"), &obj.freezeRotation)) { isSceneDirty_ = true; PushUndoSnapshot(); }
+		ImGui::SetItemTooltip("%s", Tr("Keep the object upright: collisions move it but never turn it"));
+
+		if (ImGui::Checkbox(TrId("Continuous Collision"), &obj.continuousCollision)) { isSceneDirty_ = true; PushUndoSnapshot(); }
+		ImGui::SetItemTooltip("%s", Tr("Stops fast objects from passing through thin colliders (costs more)"));
 	}
 #else
 	(void)obj;

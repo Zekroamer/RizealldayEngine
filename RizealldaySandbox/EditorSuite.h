@@ -4,6 +4,7 @@
 #include "base/RenderTexture.h"
 #include "base/DirectXCommon.h"
 #include "render/PostProcess.h"
+#include "physics/PhysicsWorld.h"
 #include "3d/Camera.h"
 #include "3d/ShadowMap.h"
 #include "3d/Skybox.h"
@@ -310,6 +311,9 @@ struct GameObject {
 	bool useGravity = true;
 	bool isKinematic = false;
 	float bounciness = 0.1f;
+	float friction = 0.5f;
+	bool freezeRotation = false;
+	bool continuousCollision = false;
 	Vector3 velocity = { 0.0f, 0.0f, 0.0f };
 	bool isGrounded = false;
 };
@@ -381,6 +385,7 @@ public:
 	void DispatchScriptCollision(uint32_t selfId, uint32_t otherId, CollisionEvent kind = CollisionEvent::Stay);
 	// Animator (EditorSuite_Animator.cpp, roadmap 5.1)
 	static void RegisterAnimatorComponent();
+	static void RegisterPhysicsComponents();
 	/// Moves skeletal animation time: Animator state machines when `runStateMachines` (Play), else the Inspector clip
 	/// (or the Animator's entry / previewed state). Called from Update with game time, never from rendering.
 	void UpdateAnimations(float deltaTime, bool runStateMachines);
@@ -425,8 +430,9 @@ public:
 	void ComputeBoxColliderBounds(const GameObject& obj, bool useAbsSize, Vector3& outMin, Vector3& outMax) const;
 	void ComputeSphereColliderWorld(const GameObject& obj, Vector3& outCenter, float& outRadius) const;
 	Vector3 GetWorldPositionOf(const GameObject& obj) const;
-	bool ScriptRaycast(const Vector3& origin, const Vector3& direction, float maxDistance, uint32_t layerMask, uint32_t ignoreId, ScriptRaycastHit& outHit) const;
-	int ScriptOverlapSphere(const Vector3& center, float radius, uint32_t layerMask, uint32_t* outIds, int maxCount) const;
+	bool AcceptQueryHit(uint32_t id, uint32_t layerMask, uint32_t ignoreId, const std::unordered_set<uint32_t>& excluded) const;
+	bool ScriptRaycast(const Vector3& origin, const Vector3& direction, float maxDistance, uint32_t layerMask, uint32_t ignoreId, ScriptRaycastHit& outHit);
+	int ScriptOverlapSphere(const Vector3& center, float radius, uint32_t layerMask, uint32_t* outIds, int maxCount);
 	/// MoveCharacter (CharacterController.h) against every other non-trigger collider the object collides with
 	bool ScriptMoveCharacter(uint32_t id, const Vector3& motion, float stepHeight, ScriptCharacterMove& out);
 	/// A* path over the navigation grid (static colliders above the floor block); returns the full point count
@@ -660,6 +666,12 @@ private:
 	bool isRunningTests_ = false;
 
 	void UpdatePhysics(float deltaTime);
+	bool BuildPhysicsBody(const GameObject& obj, Physics::BodyDesc& desc);
+	std::shared_ptr<const Physics::TriangleMesh> LoadCollisionMesh(const GameObject& obj, const Vector3& scale);
+	void SubmitPhysicsJoints();
+	void SyncPhysicsForQueries();
+	void RestoreSimulatedPoses();
+	void ApplyRenderPoses(float alpha);
 	void CalculateLightViewProjection();
 	void RenderShadowPass(ID3D12GraphicsCommandList* cmdList);
 	void RenderScene3D(ID3D12GraphicsCommandList* cmdList, Camera& camera, bool isEditView);
@@ -767,6 +779,17 @@ private:
 	float shakeTime_ = 0.0f;
 	float hitstopLeft_ = 0.0f;
 	double physicsAccumulator_ = 0.0; // leftover time for the next fixed physics step
+	std::unique_ptr<Physics::PhysicsWorld> physicsWorld_; // created on first use
+	bool physicsQueryDirty_ = true; // objects may have moved since the physics world last saw them
+	std::unordered_map<std::string, std::shared_ptr<const Physics::TriangleMesh>> collisionMeshes_; // by model path + scale
+	struct RenderPose {
+		Vector3 previousPosition{};
+		Quaternion previousRotation = Quaternion::Identity();
+		Vector3 simPosition{};
+		Quaternion simRotation = Quaternion::Identity();
+	};
+	std::unordered_map<uint32_t, RenderPose> renderPoses_; // rigidbodies; simulated pose kept while the blended one is shown
+	bool renderPosesApplied_ = false;
 	// Navigation grid for FindPath, built from static colliders on first use (EditorSuite_ScriptQueries.cpp)
 	NavGrid navGrid_;
 	bool navGridValid_ = false;

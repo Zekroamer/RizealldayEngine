@@ -6,7 +6,6 @@
 #include "3d/Object3d.h"
 #include "3d/Model.h"
 #include "3d/LightGroup.h"
-#include "3d/CollisionManager.h"
 #include "3d/PrimitiveDrawer.h"
 #include "2d/UIRenderer.h"
 #include "base/Profiler.h"

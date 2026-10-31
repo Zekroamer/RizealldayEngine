@@ -129,6 +129,9 @@ GameObject::GameObject(const GameObject& other) {
 	useGravity = other.useGravity;
 	isKinematic = other.isKinematic;
 	bounciness = other.bounciness;
+	friction = other.friction;
+	freezeRotation = other.freezeRotation;
+	continuousCollision = other.continuousCollision;
 	velocity = other.velocity;
 	isGrounded = other.isGrounded;
 }
@@ -260,6 +263,9 @@ GameObject& GameObject::operator=(const GameObject& other) {
 		useGravity = other.useGravity;
 		isKinematic = other.isKinematic;
 		bounciness = other.bounciness;
+		friction = other.friction;
+		freezeRotation = other.freezeRotation;
+		continuousCollision = other.continuousCollision;
 		velocity = other.velocity;
 		isGrounded = other.isGrounded;
 		editObject3d.reset();

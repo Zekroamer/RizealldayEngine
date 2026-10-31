@@ -323,7 +323,6 @@ void EditorSuite::ProcessPendingDeletes()
 			obj.particleQuad.reset();
 		}
 	}
-	CollisionManager::GetInstance()->Clear();
 
 	// 5. Erase from highest index to lowest index so remaining indices remain valid during erasure
 	std::vector<int> sortedDescending(deleteIndices.begin(), deleteIndices.end());

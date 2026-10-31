@@ -63,6 +63,7 @@ void EditorSuite::RegisterBuiltinComponents()
 
 	// Data components owned by engine systems
 	RegisterAnimatorComponent();
+	RegisterPhysicsComponents();
 }
 
 // ---------------------------------------------------------------------------

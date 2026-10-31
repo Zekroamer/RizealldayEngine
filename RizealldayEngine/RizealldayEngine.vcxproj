@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -111,6 +111,10 @@
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <!-- physics/ -->
+    <ClCompile Include="physics\PhysicsWorld.cpp">
+      <AdditionalIncludeDirectories>$(ProjectDir)..\externals\JoltPhysics;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
     <!-- base/ -->
     <ClCompile Include="base\RizeEngine.cpp" />
     <ClCompile Include="base\DirectXCommon.cpp" />
@@ -135,8 +139,6 @@
     <ClCompile Include="3d\LightGroup.cpp" />
     <ClCompile Include="3d\CircleShadow.cpp" />
     <ClCompile Include="3d\ShadowMap.cpp" />
-    <ClCompile Include="3d\Collider.cpp" />
-    <ClCompile Include="3d\CollisionManager.cpp" />
     <ClCompile Include="3d\PrimitiveDrawer.cpp" />
     <ClCompile Include="2d\UIRenderer.cpp" />
     <ClCompile Include="render\PostProcess.cpp" />
@@ -211,8 +213,7 @@
     <ClInclude Include="2d\UIRenderer.h" />
     <ClInclude Include="render\PostProcess.h" />
     <ClInclude Include="3d\Skybox.h" />
-    <ClInclude Include="3d\Collider.h" />
-    <ClInclude Include="3d\CollisionManager.h" />
+    <ClInclude Include="physics\PhysicsWorld.h" />
     <ClInclude Include="2d\Sprite.h" />
     <ClInclude Include="input\Input.h" />
     <ClInclude Include="audio\Audio.h" />

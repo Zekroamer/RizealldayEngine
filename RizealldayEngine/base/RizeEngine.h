@@ -26,8 +26,6 @@
 #include "3d/SpotLight.h"
 #include "3d/PrimitiveDrawer.h"
 #include "3d/CircleShadow.h"
-#include "3d/Collider.h"
-#include "3d/CollisionManager.h"
 
 // 2D
 #include "2d/Sprite.h"

@@ -5,3 +5,6 @@
 [submodule "externals/DirectXTex"]
 	path = externals/DirectXTex
 	url = https://github.com/microsoft/DirectXTex.git
+[submodule "externals/JoltPhysics"]
+	path = externals/JoltPhysics
+	url = https://github.com/jrouwe/JoltPhysics.git
