@@ -9,6 +9,25 @@ using SceneJson::Arr;
 
 // ---- AnimatorController ----
 
+void AnimState::BlendWeights(float value, std::vector<float>& outWeights) const
+{
+	outWeights.assign(blendClips.size(), 0.0f);
+	if (blendClips.empty()) return;
+	int below = -1;
+	int above = -1;
+	for (int i = 0; i < static_cast<int>(blendClips.size()); ++i) {
+		const float t = blendClips[i].threshold;
+		if (t <= value && (below < 0 || t > blendClips[below].threshold)) below = i;
+		if (t >= value && (above < 0 || t < blendClips[above].threshold)) above = i;
+	}
+	if (below < 0) { outWeights[above] = 1.0f; return; }
+	if (above < 0 || below == above) { outWeights[below] = 1.0f; return; }
+	const float range = blendClips[above].threshold - blendClips[below].threshold;
+	const float w = range > 0.0f ? (value - blendClips[below].threshold) / range : 1.0f;
+	outWeights[below] = 1.0f - w;
+	outWeights[above] = w;
+}
+
 const AnimState* AnimatorController::FindState(uint32_t id) const
 {
 	for (const AnimState& s : states) if (s.id == id) return &s;
@@ -87,6 +106,14 @@ std::string AnimatorController::ToJson() const
 		js["loop"] = s.loop;
 		js["position"] = Arr(s.position);
 		js["events"] = std::move(events);
+		if (!s.blendClips.empty()) {
+			Json clips = Json::array();
+			for (const AnimBlendClip& c : s.blendClips) {
+				clips.push_back({ { "clipModel", c.clipModel }, { "clipName", c.clipName }, { "clipIndex", c.clipIndex }, { "threshold", Num(c.threshold) } });
+			}
+			js["blendParameter"] = s.blendParameter;
+			js["blendClips"] = std::move(clips);
+		}
 		states_.push_back(std::move(js));
 	}
 	root["states"] = std::move(states_);
@@ -148,6 +175,17 @@ std::optional<AnimatorController> AnimatorController::FromJson(const std::string
 			SceneJson::Read(js, "speed", s.speed);
 			SceneJson::Read(js, "loop", s.loop);
 			SceneJson::Read(js, "position", s.position);
+			SceneJson::Read(js, "blendParameter", s.blendParameter);
+			if (const Json* clips = SceneJson::Find(js, "blendClips"); clips && clips->is_array()) {
+				for (const Json& jc : *clips) {
+					AnimBlendClip c;
+					SceneJson::Read(jc, "clipModel", c.clipModel);
+					SceneJson::Read(jc, "clipName", c.clipName);
+					SceneJson::Read(jc, "clipIndex", c.clipIndex);
+					SceneJson::Read(jc, "threshold", c.threshold);
+					s.blendClips.push_back(std::move(c));
+				}
+			}
 			if (const Json* events = SceneJson::Find(js, "events"); events && events->is_array()) {
 				for (const Json& je : *events) {
 					AnimEvent e;

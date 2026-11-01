@@ -42,6 +42,14 @@ struct AnimEvent {
 	float time = 0.5f;
 };
 
+/// One clip of a state's blend tree
+struct AnimBlendClip {
+	std::string clipModel; // like AnimState
+	std::string clipName;
+	int clipIndex = 0;
+	float threshold = 0.0f; // value of the blend parameter where this clip plays alone
+};
+
 struct AnimState {
 	uint32_t id = 0;
 	std::string name;
@@ -52,6 +60,11 @@ struct AnimState {
 	bool loop = true;
 	std::vector<AnimEvent> events;
 	Vector2 position;      // Animator window, canvas space
+	std::string blendParameter;          // float parameter choosing the mix
+	std::vector<AnimBlendClip> blendClips; // not empty = 1D blend tree; the clip fields above are not used
+
+	/// One weight per blend clip for this parameter value: the two clips around it mix, the others are 0
+	void BlendWeights(float value, std::vector<float>& outWeights) const;
 };
 
 struct AnimTransition {
@@ -129,6 +142,7 @@ private:
 struct AnimatorComponent {
 	char controller[260] = ""; // Assets/Animators/<Name>.animator.json
 	float speed = 1.0f;        // multiplies every state's speed
+	bool rootMotion = false;   // the clip's root bone moves the object
 
 	AnimatorRuntime runtime;
 	std::string runtimeController; // controller path the runtime was started with

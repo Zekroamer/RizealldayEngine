@@ -97,6 +97,7 @@ enum class GameObjectType {
 	Canvas
 };
 
+class AnimationPlayer;
 struct GameObject {
 	GameObject();
 	~GameObject();
@@ -399,6 +400,21 @@ public:
 	/// Creates Assets/Animators/<name>.animator.json (unique name) and returns its project-relative path ("" on failure)
 	std::string CreateAnimatorControllerAsset(const std::string& name);
 	void ApplyAnimatorState(GameObject& obj, const AnimatorComponent& animator, const AnimState& state, float fadeSeconds);
+	Model* ResolveClipModelPath(const std::string& clipModel);
+	void ApplyRootMotion(GameObject& obj, AnimationPlayer& player, const Model& model);
+	GameObject* FindAnimatedObject(uint32_t id, Model*& outModel);
+	bool ResolveBoneAttachment(const GameObject& child, const GameObject& parent, Matrix4x4& outBoneMatrix) const;
+	void UpdateRagdolls();
+	std::vector<float> blendWeights_;
+	struct Ragdoll {
+		uint32_t handle = 0;
+		struct Part {
+			int node = -1;
+			Matrix4x4 boneFromBody{}; // the bone's world matrix relative to its body
+		};
+		std::vector<Part> parts;
+	};
+	std::unordered_map<uint32_t, Ragdoll> ragdolls_;
 	/// Model that owns a state's clip: nullptr = the object's own model
 	Model* ResolveClipModel(const AnimState& state);
 	void DispatchScriptAnimationEvent(uint32_t objectId, const char* eventName);
@@ -435,8 +451,14 @@ public:
 	Vector3 GetWorldPositionOf(const GameObject& obj) const;
 	bool AcceptQueryHit(uint32_t id, uint32_t layerMask, uint32_t ignoreId, const std::unordered_set<uint32_t>& excluded) const;
 	bool ScriptRaycast(const Vector3& origin, const Vector3& direction, float maxDistance, uint32_t layerMask, uint32_t ignoreId, ScriptRaycastHit& outHit);
+	bool ScriptPlayAnimationLayer(uint32_t id, int layer, const char* clipName, const char* maskBone, bool loop, float speed, float fadeSeconds);
+	bool ScriptStopAnimationLayer(uint32_t id, int layer, float fadeSeconds);
+	bool ScriptGetBoneWorldPosition(uint32_t id, const char* bone, Vector3& out);
+	bool ScriptSetBoneIK(uint32_t id, const char* endBone, const Vector3& worldTarget, const Vector3& worldPole, float weight);
+	bool ScriptAttachToBone(uint32_t childId, uint32_t parentId, const char* bone);
+	bool ScriptSetRagdoll(uint32_t id, bool enabled);
 	int ScriptOverlapSphere(const Vector3& center, float radius, uint32_t layerMask, uint32_t* outIds, int maxCount);
-	/// MoveCharacter (CharacterController.h) against every other non-trigger collider the object collides with
+	/// MoveCharacter (PhysicsWorld, Jolt CharacterVirtual) against every other non-trigger collider the object collides with
 	bool ScriptMoveCharacter(uint32_t id, const Vector3& motion, float stepHeight, ScriptCharacterMove& out);
 	/// A* path over the navigation grid (static colliders above the floor block); returns the full point count
 	int ScriptFindPath(const Vector3& from, const Vector3& to, Vector3* outPoints, int maxPoints);

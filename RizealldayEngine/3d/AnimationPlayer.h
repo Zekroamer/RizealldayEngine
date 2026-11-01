@@ -14,10 +14,35 @@ public:
 		float elapsed = 0.0f;          // seconds since the track started (not wrapped, scaled by speed)
 		float speed = 1.0f;
 		bool loop = true;
+		// Blend tree: these clips play at one shared phase, mixed by weight. `clip` then only marks the track as playing.
+		struct BlendClip {
+			const Model* source = nullptr;
+			int clip = 0;
+			float weight = 0.0f;
+		};
+		std::vector<BlendClip> blend;
 	};
 
 	/// Starts `clip`. fadeSeconds > 0 crossfades from the current pose; 0 switches instantly.
 	void Play(const Model* source, int clip, bool loop = true, float speed = 1.0f, float fadeSeconds = 0.0f, float startTime = 0.0f);
+	/// An overlay on top of the state machine (e.g. slash with the upper body while running). `maskBone` limits it to
+	/// that bone and everything below it; empty = the whole body. Layers apply in index order. One-shots stop when finished.
+	void PlayLayer(int layer, const Model& target, const Model* source, int clip, const std::string& maskBone, bool loop, float speed, float fadeSeconds);
+	void StopLayer(int layer, float fadeSeconds);
+	bool IsLayerPlaying(int layer) const;
+	static constexpr int kMaxLayers = 4;
+
+	/// Holds until changed; weight 0 removes it. Target and pole are in model space.
+	void SetIK(const std::string& endBone, const Vector3& target, const Vector3& pole, float weight);
+
+	/// The root bone stays in place horizontally; ConsumeRootDelta returns the movement the clip would have made
+	void SetRootMotion(bool enabled) { rootMotion_ = enabled; }
+	Vector3 ComputeRootDelta(const Model& target);
+
+	/// Node index -> model-space matrix, replacing the animated pose (ragdoll). Empty = none.
+	std::vector<std::pair<int, Matrix4x4>>& Overrides() { return overrides_; }
+	bool GetBoneMatrix(const Model& target, const std::string& bone, Matrix4x4& out) const;
+
 	/// `target` = the animated model (resolves tracks whose source is nullptr)
 	void Advance(float deltaTime, const Model* target);
 	void Evaluate(const Model& target, std::vector<Matrix4x4>& outSkinMatrices) const;
@@ -41,13 +66,33 @@ public:
 	float LastAdvanceEnd() const { return current_.elapsed; }
 
 private:
+	struct Layer {
+		Track track;
+		std::vector<uint8_t> mask;
+		float weight = 0.0f;
+		float targetWeight = 0.0f;
+		float fadeSpeed = 0.0f; // weight per second, 0 = at the target
+	};
+	struct IkRequest {
+		std::string endBone;
+		Vector3 target{};
+		Vector3 pole{};
+		float weight = 0.0f;
+	};
+
 	static void AdvanceTrack(Track& track, float deltaTime, const Model* target);
+	void SampleTrack(const Model& target, const Track& track, LocalPose& outPose) const;
 
 	Track current_;
 	Track previous_;
 	float fadeTime_ = 0.0f;
 	float fadeDuration_ = 0.0f;
 	float lastStart_ = 0.0f;
+	Layer layers_[kMaxLayers];
+	std::vector<IkRequest> ik_;
+	std::vector<std::pair<int, Matrix4x4>> overrides_;
+	bool rootMotion_ = false;
+	float previousTime_ = 0.0f;
 	mutable const Model* lastTarget_ = nullptr; // last target seen (NormalizedTime without a target)
 	mutable LocalPose poseA_;
 	mutable LocalPose poseB_;

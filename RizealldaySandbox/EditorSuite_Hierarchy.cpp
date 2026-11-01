@@ -64,6 +64,10 @@ void EditorSuite::UpdateWorldMatrices()
 					if (state[p] == State::Unvisited) self(self, p);
 					parentWorld = gameObjects_[p].worldMatrix;
 					hasParent = true;
+					Matrix4x4 boneMatrix;
+					if (!obj.components.Empty() && ResolveBoneAttachment(obj, gameObjects_[p], boneMatrix)) {
+						parentWorld = Mathematics::Multiply(boneMatrix, parentWorld);
+					}
 				}
 			}
 		}

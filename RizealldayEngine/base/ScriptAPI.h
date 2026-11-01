@@ -320,6 +320,13 @@ struct EngineAPI {
 
 	// Character controller (API v6): moves an object's collider through the scene's box / sphere colliders
 	bool (*moveCharacter)(void* ctx, uint32_t id, Vector3 motion, float stepHeight, ScriptCharacterMove* out) = nullptr;
+	// Animation layers, bones, IK, ragdoll (API v11)
+	bool (*animPlayLayer)(void* ctx, uint32_t id, int layer, const char* clip, const char* maskBone, bool loop, float speed, float fadeSeconds) = nullptr;
+	bool (*animStopLayer)(void* ctx, uint32_t id, int layer, float fadeSeconds) = nullptr;
+	bool (*getBoneWorldPosition)(void* ctx, uint32_t id, const char* bone, Vector3* out) = nullptr;
+	bool (*setBoneIK)(void* ctx, uint32_t id, const char* endBone, Vector3 target, Vector3 pole, float weight) = nullptr;
+	bool (*attachToBone)(void* ctx, uint32_t childId, uint32_t parentId, const char* bone) = nullptr;
+	bool (*setRagdoll)(void* ctx, uint32_t id, bool enabled) = nullptr;
 
 	// Navigation (API v7): A* over a grid made from Static colliders
 	int (*findPath)(void* ctx, Vector3 from, Vector3 to, Vector3* outPoints, int maxPoints) = nullptr; // full point count
@@ -346,7 +353,7 @@ struct EngineAPI {
 /// Engine <-> GameScripts.dll compatibility check. Bump kScriptApiVersion when the meaning of the API changes;
 /// layout changes of EngineAPI / ScriptGameObjectView / ScriptBase are caught automatically by the sizes.
 /// The fingerprint is defined at the end of this header (it needs the complete ScriptBase).
-constexpr uint32_t kScriptApiVersion = 10; // 4: Animator, 5: ShakeCamera / Hitstop / input actions, 6: MoveCharacter, 7: FindPath, 8: KeepAcrossScenes, 9: material outline, 10: camera input + projection + prewarm + post-processing
+constexpr uint32_t kScriptApiVersion = 11; // 4: Animator, 5: ShakeCamera / Hitstop / input actions, 6: MoveCharacter, 7: FindPath, 8: KeepAcrossScenes, 9: material outline, 10: camera input + projection + prewarm + post-processing, 11: animation layers + bones + IK + ragdoll
 
 /// Size of the UI canvas used by the UI* helpers (stretched over the game view)
 constexpr float kUICanvasWidth = 1280.0f;
@@ -1071,6 +1078,31 @@ public:
 	/// slides along walls, climbs ledges up to `stepHeight` while grounded, lands on floors. Triggers and layers
 	/// outside "Collides With" are ignored. Uses the Box Collider (or Sphere Collider) of this object.
 	/// Do not add a non-kinematic Rigidbody as well (gravity is yours: add it to motion.y while !grounded).
+	/// Plays a clip (or an Animator state, by name) on top of the state machine. maskBone = that bone and everything below it,
+	/// e.g. "mixamorig:Spine" to slash while the legs keep running; "" = whole body. One-shots stop themselves.
+	bool PlayAnimationLayer(int layer, const char* clip, const char* maskBone = "", bool loop = false, float speed = 1.0f, float fadeSeconds = 0.15f, uint32_t id = 0) const {
+		return engineApi_ && engineApi_->animPlayLayer && engineApi_->animPlayLayer(engineApi_->hostContext, ResolveId(id), layer, clip, maskBone, loop, speed, fadeSeconds);
+	}
+	bool StopAnimationLayer(int layer, float fadeSeconds = 0.15f, uint32_t id = 0) const {
+		return engineApi_ && engineApi_->animStopLayer && engineApi_->animStopLayer(engineApi_->hostContext, ResolveId(id), layer, fadeSeconds);
+	}
+	/// World position of a bone in the current pose
+	bool GetBonePosition(const char* bone, Vector3& out, uint32_t id = 0) const {
+		return engineApi_ && engineApi_->getBoneWorldPosition && engineApi_->getBoneWorldPosition(engineApi_->hostContext, ResolveId(id), bone, &out);
+	}
+	/// Reaches `target` with the bone and the two bones above it (foot on a step, hand on a door). `pole` = where the knee or
+	/// elbow should point. Holds until changed; weight 0 turns it off. Call every frame for a moving target.
+	bool SetBoneIK(const char* endBone, const Vector3& target, const Vector3& pole, float weight = 1.0f, uint32_t id = 0) const {
+		return engineApi_ && engineApi_->setBoneIK && engineApi_->setBoneIK(engineApi_->hostContext, ResolveId(id), endBone, target, pole, weight);
+	}
+	/// `childId` follows a bone of `parentId`; its transform becomes the offset from that bone (a sword in a hand)
+	bool AttachToBone(uint32_t childId, uint32_t parentId, const char* bone) const {
+		return engineApi_ && engineApi_->attachToBone && engineApi_->attachToBone(engineApi_->hostContext, childId, parentId, bone);
+	}
+	/// Physics takes over the skeleton (death). The object's own collider is off while it lasts; false turns it back on.
+	bool SetRagdoll(bool enabled, uint32_t id = 0) const {
+		return engineApi_ && engineApi_->setRagdoll && engineApi_->setRagdoll(engineApi_->hostContext, ResolveId(id), enabled);
+	}
 	ScriptCharacterMove MoveCharacter(const Vector3& motion, float stepHeight = 0.3f) const {
 		ScriptCharacterMove result{};
 		if (engineApi_ && engineApi_->moveCharacter) engineApi_->moveCharacter(engineApi_->hostContext, ownerId_, motion, stepHeight, &result);

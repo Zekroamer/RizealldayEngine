@@ -14,6 +14,7 @@ public:
 
 private:
 	float fallSpeed_ = 0.0f;
+	bool dummyFallen_ = false;
 	float slashTime_ = 0.0f;
 };
 

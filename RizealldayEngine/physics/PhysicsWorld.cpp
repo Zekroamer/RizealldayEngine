@@ -5,6 +5,7 @@
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyLock.h>
+#include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Collision/CollideShape.h>
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
@@ -21,6 +22,7 @@
 #include <Jolt/Physics/Constraints/FixedConstraint.h>
 #include <Jolt/Physics/Constraints/HingeConstraint.h>
 #include <Jolt/Physics/Constraints/PointConstraint.h>
+#include <Jolt/Physics/Constraints/SwingTwistConstraint.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
 
@@ -241,6 +243,28 @@ struct PhysicsWorld::Impl {
 	JPH::Ref<LayerMaskFilter> layerFilter;
 	std::unordered_map<uint32_t, Record> records;
 	std::unordered_map<uint32_t, JointRecord> joints;
+	struct CharacterRecord {
+		JPH::Ref<JPH::CharacterVirtual> character;
+		std::vector<ShapeDesc> shapes;
+		uint64_t lastStep = 0;
+	};
+	std::unordered_map<uint32_t, CharacterRecord> characters;
+	uint64_t stepCount = 0;
+	struct RagdollRecord {
+		std::vector<JPH::BodyID> bodies;
+		std::vector<JPH::Ref<JPH::Constraint>> constraints;
+	};
+	std::unordered_map<uint32_t, RagdollRecord> ragdolls;
+	uint32_t nextRagdoll = 1;
+
+	void DestroyRagdollRecord(const RagdollRecord& record) {
+		for (const auto& constraint : record.constraints) system->RemoveConstraint(constraint);
+		for (JPH::BodyID body : record.bodies) {
+			contactStore.RemoveBody(body);
+			Bodies().RemoveBody(body);
+			Bodies().DestroyBody(body);
+		}
+	}
 	int addedSinceOptimize = 0;
 	float lastDeltaTime = 1.0f / 60.0f;
 
@@ -353,6 +377,9 @@ void PhysicsWorld::Clear()
 {
 	for (const auto& [id, record] : impl_->records) impl_->Destroy(id, record);
 	impl_->records.clear();
+	impl_->characters.clear();
+	for (const auto& [handle, record] : impl_->ragdolls) impl_->DestroyRagdollRecord(record);
+	impl_->ragdolls.clear();
 	impl_->contactStore.Clear();
 	contacts_.clear();
 }
@@ -482,6 +509,9 @@ void PhysicsWorld::Step(float deltaTime)
 		impl_->addedSinceOptimize = 0;
 	}
 
+	// Characters not moved for a while: their object is gone or no longer walks
+	++impl_->stepCount;
+	std::erase_if(impl_->characters, [this](const auto& entry) { return impl_->stepCount - entry.second.lastStep > 300; });
 	impl_->lastDeltaTime = deltaTime;
 	impl_->contactStore.BeginStep();
 	impl_->system->Update(deltaTime, 1, impl_->tempAllocator.get(), impl_->jobs.get());
@@ -505,6 +535,7 @@ void PhysicsWorld::Step(float deltaTime)
 	contacts_.clear();
 	std::set<std::pair<uint32_t, uint32_t>> pairs;
 	for (const auto& [key, live] : impl_->contactStore.Live()) {
+		if (live.a == 0 || live.b == 0) continue; // ragdoll parts have no object
 		if (!live.sensor) {
 			constexpr float kGroundNormalY = 0.5f;
 			if (live.normal.y > kGroundNormalY) {
@@ -517,6 +548,145 @@ void PhysicsWorld::Step(float deltaTime)
 			contacts_.push_back({ live.a, live.b, live.sensor });
 		}
 	}
+}
+
+uint32_t PhysicsWorld::CreateRagdoll(const std::vector<RagdollPart>& parts)
+{
+	constexpr uint32_t kRagdollBit = 1u << 30; // parts of a ragdoll ignore each other through the layer filter
+	Impl::RagdollRecord record;
+	std::vector<JPH::Vec3> axes;
+	float totalLength = 0.0f;
+	for (const RagdollPart& part : parts) totalLength += (ToJolt(part.end) - ToJolt(part.start)).Length();
+	for (const RagdollPart& part : parts) {
+		const JPH::Vec3 start = ToJolt(part.start);
+		const JPH::Vec3 end = ToJolt(part.end);
+		const JPH::Vec3 axis = (end - start).NormalizedOr(JPH::Vec3::sAxisY());
+		const float length = (end - start).Length();
+		const float radius = (std::max)(length * 0.22f, 0.01f);
+		const float halfHeight = (std::max)(length * 0.5f - radius, 0.005f);
+		JPH::RefConst<JPH::Shape> shape = new JPH::CapsuleShape(halfHeight, radius);
+		JPH::BodyCreationSettings settings(shape, (start + end) * 0.5f, JPH::Quat::sFromTo(JPH::Vec3::sAxisY(), axis), JPH::EMotionType::Dynamic, kLayerMoving);
+		settings.mCollisionGroup = JPH::CollisionGroup(impl_->layerFilter, kRagdollBit, ~kRagdollBit);
+		settings.mFriction = 0.6f;
+		settings.mLinearDamping = 0.1f;
+		settings.mAngularDamping = 0.4f;
+		settings.mMotionQuality = JPH::EMotionQuality::LinearCast;
+		// Mass follows length only, so limbs stay within a stable ratio and the character's scale does not matter
+		settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
+		settings.mMassPropertiesOverride.mMass = (std::max)(70.0f * length / (std::max)(totalLength, 0.001f), 1.0f);
+		JPH::Body* body = impl_->Bodies().CreateBody(settings);
+		if (!body) break; // body limit reached
+		record.bodies.push_back(body->GetID());
+		axes.push_back(axis);
+		impl_->Bodies().AddBody(body->GetID(), JPH::EActivation::Activate);
+	}
+	const JPH::BodyLockInterfaceNoLock& locks = impl_->system->GetBodyLockInterfaceNoLock();
+	for (size_t i = 0; i < record.bodies.size(); ++i) {
+		const int parent = parts[i].parent;
+		if (parent < 0 || parent >= static_cast<int>(record.bodies.size())) continue;
+		JPH::SwingTwistConstraintSettings joint;
+		joint.mPosition1 = joint.mPosition2 = ToJolt(parts[i].start);
+		joint.mTwistAxis1 = joint.mTwistAxis2 = axes[i];
+		joint.mPlaneAxis1 = joint.mPlaneAxis2 = axes[i].GetNormalizedPerpendicular();
+		joint.mNormalHalfConeAngle = 1.0f;
+		joint.mPlaneHalfConeAngle = 1.0f;
+		joint.mTwistMinAngle = -0.5f;
+		joint.mTwistMaxAngle = 0.5f;
+		JPH::Body* a = locks.TryGetBody(record.bodies[parent]);
+		JPH::Body* b = locks.TryGetBody(record.bodies[i]);
+		JPH::Ref<JPH::Constraint> constraint = joint.Create(*a, *b);
+		impl_->system->AddConstraint(constraint);
+		record.constraints.push_back(constraint);
+	}
+	const uint32_t handle = impl_->nextRagdoll++;
+	impl_->ragdolls.emplace(handle, std::move(record));
+	return handle;
+}
+
+void PhysicsWorld::GetRagdollPose(uint32_t handle, std::vector<BodyState>& out) const
+{
+	out.clear();
+	const auto it = impl_->ragdolls.find(handle);
+	if (it == impl_->ragdolls.end()) return;
+	for (JPH::BodyID body : it->second.bodies) {
+		JPH::RVec3 position;
+		JPH::Quat rotation;
+		impl_->Bodies().GetPositionAndRotation(body, position, rotation);
+		BodyState state;
+		state.position = FromJolt(position);
+		state.rotation = { rotation.GetX(), rotation.GetY(), rotation.GetZ(), rotation.GetW() };
+		out.push_back(state);
+	}
+}
+
+void PhysicsWorld::DestroyRagdoll(uint32_t handle)
+{
+	const auto it = impl_->ragdolls.find(handle);
+	if (it == impl_->ragdolls.end()) return;
+	impl_->DestroyRagdollRecord(it->second);
+	impl_->ragdolls.erase(it);
+}
+
+bool PhysicsWorld::MoveCharacter(const BodyDesc& desc, const Vector3& motion, float stepHeight, const QueryFilter& blocks, CharacterMoveResult& out)
+{
+	out = {};
+	std::vector<ShapeDesc> shapes;
+	for (const ShapeDesc& shape : desc.shapes) {
+		if (shape.type != ShapeType::Mesh) shapes.push_back(shape);
+	}
+	if (shapes.empty()) return false;
+
+	Impl::CharacterRecord& record = impl_->characters[desc.id];
+	if (!record.character || record.shapes != shapes) {
+		JPH::RefConst<JPH::Shape> shape = BuildShape(shapes);
+		if (!shape) return false;
+		JPH::Ref<JPH::CharacterVirtualSettings> settings = new JPH::CharacterVirtualSettings();
+		settings->mShape = shape;
+		settings->mUp = JPH::Vec3::sAxisY();
+		settings->mMaxSlopeAngle = JPH::DegreesToRadians(50.0f);
+		settings->mCharacterPadding = 0.005f;
+		settings->mPredictiveContactDistance = 0.05f;
+		settings->mPenetrationRecoverySpeed = 0.0f; // a character spawned inside something is not thrown out of it
+		record.character = new JPH::CharacterVirtual(settings, ToJolt(desc.position), JPH::Quat::sIdentity(), desc.id, impl_->system.get());
+		record.shapes = std::move(shapes);
+	}
+	record.lastStep = impl_->stepCount;
+	JPH::CharacterVirtual& character = *record.character;
+	const JPH::Vec3 start = ToJolt(desc.position);
+	character.SetPosition(start);
+
+	class Filter final : public JPH::BodyFilter {
+	public:
+		Filter(uint32_t self, const QueryFilter& blocks) : self_(self), blocks_(blocks) {}
+		bool ShouldCollideLocked(const JPH::Body& body) const override {
+			const uint32_t id = static_cast<uint32_t>(body.GetUserData());
+			return id != self_ && !body.IsSensor() && blocks_(id);
+		}
+	private:
+		uint32_t self_;
+		const QueryFilter& blocks_;
+	} bodyFilter(desc.id, blocks);
+
+	constexpr float kStep = 1.0f / 60.0f; // only scales the velocity back to `motion`
+	JPH::Vec3 velocity = ToJolt(motion) / kStep;
+	character.SetLinearVelocity(velocity);
+	JPH::CharacterVirtual::ExtendedUpdateSettings extended;
+	extended.mStickToFloorStepDown = JPH::Vec3::sZero();
+	extended.mWalkStairsStepUp = JPH::Vec3(0.0f, (std::max)(stepHeight, 0.0f), 0.0f);
+	extended.mWalkStairsMinStepForward = 0.01f;
+	extended.mWalkStairsStepForwardTest = 0.05f;
+	character.ExtendedUpdate(kStep, JPH::Vec3::sZero(), extended, JPH::BroadPhaseLayerFilter{}, JPH::ObjectLayerFilter{}, bodyFilter, JPH::ShapeFilter{}, *impl_->tempAllocator);
+
+	const JPH::Vec3 end = character.GetPosition();
+	const JPH::Vec3 moved = end - start;
+	out.moved = FromJolt(moved);
+	out.grounded = character.GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround ||
+		character.GetGroundState() == JPH::CharacterVirtual::EGroundState::OnSteepGround;
+	const float wantedHorizontal = std::sqrt(motion.x * motion.x + motion.z * motion.z);
+	const float movedHorizontal = std::sqrt(moved.GetX() * moved.GetX() + moved.GetZ() * moved.GetZ());
+	out.hitWall = wantedHorizontal > 1.0e-5f && movedHorizontal < wantedHorizontal * 0.99f;
+	out.hitCeiling = motion.y > 1.0e-5f && moved.GetY() < motion.y * 0.9f;
+	return true;
 }
 
 bool PhysicsWorld::Raycast(const Vector3& origin, const Vector3& direction, float maxDistance, const QueryFilter& accept, RayHit& out) const

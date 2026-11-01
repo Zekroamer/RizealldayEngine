@@ -1,6 +1,5 @@
 ﻿#include "EditorSuiteInternal.h"
 #include "audio/Audio.h"
-#include "CharacterController.h"
 
 // Script API part 2 (Tahap H): collision enter/exit, scene queries, hierarchy, audio, particles,
 // material and component access. EngineAPI entries are filled in by SetupEngineAPIExtensions().
@@ -195,46 +194,28 @@ bool EditorSuite::ScriptMoveCharacter(uint32_t id, const Vector3& motion, float 
 	GameObject* obj = FindGameObjectById(id, false);
 	// Root objects only: their collider follows `translation` directly
 	if (!obj || !obj->isActive || obj->parentId != -1) return false;
-	const bool useBox = obj->hasBoxCollider && obj->boxColliderEnabled;
-	if (!useBox && !(obj->hasSphereCollider && obj->sphereColliderEnabled)) return false;
 
 	// The script may have moved its view earlier in this Update
 	auto viewIt = scriptObjectViews_.find(id);
 	ScriptGameObjectView* view = viewIt != scriptObjectViews_.end() ? viewIt->second.get() : nullptr;
 	if (view) obj->translation = view->translation;
 
-	auto boundsOf = [this](const GameObject& o, bool box, CharacterController::Box& b) {
-		if (box) {
-			ComputeBoxColliderBounds(o, true, b.min, b.max);
-		} else {
-			Vector3 c{};
-			float r = 0.0f;
-			ComputeSphereColliderWorld(o, c, r);
-			b = { { c.x - r, c.y - r, c.z - r }, { c.x + r, c.y + r, c.z + r } };
-		}
-	};
-	CharacterController::Box self{};
-	boundsOf(*obj, useBox, self);
+	Physics::BodyDesc desc;
+	if (!BuildPhysicsBody(*obj, desc) || desc.shapes.empty()) return false;
 
-	// shortcut: other objects use last frame's world matrices (exact for roots and static level geometry); call UpdateWorldMatrices first if moving parents matter
+	SyncPhysicsForQueries();
 	const auto excluded = CollectQueryExclusions(gameObjects_, pendingDeletes_, pendingDespawns_);
 	const uint32_t selfBit = 1u << (obj->layer & 31u);
-	std::vector<CharacterController::Box> obstacles;
-	for (const auto& o : gameObjects_) {
-		if (o.id == id || !o.isActive || o.isTrigger || excluded.count(o.id) != 0) continue;
-		if ((obj->collisionMask & (1u << (o.layer & 31u))) == 0 || (o.collisionMask & selfBit) == 0) continue;
-		CharacterController::Box b{};
-		if (o.hasBoxCollider && o.boxColliderEnabled) {
-			boundsOf(o, true, b);
-			obstacles.push_back(b);
-		}
-		if (o.hasSphereCollider && o.sphereColliderEnabled) {
-			boundsOf(o, false, b);
-			obstacles.push_back(b);
-		}
-	}
+	const uint32_t selfMask = obj->collisionMask;
+	Physics::CharacterMoveResult r;
+	const bool moved = physicsWorld_->MoveCharacter(desc, motion, stepHeight, [&](uint32_t other) {
+		if (excluded.count(other) != 0) return false;
+		const GameObject* o = FindGameObjectById(other, false);
+		return o && o->isActive && (selfMask & (1u << (o->layer & 31u))) != 0 && (o->collisionMask & selfBit) != 0;
+	}, r);
+	if (!moved) return false;
 
-	const CharacterController::Result r = CharacterController::Move(self, motion, obstacles, (std::max)(stepHeight, 0.0f));
+	obj = FindGameObjectById(id, false);
 	obj->translation = { obj->translation.x + r.moved.x, obj->translation.y + r.moved.y, obj->translation.z + r.moved.z };
 	obj->isGrounded = r.grounded;
 	if (view) {
@@ -395,6 +376,10 @@ void EditorSuite::ResetScriptRuntimeState()
 	hitstopLeft_ = 0.0f;
 	physicsAccumulator_ = 0.0;
 	if (physicsWorld_) physicsWorld_->Clear();
+	for (const auto& [id, ragdoll] : ragdolls_) {
+		if (GameObject* obj = FindGameObjectById(id, false); obj && obj->editObject3d) obj->editObject3d->GetAnimationPlayer().Overrides().clear();
+	}
+	ragdolls_.clear();
 	physicsQueryDirty_ = true;
 	renderPoses_.clear();
 	renderPosesApplied_ = false;
@@ -844,6 +829,24 @@ void EditorSuite::SetupEngineAPIExtensions()
 	};
 	engineApi_.hitstop = [](void* ctx, float seconds) {
 		if (ctx) static_cast<EditorSuite*>(ctx)->Hitstop(seconds);
+	};
+	engineApi_.animPlayLayer = [](void* ctx, uint32_t id, int layer, const char* clip, const char* maskBone, bool loop, float speed, float fadeSeconds) -> bool {
+		return ctx && static_cast<EditorSuite*>(ctx)->ScriptPlayAnimationLayer(id, layer, clip, maskBone, loop, speed, fadeSeconds);
+	};
+	engineApi_.animStopLayer = [](void* ctx, uint32_t id, int layer, float fadeSeconds) -> bool {
+		return ctx && static_cast<EditorSuite*>(ctx)->ScriptStopAnimationLayer(id, layer, fadeSeconds);
+	};
+	engineApi_.getBoneWorldPosition = [](void* ctx, uint32_t id, const char* bone, Vector3* out) -> bool {
+		return ctx && out && static_cast<EditorSuite*>(ctx)->ScriptGetBoneWorldPosition(id, bone, *out);
+	};
+	engineApi_.setBoneIK = [](void* ctx, uint32_t id, const char* endBone, Vector3 target, Vector3 pole, float weight) -> bool {
+		return ctx && static_cast<EditorSuite*>(ctx)->ScriptSetBoneIK(id, endBone, target, pole, weight);
+	};
+	engineApi_.attachToBone = [](void* ctx, uint32_t childId, uint32_t parentId, const char* bone) -> bool {
+		return ctx && static_cast<EditorSuite*>(ctx)->ScriptAttachToBone(childId, parentId, bone);
+	};
+	engineApi_.setRagdoll = [](void* ctx, uint32_t id, bool enabled) -> bool {
+		return ctx && static_cast<EditorSuite*>(ctx)->ScriptSetRagdoll(id, enabled);
 	};
 	engineApi_.moveCharacter = [](void* ctx, uint32_t id, Vector3 motion, float stepHeight, ScriptCharacterMove* out) -> bool {
 		return ctx && out && static_cast<EditorSuite*>(ctx)->ScriptMoveCharacter(id, motion, stepHeight, *out);

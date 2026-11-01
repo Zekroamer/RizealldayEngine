@@ -546,6 +546,41 @@ void EditorSuite::DrawAnimatorSidePanel(AnimatorController& c, AnimatorComponent
 		}
 		edited(ImGui::DragFloat(TrId("Speed##State"), &s->speed, 0.01f, 0.0f, 10.0f, "%.2f"));
 		edited(ImGui::Checkbox(TrId("Loop##State"), &s->loop));
+
+		if (ImGui::TreeNode(TrId("Blend Tree"))) {
+			ImGui::TextDisabled("%s", Tr("Mixes clips by a float parameter, e.g. speed: idle at 0, walk at 2, run at 5."));
+			std::string parameter = s->blendParameter;
+			if (InputString(TrId("Parameter##Blend"), parameter)) { s->blendParameter = parameter; animatorDirty_ = true; }
+			int removeClip = -1;
+			for (int i = 0; i < static_cast<int>(s->blendClips.size()); ++i) {
+				AnimBlendClip& clip = s->blendClips[i];
+				ImGui::PushID(i);
+				std::string model = clip.clipModel;
+				if (InputString(TrId("Clip Model##Blend"), model)) { clip.clipModel = model; animatorDirty_ = true; }
+				if (ImGui::BeginDragDropTarget()) {
+					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("RIZE_ASSET_PATH")) {
+						clip.clipModel = static_cast<const char*>(payload->Data);
+						animatorDirty_ = true;
+					}
+					ImGui::EndDragDropTarget();
+				}
+				std::string name = clip.clipName;
+				if (InputString(TrId("Clip Name##Blend"), name)) { clip.clipName = name; animatorDirty_ = true; }
+				edited(ImGui::DragFloat(TrId("Threshold"), &clip.threshold, 0.05f));
+				if (ImGui::SmallButton(TrId("Remove Clip"))) removeClip = i;
+				ImGui::Separator();
+				ImGui::PopID();
+			}
+			if (removeClip >= 0) {
+				s->blendClips.erase(s->blendClips.begin() + removeClip);
+				animatorDirty_ = true;
+			}
+			if (ImGui::SmallButton(TrId("Add Clip"))) {
+				s->blendClips.push_back({ s->clipModel, s->clipName, s->clipIndex, s->blendClips.empty() ? 0.0f : s->blendClips.back().threshold + 1.0f });
+				animatorDirty_ = true;
+			}
+			ImGui::TreePop();
+		}
 		if (s->id != c.EntryStateId() && ImGui::Button(TrId("Set as Entry State"))) {
 			c.entryState = s->id;
 			animatorDirty_ = true;

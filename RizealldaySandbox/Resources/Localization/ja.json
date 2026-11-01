@@ -1,5 +1,13 @@
 {
 	"_language": "日本語",
+	"Blend Tree": "ブレンドツリー",
+	"Mixes clips by a float parameter, e.g. speed: idle at 0, walk at 2, run at 5.": "floatパラメーターでクリップを混ぜます。例: speed で 0 が待機、2 が歩き、5 が走り。",
+	"Threshold": "しきい値",
+	"Remove Clip": "クリップを削除",
+	"Add Clip": "クリップを追加",
+	"Parameter": "パラメーター",
+	"Clip Name": "クリップ名",
+	"Bone Attachment": "ボーンに追従",
 	"Ambient Occlusion": "アンビエントオクルージョン",
 	"Occlusion Radius": "オクルージョン半径",
 	"Occlusion Intensity": "オクルージョン強度",

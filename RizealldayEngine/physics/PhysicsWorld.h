@@ -81,6 +81,20 @@ struct RayHit {
 
 using QueryFilter = std::function<bool(uint32_t id)>;
 
+/// One limb of a ragdoll: a capsule from `start` to `end` (world space), joined to `parent` at `start`
+struct RagdollPart {
+	Vector3 start = { 0.0f, 0.0f, 0.0f };
+	Vector3 end = { 0.0f, 1.0f, 0.0f };
+	int parent = -1;
+};
+
+struct CharacterMoveResult {
+	Vector3 moved = { 0.0f, 0.0f, 0.0f };
+	bool grounded = false;
+	bool hitWall = false;
+	bool hitCeiling = false;
+};
+
 class PhysicsWorld {
 public:
 	PhysicsWorld();
@@ -99,6 +113,13 @@ public:
 	void Step(float deltaTime);
 	// Closest hit whose id passes the filter. A ray starting inside a convex shape ignores that shape.
 	bool Raycast(const Vector3& origin, const Vector3& direction, float maxDistance, const QueryFilter& accept, RayHit& out) const;
+	// Slides the character (convex shapes of `desc`, mesh shapes are ignored) from desc.position by `motion`, climbing up to
+	// stepHeight while on the ground. `blocks` says which bodies stop it; sensors never do. The result is not written anywhere.
+	bool MoveCharacter(const BodyDesc& desc, const Vector3& motion, float stepHeight, const QueryFilter& blocks, CharacterMoveResult& out);
+	uint32_t CreateRagdoll(const std::vector<RagdollPart>& parts);
+	// Pose of each part in creation order: position and rotation only
+	void GetRagdollPose(uint32_t handle, std::vector<BodyState>& out) const;
+	void DestroyRagdoll(uint32_t handle);
 	// Ids of the bodies touching the sphere that pass the filter, each once
 	void OverlapSphere(const Vector3& center, float radius, const QueryFilter& accept, std::vector<uint32_t>& out) const;
 	// Pose after the last Step. False when the id has no body.

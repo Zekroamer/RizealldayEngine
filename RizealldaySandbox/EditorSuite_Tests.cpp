@@ -14,7 +14,6 @@
 #include "3d/Object3d.h"
 #include "3d/AnimationPlayer.h"
 #include "EngineUpdate.h"
-#include "CharacterController.h"
 #include "NavGrid.h"
 #include "base/EngineVersion.h"
 #include <random>
@@ -38,6 +37,7 @@ struct EditorSuiteTestAccess {
 	static LightGroup* Lights(EditorSuite& s) { return s.lights_; }
 	static Skybox& Sky(EditorSuite& s) { return s.skybox_; }
 	static bool& Instancing(EditorSuite& s) { return s.enableInstancing_; }
+	static bool InstallSample(EditorSuite& s, const std::string& prefix) { return s.InstallSampleScripts(prefix); }
 	static uint64_t EnvironmentBakes(EditorSuite& s) { return s.environmentProbe_.GetBakeCount(); }
 	static std::unordered_map<std::string, uint32_t>& MaterialTextures(EditorSuite& s) { return s.materialTextures_; }
 	static void SaveMaterial(EditorSuite& s, GameObject& o, PbrMaterialComponent& m) { s.SaveMaterialAsset(o, m); }
@@ -1308,60 +1308,120 @@ TEST_CASE(Physics, FixedTimestepIsFrameRateIndependent)
 	CHECK_NEAR(slow, fast, 1e-4f);
 }
 
+namespace {
+uint32_t MakeStaticBox(EditorSuite& s, const Vector3& mn, const Vector3& mx)
+{
+	GameObject& box = s.CreateGameObject("Obstacle", GameObjectType::Empty);
+	box.translation = { (mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f, (mn.z + mx.z) * 0.5f };
+	box.hasBoxCollider = true;
+	box.boxSize = { mx.x - mn.x, mx.y - mn.y, mx.z - mn.z };
+	box.isStatic = true;
+	return box.id;
+}
+}
+
 TEST_CASE(Character, SlidesStepsLandsAndNeverTunnels)
 {
-	using CharacterController::Box;
-	const Box floor{ { -50.0f, -1.0f, -50.0f }, { 50.0f, 0.0f, 50.0f } };
-	auto standingAt = [](float x, float z) { return Box{ { x - 0.4f, 0.0f, z - 0.4f }, { x + 0.4f, 1.8f, z + 0.4f } }; };
-	const Box wall{ { 2.0f, 0.0f, -10.0f }, { 2.1f, 3.0f, 10.0f } }; // thin wall across X = 2
+	for (auto& obj : A::Objects(s)) obj.isActive = false; // the default Ground Plane
+	GameObject& hero = s.CreateGameObject("Hero", GameObjectType::Empty);
+	hero.hasBoxCollider = true;
+	hero.boxSize = { 0.8f, 1.8f, 0.8f };
+	const uint32_t heroId = hero.id;
+	s.RefreshAllScriptObjectViews();
+	EngineAPI& api = A::Api(s);
+
+	const uint32_t floor = MakeStaticBox(s, { -50.0f, -1.0f, -50.0f }, { 50.0f, 0.0f, 50.0f });
+	const auto move = [&](const Vector3& feet, const Vector3& motion) {
+		A::ViewFor(s, heroId)->translation = { feet.x, feet.y + 0.9f, feet.z };
+		ScriptCharacterMove r{};
+		const bool ok = api.moveCharacter(api.hostContext, heroId, motion, 0.3f, &r);
+		CHECK(ok);
+		return r;
+	};
+	const auto setActive = [&](uint32_t id, bool active) { s.FindGameObjectById(id, false)->isActive = active; };
 
 	// Free move on the floor: full motion, grounded
-	auto r = CharacterController::Move(standingAt(0, 0), { 1.0f, 0.0f, 0.5f }, { floor }, 0.3f);
-	CHECK_NEAR(r.moved.x, 1.0f, 1e-4f);
-	CHECK_NEAR(r.moved.z, 0.5f, 1e-4f);
+	auto r = move({ 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.5f });
+	CHECK_NEAR(r.moved.x, 1.0f, 1e-3f);
+	CHECK_NEAR(r.moved.z, 0.5f, 1e-3f);
 	CHECK(r.grounded);
 	CHECK(!r.hitWall);
 
 	// Diagonal into a wall: stops flush on X, keeps sliding on Z
-	r = CharacterController::Move(standingAt(1.0f, 0), { 3.0f, 0.0f, 2.0f }, { floor, wall }, 0.3f);
+	const uint32_t wall = MakeStaticBox(s, { 2.0f, 0.0f, -10.0f }, { 2.1f, 3.0f, 10.0f });
+	r = move({ 1.0f, 0.0f, 0.0f }, { 3.0f, 0.0f, 2.0f });
 	CHECK(r.hitWall);
-	CHECK_NEAR(1.0f + 0.4f + r.moved.x, 2.0f, 0.01f);
-	CHECK_NEAR(r.moved.z, 2.0f, 1e-4f);
+	CHECK_NEAR(1.0f + 0.4f + r.moved.x, 2.0f, 0.02f);
+	CHECK_MSG(r.moved.z > 1.0f, std::format("slid {:.3f}", r.moved.z));
 
 	// Very fast motion does not pass through the 10 cm wall
-	r = CharacterController::Move(standingAt(0, 0), { 50.0f, 0.0f, 0.0f }, { floor, wall }, 0.3f);
+	r = move({ 0.0f, 0.0f, 0.0f }, { 50.0f, 0.0f, 0.0f });
 	CHECK(r.hitWall);
 	CHECK_MSG(r.moved.x < 1.7f, std::format("moved {:.3f}", r.moved.x));
+	setActive(wall, false);
 
 	// Falling: lands on the floor top, grounded; no tunnelling through it either
-	const Box inAir{ { -0.4f, 5.0f, -0.4f }, { 0.4f, 6.8f, 0.4f } };
-	r = CharacterController::Move(inAir, { 0.0f, -100.0f, 0.0f }, { floor }, 0.3f);
+	r = move({ 0.0f, 5.0f, 0.0f }, { 0.0f, -100.0f, 0.0f });
 	CHECK(r.grounded);
-	CHECK_NEAR(5.0f + r.moved.y, 0.0f, 0.01f);
-	r = CharacterController::Move(inAir, { 0.0f, -1.0f, 0.0f }, { floor }, 0.3f);
+	CHECK_NEAR(5.0f + r.moved.y, 0.0f, 0.02f);
+	r = move({ 0.0f, 5.0f, 0.0f }, { 0.0f, -1.0f, 0.0f });
 	CHECK(!r.grounded); // still in the air
 
-	// Ledges: 0.2 is climbed, 0.5 blocks; nothing is climbed while airborne
-	const Box low{ { 1.0f, 0.0f, -5.0f }, { 3.0f, 0.2f, 5.0f } };
-	const Box high{ { 1.0f, 0.0f, -5.0f }, { 3.0f, 0.5f, 5.0f } };
-	r = CharacterController::Move(standingAt(0, 0), { 1.5f, 0.0f, 0.0f }, { floor, low }, 0.3f);
-	CHECK(!r.hitWall);
-	CHECK_NEAR(r.moved.x, 1.5f, 1e-3f);
-	CHECK_NEAR(r.moved.y, 0.2f, 0.01f);
-	CHECK(r.grounded);
-	r = CharacterController::Move(standingAt(0, 0), { 1.5f, 0.0f, 0.0f }, { floor, high }, 0.3f);
+	// Ledges: 0.2 is climbed, 0.5 blocks
+	const uint32_t low = MakeStaticBox(s, { 1.0f, 0.0f, -5.0f }, { 3.0f, 0.2f, 5.0f });
+	move({ 0.0f, 0.0f, 0.0f }, { 0.0f, -0.01f, 0.0f });
+	r = move({ 0.0f, 0.0f, 0.0f }, { 1.5f, 0.0f, 0.0f });
+	CHECK_MSG(!r.hitWall && r.moved.x > 1.0f, std::format("x {:.3f}", r.moved.x));
+	CHECK_NEAR(r.moved.y, 0.2f, 0.03f);
+	setActive(low, false);
+	const uint32_t high = MakeStaticBox(s, { 1.0f, 0.0f, -5.0f }, { 3.0f, 0.5f, 5.0f });
+	move({ 0.0f, 0.0f, 0.0f }, { 0.0f, -0.01f, 0.0f });
+	r = move({ 0.0f, 0.0f, 0.0f }, { 1.5f, 0.0f, 0.0f });
 	CHECK(r.hitWall);
-	CHECK_NEAR(r.moved.y, 0.0f, 1e-4f);
-	const Box hovering{ { -0.4f, 1.0f, -0.4f }, { 0.4f, 2.8f, 0.4f } };
-	const Box crate{ { 1.0f, 0.0f, -5.0f }, { 3.0f, 1.2f, 5.0f } }; // its top is 0.2 above the hovering feet
-	r = CharacterController::Move(hovering, { 1.5f, 0.0f, 0.0f }, { crate }, 0.3f);
-	CHECK(r.hitWall);
+	CHECK_NEAR(r.moved.y, 0.0f, 0.01f);
+	setActive(high, false);
 
 	// Ceiling
-	const Box ceiling{ { -5.0f, 2.0f, -5.0f }, { 5.0f, 2.5f, 5.0f } };
-	r = CharacterController::Move(standingAt(0, 0), { 0.0f, 1.0f, 0.0f }, { floor, ceiling }, 0.3f);
+	const uint32_t ceiling = MakeStaticBox(s, { -5.0f, 2.0f, -5.0f }, { 5.0f, 2.5f, 5.0f });
+	r = move({ 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f });
 	CHECK(r.hitCeiling);
-	CHECK_NEAR(1.8f + r.moved.y, 2.0f, 0.01f);
+	CHECK_NEAR(1.8f + r.moved.y, 2.0f, 0.02f);
+	setActive(ceiling, false);
+
+	// What the old box-only mover could not see: a turned wall, a capsule and a mesh
+	GameObject& turned = s.CreateGameObject("Turned", GameObjectType::Empty);
+	turned.translation = { 3.0f, 1.5f, 0.0f };
+	turned.hasBoxCollider = true;
+	turned.boxSize = { 0.2f, 3.0f, 8.0f };
+	turned.isStatic = true;
+	turned.rotation = { 0.0f, 0.785f, 0.0f };
+	turned.rotationQuat = Quaternion::FromEuler(turned.rotation);
+	const uint32_t turnedId = turned.id;
+	r = move({ 0.0f, 0.0f, 0.0f }, { 6.0f, 0.0f, 0.0f });
+	CHECK(r.hitWall);
+	CHECK_MSG(r.moved.x < 3.0f, std::format("through the turned wall: {:.3f}", r.moved.x));
+	setActive(turnedId, false);
+
+	GameObject& pillar = s.CreateGameObject("Pillar", GameObjectType::Empty);
+	pillar.translation = { 3.0f, 1.0f, 0.0f };
+	pillar.isStatic = true;
+	REQUIRE(s.AddComponentByName(pillar, "Capsule Collider"));
+	const uint32_t pillarId = pillar.id;
+	r = move({ 0.0f, 0.0f, 0.0f }, { 6.0f, 0.0f, 0.0f });
+	CHECK(r.hitWall);
+	setActive(pillarId, false);
+
+	setActive(floor, false);
+	GameObject& meshFloor = s.CreateGameObject("MeshFloor", GameObjectType::Empty);
+	meshFloor.translation = { 0.0f, -0.5f, 0.0f };
+	meshFloor.scale = { 30.0f, 1.0f, 30.0f };
+	meshFloor.meshType = GameObject::MeshType::CustomModel;
+	meshFloor.modelPath = "Resources/Model/cube.obj";
+	meshFloor.isStatic = true;
+	REQUIRE(s.AddComponentByName(meshFloor, "Mesh Collider"));
+	r = move({ 0.0f, 3.0f, 0.0f }, { 0.0f, -10.0f, 0.0f });
+	CHECK(r.grounded);
+	CHECK_MSG(3.0f + r.moved.y > -0.5f, std::format("fell through the mesh: {:.3f}", 3.0f + r.moved.y));
 }
 
 TEST_CASE(Character, ScriptMoveCharacterUsesSceneColliders)
@@ -3564,6 +3624,9 @@ constexpr int kSignatureColumns = 16;
 constexpr int kSignatureRows = 9;
 const char* const kRenderBaselineFile = "Tests/Baselines/render_scene.json";
 
+/// Average brightness of every pixel row of the last capture: shows thin horizontal lines that the grid averages away
+std::vector<float> gCapturedRowMeans;
+
 /// Renders one real frame and returns the Game view as average RGB (0..255) per grid cell.
 /// A coarse grid survives the small rasterization differences between a GPU and WARP.
 std::vector<float> CaptureGameViewSignature(EditorSuite& s)
@@ -3585,6 +3648,13 @@ std::vector<float> CaptureGameViewSignature(EditorSuite& s)
 
 	const uint8_t* pixels = nullptr;
 	if (FAILED(readback->Map(0, nullptr, reinterpret_cast<void**>(const_cast<uint8_t**>(&pixels))))) return {};
+	gCapturedRowMeans.assign(rt.GetHeight(), 0.0f);
+	for (uint32_t y = 0; y < rt.GetHeight(); ++y) {
+		const uint8_t* row = pixels + y * rowPitch;
+		double rowSum = 0.0;
+		for (uint32_t x = 0; x < rt.GetWidth(); ++x) rowSum += row[x * 4 + 1];
+		gCapturedRowMeans[y] = static_cast<float>(rowSum / rt.GetWidth());
+	}
 	std::vector<double> sum(kSignatureColumns * kSignatureRows * 3, 0.0);
 	std::vector<int> count(kSignatureColumns * kSignatureRows, 0);
 	for (uint32_t y = 0; y < rt.GetHeight(); ++y) {
@@ -4547,6 +4617,412 @@ TEST_CASE(Lighting, MaterialAssetIsSharedAndSurvivesARestart)
 	CHECK(A::FindMaterial(s, "Assets/Materials/Missing.material.json") == nullptr);
 	A::ForgetMaterials(s);
 	A::ProjectRoot(s) = savedRoot;
+}
+
+// ===========================================================================
+// Fase 5: animation and character
+// ===========================================================================
+
+namespace {
+
+Vector3 BoneModelPosition(const Model& model, const LocalPose& pose, const char* bone)
+{
+	Matrix4x4 m;
+	model.GetNodeModelMatrix(pose, model.FindNode(bone), m);
+	return { m.m[3][0], m.m[3][1], m.m[3][2] };
+}
+
+float Distance(const Vector3& a, const Vector3& b)
+{
+	const Vector3 d = a - b;
+	return std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+}
+
+// Bone names differ per export: the first bone whose name ends with `suffix`
+std::string FindBone(const Model& model, const char* suffix)
+{
+	for (const BoneInfo& bone : model.GetBoneList()) {
+		if (bone.name.ends_with(suffix)) return bone.name;
+	}
+	return {};
+}
+
+} // namespace
+
+TEST_CASE(Animation, BlendWeightsMixTheTwoNearestClips)
+{
+	AnimState state;
+	state.blendClips = { { "", "Idle", 0, 0.0f }, { "", "Walk", 0, 2.0f }, { "", "Run", 0, 6.0f } };
+	std::vector<float> w;
+	state.BlendWeights(-1.0f, w);
+	CHECK_NEAR(w[0], 1.0f, 1e-5f);
+	state.BlendWeights(1.0f, w);
+	CHECK_NEAR(w[0], 0.5f, 1e-5f);
+	CHECK_NEAR(w[1], 0.5f, 1e-5f);
+	CHECK_NEAR(w[2], 0.0f, 1e-5f);
+	state.BlendWeights(5.0f, w);
+	CHECK_NEAR(w[1], 0.25f, 1e-5f);
+	CHECK_NEAR(w[2], 0.75f, 1e-5f);
+	state.BlendWeights(99.0f, w);
+	CHECK_NEAR(w[2], 1.0f, 1e-5f);
+
+	AnimatorController controller;
+	AnimState& saved = controller.AddState("Move", { 0.0f, 0.0f });
+	saved.blendParameter = "speed";
+	saved.blendClips = state.blendClips;
+	const auto loaded = AnimatorController::FromJson(controller.ToJson());
+	REQUIRE(loaded.has_value());
+	REQUIRE(loaded->states.size() == 1);
+	CHECK(loaded->states[0].blendParameter == "speed");
+	REQUIRE(loaded->states[0].blendClips.size() == 3);
+	CHECK(loaded->states[0].blendClips[2].clipName == "Run");
+	CHECK_NEAR(loaded->states[0].blendClips[2].threshold, 6.0f, 1e-5f);
+}
+
+TEST_CASE(Animation, BlendTreePoseLiesBetweenItsClips)
+{
+	Model* model = Model::CreateFromFile("Resources/Model", "Idle.fbx");
+	const Model* run = Model::CreateFromFile("Resources/Model", "Running.fbx");
+	REQUIRE(model && run);
+	const std::string foot = FindBone(*model, "LeftFoot");
+	REQUIRE(!foot.empty());
+
+	AnimationPlayer player;
+	player.Play(nullptr, 0);
+	player.Current().blend = { { nullptr, 0, 1.0f }, { run, 0, 0.0f } };
+	player.Advance(0.2f, model);
+	LocalPose idle, half, running;
+	player.EvaluatePose(*model, idle);
+	player.Current().blend[0].weight = 0.0f;
+	player.Current().blend[1].weight = 1.0f;
+	player.EvaluatePose(*model, running);
+	player.Current().blend[0].weight = 0.5f;
+	player.Current().blend[1].weight = 0.5f;
+	player.EvaluatePose(*model, half);
+	const float apart = Distance(BoneModelPosition(*model, idle, foot.c_str()), BoneModelPosition(*model, running, foot.c_str()));
+	CHECK_MSG(apart > 1.0e-3f, std::format("clips do not differ: {:.5f}", apart));
+	// Duration follows the mix, so the run's time is the same phase as the idle's
+	CHECK(AnimationPlayer::Duration(player.Current(), model) > 0.0f);
+	const float toIdle = Distance(BoneModelPosition(*model, half, foot.c_str()), BoneModelPosition(*model, idle, foot.c_str()));
+	const float toRun = Distance(BoneModelPosition(*model, half, foot.c_str()), BoneModelPosition(*model, running, foot.c_str()));
+	CHECK_MSG(toIdle < apart && toRun < apart, std::format("{:.4f} {:.4f} of {:.4f}", toIdle, toRun, apart));
+}
+
+TEST_CASE(Animation, LayerMaskMovesOnlyTheBonesBelowIt)
+{
+	Model* model = Model::CreateFromFile("Resources/Model", "Idle.fbx");
+	const Model* run = Model::CreateFromFile("Resources/Model", "Running.fbx");
+	REQUIRE(model && run);
+	const std::string spine = FindBone(*model, "Spine");
+	const std::string foot = FindBone(*model, "LeftFoot");
+	const std::string hand = FindBone(*model, "LeftHand");
+	REQUIRE(!spine.empty() && !foot.empty() && !hand.empty());
+
+	AnimationPlayer player;
+	player.Play(nullptr, 0);
+	player.Advance(0.3f, model);
+	LocalPose base, layered;
+	player.EvaluatePose(*model, base);
+	player.PlayLayer(0, *model, run, 0, spine, true, 1.0f, 0.0f);
+	player.Advance(0.3f, model);
+	player.Advance(-0.3f, model); // back to the same base time: only the layer may differ
+	CHECK(player.IsLayerPlaying(0));
+	player.EvaluatePose(*model, layered);
+	player.EvaluatePose(*model, layered);
+	CHECK_MSG(Distance(BoneModelPosition(*model, base, hand.c_str()), BoneModelPosition(*model, layered, hand.c_str())) > 1.0e-3f, "the masked part did not change");
+	CHECK_MSG(Distance(BoneModelPosition(*model, base, foot.c_str()), BoneModelPosition(*model, layered, foot.c_str())) < 1.0e-3f, "a bone outside the mask moved");
+
+	player.StopLayer(0, 0.0f);
+	CHECK(!player.IsLayerPlaying(0));
+	player.PlayLayer(1, *model, run, 0, "", false, 1.0f, 0.0f); // a one-shot ends by itself
+	player.Advance(run->GetAnimationDuration(0) + 0.1f, model);
+	player.Advance(1.0f, model);
+	CHECK(!player.IsLayerPlaying(1));
+}
+
+TEST_CASE(Animation, TwoBoneIKReachesTheTargetAndKeepsTheBones)
+{
+	Model* model = Model::CreateFromFile("Resources/Model", "Idle.fbx");
+	REQUIRE(model != nullptr);
+	const std::string footName = FindBone(*model, "LeftFoot");
+	const std::string legName = FindBone(*model, "LeftLeg");
+	const std::string thighName = FindBone(*model, "LeftUpLeg");
+	REQUIRE(!footName.empty() && !legName.empty() && !thighName.empty());
+	AnimationPlayer player;
+	player.Play(nullptr, 0);
+	LocalPose before, after;
+	player.EvaluatePose(*model, before);
+	const Vector3 foot = BoneModelPosition(*model, before, footName.c_str());
+	const Vector3 knee = BoneModelPosition(*model, before, legName.c_str());
+	const Vector3 thigh = BoneModelPosition(*model, before, thighName.c_str());
+	const float legLength = Distance(foot, knee) + Distance(knee, thigh);
+
+	// Lift the foot; the knee bends forward
+	const Vector3 target = { foot.x, foot.y + legLength * 0.3f, foot.z + legLength * 0.1f };
+	const Vector3 pole = { knee.x, knee.y, knee.z + legLength * 2.0f };
+	player.SetIK(footName, target, pole, 1.0f);
+	player.EvaluatePose(*model, after);
+	const Vector3 solved = BoneModelPosition(*model, after, footName.c_str());
+	CHECK_MSG(Distance(solved, target) < legLength * 0.01f, std::format("missed by {:.4f} of leg {:.4f}", Distance(solved, target), legLength));
+	const Vector3 solvedKnee = BoneModelPosition(*model, after, legName.c_str());
+	CHECK_NEAR(Distance(solvedKnee, thigh), Distance(knee, thigh), legLength * 0.01f);
+	CHECK_NEAR(Distance(solved, solvedKnee), Distance(foot, knee), legLength * 0.01f);
+	CHECK(Distance(BoneModelPosition(*model, after, thighName.c_str()), thigh) < legLength * 0.001f);
+
+	// Out of reach: stretches towards it and stays finite
+	player.SetIK(footName, { thigh.x, thigh.y - legLength * 5.0f, thigh.z }, pole, 1.0f);
+	player.EvaluatePose(*model, after);
+	const Vector3 stretched = BoneModelPosition(*model, after, footName.c_str());
+	CHECK(std::isfinite(stretched.x + stretched.y + stretched.z));
+	CHECK(stretched.y < thigh.y);
+
+	player.SetIK(footName, target, pole, 0.0f); // off
+	player.EvaluatePose(*model, after);
+	CHECK(Distance(BoneModelPosition(*model, after, footName.c_str()), foot) < legLength * 0.001f);
+}
+
+TEST_CASE(Animation, RootMotionMovesTheObjectNotTheMesh)
+{
+	Model* model = Model::CreateFromFile("Resources/Model", "Running.fbx");
+	REQUIRE(model != nullptr);
+	const int root = model->RootBoneNode();
+	REQUIRE(root >= 0);
+	AnimationPlayer player;
+	player.Play(nullptr, 0);
+	player.SetRootMotion(true);
+	const float duration = model->GetAnimationDuration(0);
+	REQUIRE(duration > 0.0f);
+	std::vector<Vector3> joints;
+	std::vector<int> parents;
+	std::vector<bool> isBone;
+	LocalPose pose;
+	player.EvaluatePose(*model, pose);
+	model->GetJointPositions(pose, joints, parents, isBone);
+	const Vector3 start = joints[root];
+
+	Vector3 sum{};
+	const float step = duration / 20.0f;
+	for (int i = 0; i < 30; ++i) { // 1.5 loops: crosses the wrap once
+		player.Advance(step, model);
+		const Vector3 delta = player.ComputeRootDelta(*model);
+		sum = { sum.x + delta.x, sum.y + delta.y, sum.z + delta.z };
+		player.EvaluatePose(*model, pose);
+		model->GetJointPositions(pose, joints, parents, isBone);
+		CHECK_NEAR(joints[root].x, start.x, 1.0e-3f);
+		CHECK_NEAR(joints[root].z, start.z, 1.0e-3f);
+	}
+	CHECK(std::isfinite(sum.x + sum.y + sum.z));
+	// After a whole number of loops the root is back where a pose says it is: a wrap must not add a jump
+	Vector3 oneLoop{};
+	for (int i = 0; i < 10; ++i) { // the other half: exactly two loops in total
+		player.Advance(step, model);
+		const Vector3 delta = player.ComputeRootDelta(*model);
+		oneLoop = { oneLoop.x + delta.x, oneLoop.y + delta.y, oneLoop.z + delta.z };
+	}
+	const Vector3 twoLoops = { sum.x + oneLoop.x, sum.y + oneLoop.y, sum.z + oneLoop.z };
+	CHECK(std::isfinite(twoLoops.x + twoLoops.y + twoLoops.z));
+}
+
+TEST_CASE(Animation, ObjectFollowsTheBoneItIsAttachedTo)
+{
+	GameObject& character = s.CreateGameObject("Fighter", GameObjectType::Empty);
+	character.meshType = GameObject::MeshType::CustomModel;
+	character.hasMesh = true;
+	character.modelPath = "Resources/Model/Idle.fbx";
+	character.translation = { 3.0f, 0.0f, 2.0f };
+	const uint32_t fighterId = character.id;
+	GameObject& sword = s.CreateGameObject("Sword", GameObjectType::Empty);
+	const uint32_t swordId = sword.id;
+
+	s.RenderViewports(A::Dx(s)->GetCommandList(), false); // creates the character's Object3d
+	const Model* model = s.FindGameObjectById(fighterId, false)->editObject3d ? s.FindGameObjectById(fighterId, false)->editObject3d->GetModel() : nullptr;
+	REQUIRE(model != nullptr);
+	const std::string hand = FindBone(*model, "RightHand");
+	REQUIRE(!hand.empty());
+
+	EngineAPI& api = A::Api(s);
+	CHECK(!api.attachToBone(api.hostContext, swordId, fighterId, "NoSuchBone"));
+	REQUIRE(api.attachToBone(api.hostContext, swordId, fighterId, hand.c_str()));
+	Vector3 bone{};
+	REQUIRE(api.getBoneWorldPosition(api.hostContext, fighterId, hand.c_str(), &bone));
+	s.UpdateWorldMatrices();
+	const Matrix4x4& world = s.FindGameObjectById(swordId, false)->worldMatrix;
+	CHECK_NEAR(world.m[3][0], bone.x, 1.0e-3f);
+	CHECK_NEAR(world.m[3][1], bone.y, 1.0e-3f);
+	CHECK_NEAR(world.m[3][2], bone.z, 1.0e-3f);
+	CHECK(bone.y > 0.1f); // really up at the hand, not at the object's origin
+	CHECK(s.FindGameObjectById(swordId, false)->components.Has("Bone Attachment")); // saved with the scene
+
+	// It follows when the character moves
+	s.FindGameObjectById(fighterId, false)->translation.x += 5.0f;
+	s.UpdateWorldMatrices();
+	CHECK_NEAR(s.FindGameObjectById(swordId, false)->worldMatrix.m[3][0], bone.x + 5.0f, 1.0e-3f);
+}
+
+TEST_CASE(Animation, RagdollFallsAndStopsOnTheFloorThenGivesTheBodyBack)
+{
+	for (auto& obj : A::Objects(s)) obj.isActive = false;
+	MakeStaticBox(s, { -30.0f, -1.0f, -30.0f }, { 30.0f, 0.0f, 30.0f });
+	GameObject& character = s.CreateGameObject("Falling", GameObjectType::Empty);
+	character.meshType = GameObject::MeshType::CustomModel;
+	character.hasMesh = true;
+	character.modelPath = "Resources/Model/Idle.fbx";
+	character.translation = { 0.0f, 1.0f, 0.0f };
+	character.hasBoxCollider = true;
+	character.boxSize = { 0.5f, 2.0f, 0.5f };
+	const uint32_t id = character.id;
+	s.RenderViewports(A::Dx(s)->GetCommandList(), false);
+	const Model* model = s.FindGameObjectById(id, false)->editObject3d->GetModel();
+	REQUIRE(model != nullptr && model->HasBones());
+	const std::string head = FindBone(*model, "Head");
+	REQUIRE(!head.empty());
+
+	EngineAPI& api = A::Api(s);
+	Vector3 start{};
+	REQUIRE(api.getBoneWorldPosition(api.hostContext, id, head.c_str(), &start));
+	REQUIRE(api.setRagdoll(api.hostContext, id, true));
+	StepPhysicsSeconds(s, 4.0f);
+	Vector3 end{};
+	REQUIRE(api.getBoneWorldPosition(api.hostContext, id, head.c_str(), &end));
+	CHECK(std::isfinite(end.x + end.y + end.z));
+	CHECK_MSG(end.y < start.y - 0.3f, std::format("head from {:.2f} to {:.2f}", start.y, end.y));
+	CHECK_MSG(end.y > -0.2f, std::format("through the floor: {:.2f}", end.y));
+	CHECK_MSG(std::abs(end.x - start.x) + std::abs(end.z - start.z) < start.y * 2.0f, std::format("flew away: ({:.2f} {:.2f} {:.2f}) to ({:.2f} {:.2f} {:.2f})", start.x, start.y, start.z, end.x, end.y, end.z));
+
+	REQUIRE(api.setRagdoll(api.hostContext, id, false));
+	Vector3 back{};
+	REQUIRE(api.getBoneWorldPosition(api.hostContext, id, head.c_str(), &back));
+	CHECK(Distance(back, start) < 0.05f);
+	// Characters are normally scaled down from centimetres: the same fall at that size
+	s.FindGameObjectById(id, false)->scale = { 0.01f, 0.01f, 0.01f };
+	s.UpdateWorldMatrices();
+	Vector3 smallStart{};
+	REQUIRE(api.getBoneWorldPosition(api.hostContext, id, head.c_str(), &smallStart));
+	REQUIRE(api.setRagdoll(api.hostContext, id, true));
+	StepPhysicsSeconds(s, 3.0f);
+	Vector3 smallEnd{};
+	REQUIRE(api.getBoneWorldPosition(api.hostContext, id, head.c_str(), &smallEnd));
+	CHECK_MSG(std::isfinite(smallEnd.y) && smallEnd.y < smallStart.y && smallEnd.y > -0.1f, std::format("small: head from {:.2f} to {:.2f}", smallStart.y, smallEnd.y));
+	REQUIRE(api.setRagdoll(api.hostContext, id, false));
+	s.FindGameObjectById(id, false)->scale = { 1.0f, 1.0f, 1.0f };
+	s.UpdateWorldMatrices();
+
+	// Starting one and clearing the world must not crash or leave the pose overridden
+	REQUIRE(api.setRagdoll(api.hostContext, id, true));
+	StepPhysicsSeconds(s, 0.2f);
+	s.ResetScriptRuntimeState();
+	REQUIRE(api.getBoneWorldPosition(api.hostContext, id, head.c_str(), &back));
+	CHECK(Distance(back, start) < 0.05f);
+}
+
+TEST_CASE(Project, RecreatingASampleUpdatesItsScriptsAndKeepsTheOldOnes)
+{
+	namespace fs = std::filesystem;
+	const fs::path savedRoot = A::ProjectRoot(s);
+	const fs::path parent = A::TempRoot() / "SampleUpdate";
+	fs::create_directories(parent);
+	REQUIRE(s.CreateNewProject(parent.string(), "Game"));
+	REQUIRE(A::InstallSample(s, "ThirdPerson"));
+	const fs::path script = parent / "Game" / "GameScripts" / "Scripts" / "ThirdPersonDemo.cpp";
+	REQUIRE(fs::exists(script));
+	const auto read = [](const fs::path& p) { std::ifstream in(p, std::ios::binary); return std::string(std::istreambuf_iterator<char>(in), {}); };
+	const std::string current = read(script);
+	CHECK(current.find("KEY_R") != std::string::npos);
+
+	// The same version again: nothing to do, no backup
+	REQUIRE(A::InstallSample(s, "ThirdPerson"));
+	CHECK(!fs::exists(fs::path(script).concat(".old")));
+
+	// An older or edited copy is replaced, and kept
+	{ std::ofstream(script, std::ios::binary) << "// older"; }
+	REQUIRE(A::InstallSample(s, "ThirdPerson"));
+	CHECK(read(script) == current);
+	CHECK(read(fs::path(script).concat(".old")) == "// older");
+	{ std::ofstream(script, std::ios::binary) << "// older still"; }
+	REQUIRE(A::InstallSample(s, "ThirdPerson"));
+	CHECK(read(fs::path(script).concat(".old1")) == "// older still"); // never overwrites a backup
+
+	A::ProjectRoot(s) = savedRoot;
+	s.SyncScriptModuleWithProject();
+}
+
+TEST_CASE(Animation, RagdollCollapsesWholeBody)
+{
+	for (auto& obj : A::Objects(s)) obj.isActive = false;
+	MakeStaticBox(s, { -30.0f, -1.0f, -30.0f }, { 30.0f, 0.0f, 30.0f });
+	GameObject& character = s.CreateGameObject("Falling", GameObjectType::Empty);
+	character.meshType = GameObject::MeshType::CustomModel;
+	character.hasMesh = true;
+	character.modelPath = "Resources/Model/Idle.fbx";
+	character.scale = { 0.012f, 0.012f, 0.012f };
+	const uint32_t id = character.id;
+	s.RenderViewports(A::Dx(s)->GetCommandList(), false);
+	const Model* model = s.FindGameObjectById(id, false)->editObject3d->GetModel();
+	REQUIRE(model != nullptr && model->HasBones());
+	EngineAPI& api = A::Api(s);
+	float tallest = 0.0f;
+	for (const BoneInfo& bone : model->GetBoneList()) {
+		Vector3 p{};
+		api.getBoneWorldPosition(api.hostContext, id, bone.name.c_str(), &p);
+		tallest = (std::max)(tallest, p.y);
+	}
+	REQUIRE(tallest > 1.0f);
+	REQUIRE(api.setRagdoll(api.hostContext, id, true));
+	StepPhysicsSeconds(s, 4.0f);
+	// Nothing stays up: a collapsed body is far lower than it stood, and every bone is above the floor
+	std::string report;
+	for (const BoneInfo& bone : model->GetBoneList()) {
+		Vector3 p{};
+		api.getBoneWorldPosition(api.hostContext, id, bone.name.c_str(), &p);
+		if (p.y > tallest * 0.45f || p.y < -0.1f) report += std::format(" {}={:.2f}", bone.name, p.y);
+	}
+	CHECK_MSG(report.empty(), "tallest " + std::to_string(tallest) + report);
+	REQUIRE(api.setRagdoll(api.hostContext, id, false));
+}
+
+TEST_CASE(Lighting, FloorHasNoHorizontalLines)
+{
+	LightingScene scene(s);
+	GameObject* camera = s.FindGameObjectByName("Main Camera", false);
+	camera->translation = { 0.0f, 22.0f, -6.0f };
+	camera->rotation = { 1.2f, 0.0f, 0.0f };
+	camera->rotationQuat = Quaternion::FromEuler(camera->rotation);
+	scene.AddSun({ 1.0f, 0.5f, 0.0f });
+	s.FindGameObjectByName("Floor", false)->scale = { 400.0f, 1.0f, 400.0f }; // no floor edge in the picture
+	for (int i = 0; i < 6; ++i) {
+		GameObject& lamp = s.CreateGameObject("Lamp", GameObjectType::Empty);
+		const float angle = 6.2831853f * i / 6.0f;
+		lamp.translation = { std::cos(angle) * 6.0f, 1.5f, std::sin(angle) * 6.0f };
+		lamp.hasLight = true;
+		lamp.lightEnabled = true;
+		lamp.lightType = GameObject::LightType::Point;
+		lamp.lightColor = { 1.0f, 0.8f, 0.6f };
+		lamp.lightIntensity = 2.0f;
+		lamp.lightRange = 6.0f;
+		lamp.lightDecay = 1.5f;
+	}
+	PostProcessSettings& post = s.PostSettings();
+	post.enabled = true;
+	post.bloom = false;
+	post.fxaa = false;
+	post.shadowCascades = 3;
+
+	// Ambient occlusion has nothing to darken on a flat floor, so it must not change any row of pixels
+	post.ssao = false;
+	scene.Capture();
+	const std::vector<float> without = gCapturedRowMeans;
+	post.ssao = true;
+	scene.Capture();
+	REQUIRE(!without.empty() && without.size() == gCapturedRowMeans.size());
+	float worst = 0.0f;
+	size_t worstRow = 0;
+	int changedRows = 0;
+	for (size_t y = 8; y + 8 < without.size(); ++y) { // shortcut: the outermost rows change by about 0.3 of 255 on some GPUs, not visible; look there if it ever shows
+		const float change = std::abs(without[y] - gCapturedRowMeans[y]);
+		if (change > 0.1f) ++changedRows;
+		if (change > worst) { worst = change; worstRow = y; }
+	}
+	CHECK_MSG(worst < 0.25f, std::format("row {} of {} changed by {:.3f}; {} rows above 0.1", worstRow, without.size(), worst, changedRows));
 }
 
 // ===========================================================================

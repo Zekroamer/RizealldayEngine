@@ -91,6 +91,34 @@ bool EditorSuite::CreateThirdPersonDemo()
 		lamp.lightDecay = 1.5f;
 	}
 
+	// A character: blend tree between idle and run, a cube held in the hand. The player script drops it as a ragdoll with R.
+	GameObject& dummy = CreateGameObject("Dummy", GameObjectType::Empty);
+	dummy.translation = { 3.0f, 0.0f, 6.0f };
+	dummy.scale = { 0.012f, 0.012f, 0.012f };
+	dummy.hasMesh = true;
+	dummy.meshEnabled = true;
+	dummy.meshType = GameObject::MeshType::CustomModel;
+	dummy.modelPath = "Resources/Model/Idle.fbx";
+	const uint32_t dummyId = dummy.id;
+	const std::string controllerPath = CreateAnimatorControllerAsset("Dummy");
+	if (!controllerPath.empty() && AddComponentByName(*FindGameObjectById(dummyId, false), "Animator")) {
+		AnimatorController controller;
+		controller.parameters.push_back({ "speed", AnimParamType::Float, 0.5f });
+		AnimState& move = controller.AddState("Move", { 0.0f, 0.0f });
+		move.blendParameter = "speed";
+		move.blendClips = { { "", "", 0, 0.0f }, { "Resources/Model/Running.fbx", "", 0, 1.0f } };
+		SaveAnimatorController(controllerPath, controller);
+		auto* animator = FindGameObjectById(dummyId, false)->components.Get<AnimatorComponent>("Animator");
+		strncpy_s(animator->controller, controllerPath.c_str(), _TRUNCATE);
+	}
+	GameObject& held = CreateCube("Held Item", { 0.0f, 10.0f, 0.0f });
+	held.scale = { 8.0f, 40.0f, 8.0f };
+	held.hasBoxCollider = false;
+	held.parentId = static_cast<int>(dummyId);
+	if (AddComponentByName(held, "Bone Attachment")) {
+		strncpy_s(held.components.Get<BoneAttachmentComponent>("Bone Attachment")->bone, "mixamorig:RightHand", _TRUNCATE);
+	}
+
 	GameObject& player = CreateCube("Player", { 0.0f, 2.0f, 0.0f });
 	player.materialColor = { 0.9f, 0.35f, 0.25f, 1.0f };
 	AddScriptComponent(player, "ThirdPersonPlayer");

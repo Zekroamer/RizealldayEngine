@@ -221,6 +221,14 @@ void EditorSuite::AddScriptFilesToVcxproj(const std::vector<std::string>& classN
 	}
 }
 
+namespace {
+std::string ReadWholeFile(const fs::path& path)
+{
+	std::ifstream in(path, std::ios::binary);
+	return std::string(std::istreambuf_iterator<char>(in), {});
+}
+}
+
 bool EditorSuite::InstallSampleScripts(const std::string& prefix)
 {
 	const fs::path projectDir = ProjectScriptsDir();
@@ -239,6 +247,20 @@ bool EditorSuite::InstallSampleScripts(const std::string& prefix)
 		if (!fs::exists(target, ec)) {
 			fs::copy_file(file, target, ec);
 			copied = copied || !ec;
+		} else if (ReadWholeFile(file) != ReadWholeFile(target)) {
+			// An older sample would not match the scene just created. The old file may hold the user's edits: keep it next to the new one.
+			fs::path backup = target;
+			backup += ".old";
+			for (int n = 1; fs::exists(backup, ec); ++n) {
+				backup = target;
+				backup += ".old" + std::to_string(n);
+			}
+			fs::rename(target, backup, ec);
+			if (!ec) {
+				fs::copy_file(file, target, ec);
+				copied = copied || !ec;
+				LogMessage(std::format("[Samples] Updated {}; your previous version is {}", target.filename().string(), backup.filename().string()), 1);
+			}
 		}
 		const std::string stem = file.stem().string();
 		if (std::find(classNames.begin(), classNames.end(), stem) == classNames.end()) classNames.push_back(stem);

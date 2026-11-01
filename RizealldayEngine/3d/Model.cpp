@@ -1,4 +1,5 @@
 ﻿#include "3d/Model.h"
+#include <cfloat>
 #include "base/DirectXCommon.h"
 #include "base/Profiler.h"
 #include "base/TextureManager.h"
@@ -1071,13 +1072,17 @@ void Model::SampleLocalPose(const AnimationClip* clip, float timeInSeconds, bool
     }
 }
 
-void Model::BlendPoses(const LocalPose& a, const LocalPose& b, float weight, LocalPose& outPose) const {
+void Model::BlendPoses(const LocalPose& a, const LocalPose& b, float weight, LocalPose& outPose, const std::vector<uint8_t>* mask) const {
     const std::vector<FlatNode>& nodes = FlatNodes();
     const size_t count = (std::min)({ a.size(), b.size(), nodes.size() });
     const float w = std::clamp(weight, 0.0f, 1.0f);
     outPose.assign(nodes.size(), NodePose{});
     for (size_t i = 0; i < count; ++i) {
         if (a[i].bind && b[i].bind) continue;
+        if (mask && i < mask->size() && (*mask)[i] == 0) {
+            outPose[i] = a[i];
+            continue;
+        }
         const NodeData& node = *nodes[i].node;
         // A node animated on one side only blends against its bind (decomposed default) transform
         const NodePose bindPose{ node.defaultPosition, node.defaultRotation, node.defaultScaling, false };
@@ -1096,7 +1101,7 @@ void Model::BlendPoses(const LocalPose& a, const LocalPose& b, float weight, Loc
     }
 }
 
-void Model::ComputeGlobalTransforms(const LocalPose& pose, std::vector<Matrix4x4>& outGlobals) const {
+void Model::ComputeGlobalTransforms(const LocalPose& pose, std::vector<Matrix4x4>& outGlobals, const std::vector<std::pair<int, Matrix4x4>>* overrides) const {
     const std::vector<FlatNode>& nodes = FlatNodes();
     outGlobals.resize(nodes.size());
     for (size_t i = 0; i < nodes.size(); ++i) {
@@ -1109,14 +1114,22 @@ void Model::ComputeGlobalTransforms(const LocalPose& pose, std::vector<Matrix4x4
         }
         const int parent = nodes[i].parent;
         outGlobals[i] = (parent >= 0) ? Mathematics::Multiply(local, outGlobals[parent]) : local;
+        if (overrides) {
+            for (const auto& [node, modelMatrix] : *overrides) {
+                if (node == static_cast<int>(i)) {
+                    outGlobals[i] = Mathematics::Multiply(modelMatrix, Mathematics::Inverse(globalInverseTransform_));
+                    break;
+                }
+            }
+        }
     }
 }
 
-void Model::BuildSkinMatrices(const LocalPose& pose, std::vector<Matrix4x4>& outMatrices) const {
+void Model::BuildSkinMatrices(const LocalPose& pose, std::vector<Matrix4x4>& outMatrices, const std::vector<std::pair<int, Matrix4x4>>* overrides) const {
     outMatrices.assign(128, Mathematics::MakeIdentity4x4());
     if (boneInfoMap_.empty()) return;
     std::vector<Matrix4x4> globals;
-    ComputeGlobalTransforms(pose, globals);
+    ComputeGlobalTransforms(pose, globals, overrides);
     const std::vector<FlatNode>& nodes = FlatNodes();
     for (size_t i = 0; i < nodes.size(); ++i) {
         const int boneId = nodes[i].boneId;
@@ -1126,6 +1139,235 @@ void Model::BuildSkinMatrices(const LocalPose& pose, std::vector<Matrix4x4>& out
     }
 }
 
+int Model::FindNode(const std::string& name) const {
+    const std::vector<FlatNode>& nodes = FlatNodes();
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        if (nodes[i].node->name == name) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+std::vector<uint8_t> Model::MakeNodeMask(const std::string& rootName) const {
+    const std::vector<FlatNode>& nodes = FlatNodes();
+    const int root = rootName.empty() ? -1 : FindNode(rootName);
+    std::vector<uint8_t> mask(nodes.size(), root < 0 ? 1 : 0);
+    if (root >= 0) {
+        mask[root] = 1;
+        for (size_t i = root + 1; i < nodes.size(); ++i) { // pre-order: parents come first
+            if (nodes[i].parent >= 0 && mask[nodes[i].parent]) mask[i] = 1;
+        }
+    }
+    return mask;
+}
+
+int Model::RootBoneNode() const {
+    const std::vector<FlatNode>& nodes = FlatNodes();
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        if (nodes[i].boneId >= 0) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+bool Model::GetNodeModelMatrix(const LocalPose& pose, int node, Matrix4x4& out, const std::vector<std::pair<int, Matrix4x4>>* overrides) const {
+    if (node < 0 || node >= static_cast<int>(FlatNodes().size())) return false;
+    std::vector<Matrix4x4> globals;
+    ComputeGlobalTransforms(pose, globals, overrides);
+    out = Mathematics::Multiply(globals[node], globalInverseTransform_);
+    return true;
+}
+
+namespace {
+// Row-vector rotation helpers for IK; everything else in this file goes through assimp's column-vector types
+Vector3 RowPosition(const Matrix4x4& m) { return { m.m[3][0], m.m[3][1], m.m[3][2] }; }
+float RowDot(const Vector3& a, const Vector3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+Vector3 RowCross(const Vector3& a, const Vector3& b) { return { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; }
+Vector3 Normalized(const Vector3& v, const Vector3& fallback) {
+    const float len = std::sqrt(RowDot(v, v));
+    return len > 1.0e-6f ? Vector3{ v.x / len, v.y / len, v.z / len } : fallback;
+}
+
+// The rotation part of a matrix that may also scale
+Matrix4x4 RotationOnly(const Matrix4x4& m) {
+    Matrix4x4 r = Mathematics::MakeIdentity4x4();
+    for (int row = 0; row < 3; ++row) {
+        const Vector3 axis = Normalized({ m.m[row][0], m.m[row][1], m.m[row][2] }, { 0.0f, 0.0f, 0.0f });
+        r.m[row][0] = axis.x; r.m[row][1] = axis.y; r.m[row][2] = axis.z;
+    }
+    return r;
+}
+
+// Row-vector matrix taking direction `from` to direction `to` (Rodrigues)
+Matrix4x4 RotationBetween(const Vector3& from, const Vector3& to) {
+    const Vector3 a = Normalized(from, { 0.0f, 1.0f, 0.0f });
+    const Vector3 b = Normalized(to, { 0.0f, 1.0f, 0.0f });
+    const float c = RowDot(a, b);
+    Vector3 v = RowCross(a, b);
+    if (c < -0.9999f) { // opposite: any perpendicular axis
+        v = Normalized(RowCross(a, std::abs(a.y) < 0.9f ? Vector3{ 0.0f, 1.0f, 0.0f } : Vector3{ 1.0f, 0.0f, 0.0f }), { 1.0f, 0.0f, 0.0f });
+        Matrix4x4 m = Mathematics::MakeIdentity4x4();
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                const float vi = i == 0 ? v.x : i == 1 ? v.y : v.z;
+                const float vj = j == 0 ? v.x : j == 1 ? v.y : v.z;
+                m.m[i][j] = 2.0f * vi * vj - (i == j ? 1.0f : 0.0f);
+            }
+        }
+        return m;
+    }
+    const float k = 1.0f / (1.0f + c);
+    // Column form R = I + [v]x + k [v]x^2; row-vector form is its transpose
+    Matrix4x4 m = Mathematics::MakeIdentity4x4();
+    m.m[0][0] = v.x * v.x * k + c;       m.m[1][0] = v.x * v.y * k - v.z;     m.m[2][0] = v.x * v.z * k + v.y;
+    m.m[0][1] = v.y * v.x * k + v.z;     m.m[1][1] = v.y * v.y * k + c;       m.m[2][1] = v.y * v.z * k - v.x;
+    m.m[0][2] = v.z * v.x * k - v.y;     m.m[1][2] = v.z * v.y * k + v.x;     m.m[2][2] = v.z * v.z * k + c;
+    return m;
+}
+
+Matrix4x4 QuatToRowMatrix(const KeyQuat& q) {
+    const aiMatrix3x3 c = aiQuaternion(q.w, q.x, q.y, q.z).GetMatrix();
+    Matrix4x4 m = Mathematics::MakeIdentity4x4();
+    m.m[0][0] = c.a1; m.m[1][0] = c.a2; m.m[2][0] = c.a3;
+    m.m[0][1] = c.b1; m.m[1][1] = c.b2; m.m[2][1] = c.b3;
+    m.m[0][2] = c.c1; m.m[1][2] = c.c2; m.m[2][2] = c.c3;
+    return m;
+}
+
+KeyQuat RowMatrixToQuat(const Matrix4x4& m) {
+    aiMatrix3x3 c;
+    c.a1 = m.m[0][0]; c.a2 = m.m[1][0]; c.a3 = m.m[2][0];
+    c.b1 = m.m[0][1]; c.b2 = m.m[1][1]; c.b3 = m.m[2][1];
+    c.c1 = m.m[0][2]; c.c2 = m.m[1][2]; c.c3 = m.m[2][2];
+    aiQuaternion q(c);
+    q.Normalize();
+    return { 0.0f, q.x, q.y, q.z, q.w };
+}
+}
+
+bool Model::SolveTwoBoneIK(LocalPose& pose, int endNode, const Vector3& target, const Vector3& pole, float weight) const {
+    const std::vector<FlatNode>& nodes = FlatNodes();
+    if (endNode < 0 || endNode >= static_cast<int>(nodes.size()) || pose.size() != nodes.size()) return false;
+    const int mid = nodes[endNode].parent;
+    const int upper = mid >= 0 ? nodes[mid].parent : -1;
+    if (upper < 0) return false;
+
+    std::vector<Matrix4x4> globals;
+    ComputeGlobalTransforms(pose, globals);
+    const auto modelOf = [&](int i) { return Mathematics::Multiply(globals[i], globalInverseTransform_); };
+    const Vector3 a = RowPosition(modelOf(upper));
+    const Vector3 b = RowPosition(modelOf(mid));
+    const Vector3 c = RowPosition(modelOf(endNode));
+    const Vector3 ab = b - a;
+    const Vector3 bc = c - b;
+    const float upperLength = std::sqrt(RowDot(ab, ab));
+    const float lowerLength = std::sqrt(RowDot(bc, bc));
+    if (upperLength < 1.0e-5f || lowerLength < 1.0e-5f) return false;
+
+    const Vector3 toTarget = target - a;
+    const float reachMin = std::abs(upperLength - lowerLength) + 1.0e-3f;
+    const float reachMax = upperLength + lowerLength - 1.0e-3f;
+    const float distance = std::clamp(std::sqrt(RowDot(toTarget, toTarget)), reachMin, reachMax);
+    const Vector3 direction = Normalized(toTarget, Normalized(c - a, { 0.0f, -1.0f, 0.0f }));
+    // Law of cosines: how far along the line the knee lies, and how far off it
+    const float along = (upperLength * upperLength - lowerLength * lowerLength + distance * distance) / (2.0f * distance);
+    const float off = std::sqrt((std::max)(upperLength * upperLength - along * along, 0.0f));
+    const Vector3 toPole = pole - a;
+    const float poleAlong = RowDot(toPole, direction);
+    Vector3 bend = Normalized(toPole - direction * poleAlong, { 0.0f, 0.0f, 0.0f });
+    if (RowDot(bend, bend) < 0.5f) { // pole on the line: keep the current bend
+        const float abAlong = RowDot(ab, direction);
+        bend = Normalized(ab - direction * abAlong, std::abs(direction.y) < 0.9f ? Vector3{ 0.0f, 1.0f, 0.0f } : Vector3{ 1.0f, 0.0f, 0.0f });
+    }
+    const Vector3 newB = a + direction * along + bend * off;
+    const Vector3 newC = a + direction * distance;
+
+    // Local rotation so the bone's world rotation gains `worldDelta`: L' = L * P * R * P^-1 (row vectors)
+    const auto applyDelta = [&](int node, const Matrix4x4& parentRotation, const Matrix4x4& worldDelta) {
+        NodePose& p = pose[node];
+        if (p.bind) {
+            const NodeData& data = *nodes[node].node;
+            p = { data.defaultPosition, data.defaultRotation, data.defaultScaling, false };
+        }
+        const Matrix4x4 inverseParent = Mathematics::Inverse(parentRotation);
+        const Matrix4x4 changed = Mathematics::Multiply(Mathematics::Multiply(Mathematics::Multiply(QuatToRowMatrix(p.rotation), parentRotation), worldDelta), inverseParent);
+        const KeyQuat solved = RowMatrixToQuat(changed);
+        aiQuaternion blended;
+        aiQuaternion::Interpolate(blended, aiQuaternion(p.rotation.w, p.rotation.x, p.rotation.y, p.rotation.z), aiQuaternion(solved.w, solved.x, solved.y, solved.z), std::clamp(weight, 0.0f, 1.0f));
+        blended.Normalize();
+        p.rotation = { 0.0f, blended.x, blended.y, blended.z, blended.w };
+    };
+
+    const int upperParent = nodes[upper].parent;
+    const Matrix4x4 upperParentRotation = upperParent >= 0 ? RotationOnly(modelOf(upperParent)) : Mathematics::MakeIdentity4x4();
+    const Matrix4x4 upperDelta = RotationBetween(ab, newB - a);
+    applyDelta(upper, upperParentRotation, upperDelta);
+
+    // Where the lower bone points once the upper one has turned
+    const Matrix4x4& d = upperDelta;
+    const Vector3 turnedLower = {
+        bc.x * d.m[0][0] + bc.y * d.m[1][0] + bc.z * d.m[2][0],
+        bc.x * d.m[0][1] + bc.y * d.m[1][1] + bc.z * d.m[2][1],
+        bc.x * d.m[0][2] + bc.y * d.m[1][2] + bc.z * d.m[2][2] };
+    const Matrix4x4 midParentRotation = Mathematics::Multiply(RotationOnly(modelOf(upper)), upperDelta);
+    applyDelta(mid, midParentRotation, RotationBetween(turnedLower, newC - newB));
+    return true;
+}
+
+std::vector<Model::RagdollBone> Model::BuildRagdollBones(const LocalPose& pose) const {
+    std::vector<RagdollBone> result;
+    const std::vector<FlatNode>& nodes = FlatNodes();
+    std::vector<Matrix4x4> globals;
+    ComputeGlobalTransforms(pose, globals);
+    std::vector<Vector3> positions(nodes.size());
+    Vector3 mn{ FLT_MAX, FLT_MAX, FLT_MAX }, mx{ -FLT_MAX, -FLT_MAX, -FLT_MAX };
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        positions[i] = RowPosition(Mathematics::Multiply(globals[i], globalInverseTransform_));
+        if (nodes[i].boneId < 0) continue;
+        mn = { (std::min)(mn.x, positions[i].x), (std::min)(mn.y, positions[i].y), (std::min)(mn.z, positions[i].z) };
+        mx = { (std::max)(mx.x, positions[i].x), (std::max)(mx.y, positions[i].y), (std::max)(mx.z, positions[i].z) };
+    }
+    const Vector3 size = mx - mn;
+    float threshold = std::sqrt(RowDot(size, size)) * 0.06f;
+
+    // Longest child bone of every bone
+    std::vector<int> child(nodes.size(), -1);
+    std::vector<float> length(nodes.size(), 0.0f);
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        const int parent = nodes[i].parent;
+        if (parent < 0 || nodes[i].boneId < 0 || nodes[parent].boneId < 0) continue;
+        const Vector3 d = positions[i] - positions[parent];
+        const float len = std::sqrt(RowDot(d, d));
+        if (len > length[parent]) {
+            length[parent] = len;
+            child[parent] = static_cast<int>(i);
+        }
+    }
+
+    for (int attempt = 0; attempt < 8; ++attempt, threshold *= 1.25f) {
+        result.clear();
+        std::vector<int> partOfNode(nodes.size(), -1);
+        for (size_t i = 0; i < nodes.size(); ++i) {
+            const int parent = nodes[i].parent;
+            const int inherited = parent >= 0 ? partOfNode[parent] : -1;
+            partOfNode[i] = inherited;
+            // The root is always a part, however short: everything else hangs from it
+            const bool isRoot = result.empty() && nodes[i].boneId >= 0;
+            if (child[i] < 0 || (length[i] < threshold && !isRoot)) continue;
+            RagdollBone bone;
+            bone.node = static_cast<int>(i);
+            bone.start = positions[i];
+            bone.end = positions[child[i]];
+            if (length[i] < threshold) {
+                const Vector3 along = Normalized(bone.end - bone.start, { 0.0f, 1.0f, 0.0f });
+                bone.end = bone.start + along * threshold;
+            }
+            bone.parentPart = inherited;
+            partOfNode[i] = static_cast<int>(result.size());
+            result.push_back(bone);
+        }
+        if (result.size() <= 16) break;
+    }
+    return result;
+}
 void Model::GetJointPositions(const LocalPose& pose, std::vector<Vector3>& outPositions, std::vector<int>& outParents, std::vector<bool>& outIsBone) const {
     std::vector<Matrix4x4> globals;
     ComputeGlobalTransforms(pose, globals);

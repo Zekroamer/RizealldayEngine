@@ -2,7 +2,6 @@
 
 ## [Belum dirilis]
 
-Project lama perlu Build Scripts ulang (`kScriptApiVersion` 10).
 
 ### Fitur Baru
 - **Kamera first/third person**: `GetMouseDelta`, `GetMouseWheel`, `SetCursorLocked`.
@@ -24,15 +23,27 @@ Project lama perlu Build Scripts ulang (`kScriptApiVersion` 10).
 - **Ambient Occlusion** di Post Processing: aktif di scene baru.
 - **Instancing otomatis**: mesh statis dengan model dan material yang sama digambar dalam satu draw call, termasuk di shadow pass.
 
+- **`MoveCharacter` memakai Jolt**: kini mengenal kotak yang diputar, kapsul, dan mesh collider.
+- **Blend tree** di Animator: satu state mencampur beberapa klip menurut parameter float, dengan fase yang sama agar langkah kaki tetap selaras.
+- **Layer animasi**: `PlayAnimationLayer` memainkan klip di atas state machine, bisa dibatasi ke satu tulang dan turunannya (menebas sambil berlari).
+- **Attach ke tulang**: `AttachToBone` dan komponen Bone Attachment. `GetBonePosition` membaca posisi tulang.
+- **Root motion**: opsi `rootMotion` di Animator; gerakan klip menggerakkan objek lewat collider-nya.
+- **IK**: `SetBoneIK` menaruh kaki atau tangan tepat di sasaran.
+- **Ragdoll**: `SetRagdoll` menyerahkan rangka ke fisika.
+
 ### Perubahan Perilaku
+- `MoveCharacter` melihat objek lain pada posisi awal frame, jadi dua karakter yang bergerak di frame yang sama bisa sedikit tumpang tindih sesaat.
+- Project lama perlu Build Scripts ulang (`kScriptApiVersion` 11).
 - Scene lama dengan lebih dari 3 point light atau 3 spot light kini menampilkan semuanya.
 - Scene lama tetap tanpa gesekan dan rotasi fisika (Friction 0, Freeze Rotation aktif) sampai diubah. Objek baru: Friction 0.5, boleh berputar.
 - Collider tanpa Rigidbody yang digerakkan script melaporkan kontak barunya satu step fisika kemudian (1/60 detik).
 - Dua objek yang sama-sama bertanda Static tidak lagi saling melaporkan tabrakan.
 - `Raycast` dan `OverlapSphere` melihat posisi objek sejak awal frame; gerakan yang dibuat script lain di frame yang sama baru terlihat di frame berikutnya.
-- `MoveCharacter` dan navigasi masih memakai kotak tegak dan belum mengenal kapsul, mesh collider, atau kotak yang diputar (Fase 5).
+- `FindPath` masih memakai kotak tegak dan belum mengenal kapsul, mesh collider, atau kotak yang diputar (Fase 8).
 
 ### Perbaikan
+- Ambient occlusion tidak lagi membuat garis horizontal di lantai datar.
+- Membuat ulang sampel kini memperbarui skripnya di project; versi lama disimpan sebagai `.old`.
 - Hot reload shader tidak lagi menghapus PSO yang mungkin masih dipakai GPU (bisa membuat driver crash).
 
 ### Performa

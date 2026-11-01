@@ -115,8 +115,26 @@ public:
 	size_t GetNodeCount() const;
 	void SampleLocalPose(const AnimationClip* clip, float timeInSeconds, bool loop, LocalPose& outPose) const;
 	/// weight 0 = a, 1 = b. Translation / scale lerp, rotation slerp. a and b must come from this model.
-	void BlendPoses(const LocalPose& a, const LocalPose& b, float weight, LocalPose& outPose) const;
-	void BuildSkinMatrices(const LocalPose& pose, std::vector<Matrix4x4>& outMatrices) const;
+	/// `mask` (one byte per node, from MakeNodeMask): nodes with 0 keep a
+	void BlendPoses(const LocalPose& a, const LocalPose& b, float weight, LocalPose& outPose, const std::vector<uint8_t>* mask = nullptr) const;
+	/// `overrides`: node index -> model-space matrix replacing what the pose says (ragdoll)
+	void BuildSkinMatrices(const LocalPose& pose, std::vector<Matrix4x4>& outMatrices, const std::vector<std::pair<int, Matrix4x4>>* overrides = nullptr) const;
+	int FindNode(const std::string& name) const; // -1 when none
+	/// 1 for the named node and everything below it. Empty name or unknown bone: every node.
+	std::vector<uint8_t> MakeNodeMask(const std::string& rootName) const;
+	/// First bone of the skeleton in node order, -1 without bones
+	int RootBoneNode() const;
+	bool GetNodeModelMatrix(const LocalPose& pose, int node, Matrix4x4& out, const std::vector<std::pair<int, Matrix4x4>>* overrides = nullptr) const;
+	/// Turns the two bones above `endNode` so the end reaches `target` (model space), bending towards `pole`
+	bool SolveTwoBoneIK(LocalPose& pose, int endNode, const Vector3& target, const Vector3& pole, float weight) const;
+	struct RagdollBone {
+		int node = -1;
+		Vector3 start{};     // model space
+		Vector3 end{};
+		int parentPart = -1; // index in the returned list
+	};
+	/// The long bones of a pose (at most 16), parents first: hips, spine, limbs. Short ones such as fingers follow their parent.
+	std::vector<RagdollBone> BuildRagdollBones(const LocalPose& pose) const;
 	/// Model-space joint positions and parent node indices (-1 = root) of a pose, for the skeleton overlay
 	void GetJointPositions(const LocalPose& pose, std::vector<Vector3>& outPositions, std::vector<int>& outParents, std::vector<bool>& outIsBone) const;
 
@@ -153,7 +171,7 @@ private:
 		int boneId = -1;
 	};
 	const std::vector<FlatNode>& FlatNodes() const;
-	void ComputeGlobalTransforms(const LocalPose& pose, std::vector<Matrix4x4>& outGlobals) const;
+	void ComputeGlobalTransforms(const LocalPose& pose, std::vector<Matrix4x4>& outGlobals, const std::vector<std::pair<int, Matrix4x4>>* overrides = nullptr) const;
 	mutable std::vector<FlatNode> flatNodes_;
 	bool lockRootMotion_ = false;
 	Vector3 localMin_ = { -0.5f, -0.5f, -0.5f };

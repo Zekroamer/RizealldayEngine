@@ -53,6 +53,10 @@ void ThirdPersonPlayer::Update(float deltaTime) {
 	}
 
 	if (IsMouseTriggered(1)) slashTime_ = 0.7f;
+	if (IsKeyTriggered(KEY_R)) {
+		dummyFallen_ = !dummyFallen_;
+		if (GameObject* dummy = FindGameObjectByName("Dummy")) SetRagdoll(dummyFallen_, dummy->id);
+	}
 	if (slashTime_ > 0.0f) {
 		slashTime_ -= deltaTime;
 		const float opening = std::sin(std::clamp(slashTime_ / 0.7f, 0.0f, 1.0f) * 3.1415927f);

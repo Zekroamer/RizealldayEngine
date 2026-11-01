@@ -240,11 +240,12 @@ void EditorSuite::UpdatePhysics(float deltaTime)
 	Physics::BodyDesc desc;
 	for (auto& obj : gameObjects_) {
 		obj.isColliding = false;
-		if (obj.isActive && BuildPhysicsBody(obj, desc)) physicsWorld_->Submit(desc);
+		if (obj.isActive && !ragdolls_.contains(obj.id) && BuildPhysicsBody(obj, desc)) physicsWorld_->Submit(desc); // a ragdoll replaces the body
 	}
 	SubmitPhysicsJoints();
 
 	physicsWorld_->Step(deltaTime);
+	if (!ragdolls_.empty()) UpdateRagdolls();
 
 	for (auto& obj : gameObjects_) {
 		if (!obj.isActive || !obj.hasRigidbody || !obj.rbEnabled || obj.isKinematic || obj.isStatic || obj.parentId != -1) continue;
