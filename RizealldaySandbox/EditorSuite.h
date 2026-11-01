@@ -7,6 +7,7 @@
 #include "physics/PhysicsWorld.h"
 #include "render/EnvironmentProbe.h"
 #include "PbrMaterial.h"
+#include "VfxComponents.h"
 #include "3d/Camera.h"
 #include "3d/ShadowMap.h"
 #include "3d/Skybox.h"
@@ -257,6 +258,11 @@ struct GameObject {
 	float audioVolume = 1.0f;
 	bool audioPlayOnAwake = false;
 	bool audioLoop = false;
+	float audioPitch = 1.0f;
+	int audioBus = 0; // AudioBus
+	bool audioSpatial = false;
+	float audioMinDistance = 1.0f;
+	float audioMaxDistance = 50.0f;
 	uint32_t runtimeSoundHandle = 0;
 	uint32_t runtimeVoiceHandle = 0;
 
@@ -390,6 +396,12 @@ public:
 	static void RegisterAnimatorComponent();
 	static void RegisterPhysicsComponents();
 	static void RegisterMaterialComponent();
+	static void RegisterVfxComponents();
+	/// Once a frame on game time: heads follow their objects. Trails only run in Play.
+	void UpdateTrails();
+	void DrawEffects(ID3D12GraphicsCommandList* cmdList, const Camera& camera);
+	/// Once per RenderViewports, outside any render pass
+	void UpdateGpuParticles(ID3D12GraphicsCommandList* cmdList);
 	/// Moves skeletal animation time: Animator state machines when `runStateMachines` (Play), else the Inspector clip
 	/// (or the Animator's entry / previewed state). Called from Update with game time, never from rendering.
 	void UpdateAnimations(float deltaTime, bool runStateMachines);
@@ -1178,6 +1190,12 @@ private:
 	CollisionEventCounts lastCollisionEvents_;
 	uint32_t musicVoice_ = 0;
 	std::string musicPath_;
+	struct AudioFollower { uint32_t voice; uint32_t objectId; };
+	std::vector<AudioFollower> audioFollowers_;
+	/// Plays the object's Audio Source. preview = flat, for listening to the clip in the Inspector.
+	bool StartAudioSource(GameObject& obj, bool preview = false);
+	/// Once a frame after the camera sync: the game camera is the listener, 3D voices follow their objects
+	void UpdateAudio();
 
 	bool showScriptGenModal_ = false;
 	int scriptGenTargetObjectIndex_ = -1; // >= 0 when opened via [Add Component -> Script -> New Script...]

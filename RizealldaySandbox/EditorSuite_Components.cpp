@@ -65,6 +65,7 @@ void EditorSuite::RegisterBuiltinComponents()
 	RegisterAnimatorComponent();
 	RegisterPhysicsComponents();
 	RegisterMaterialComponent();
+	RegisterVfxComponents();
 }
 
 // ---------------------------------------------------------------------------

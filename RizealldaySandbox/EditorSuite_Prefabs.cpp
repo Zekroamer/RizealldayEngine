@@ -188,6 +188,8 @@ void EditorSuite::StartScriptsOnSpawnedObject(uint32_t id, bool createInstances)
 	}
 
 	if (!obj->isActive) return;
+	// Objects that appear during Play (spawned, pooled, from LoadScene) start their sound like those of the first scene
+	if ((obj->hasAudioSource || obj->type == GameObjectType::AudioSource) && obj->audioPlayOnAwake) StartAudioSource(*obj);
 	for (size_t s = 0; s < obj->scripts.size(); ++s) {
 		obj = FindGameObjectById(id, false); // re-fetch: scripts must not keep references across callbacks
 		if (!obj || s >= obj->scripts.size()) return;

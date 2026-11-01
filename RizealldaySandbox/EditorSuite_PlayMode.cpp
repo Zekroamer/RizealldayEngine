@@ -92,10 +92,7 @@ void EditorSuite::StartPlayMode()
 	for (auto& obj : gameObjects_) {
 		obj.runtimeVoiceHandle = 0;
 		if (obj.isActive && (obj.hasAudioSource || obj.type == GameObjectType::AudioSource)) {
-			if (obj.audioPlayOnAwake && !obj.audioClipName.empty() && obj.audioClipName != "None") {
-				obj.runtimeSoundHandle = Audio::GetInstance()->LoadAudio(ResolveAssetPath(obj.audioClipName));
-				obj.runtimeVoiceHandle = Audio::GetInstance()->PlayAudio(obj.runtimeSoundHandle, obj.audioLoop, obj.audioVolume);
-			}
+			if (obj.audioPlayOnAwake) StartAudioSource(obj);
 		}
 	}
 
@@ -109,6 +106,8 @@ void EditorSuite::StopPlayMode()
 	persistentIds_.clear();
 	// Stop all active runtime audio voices when exiting Play Mode
 	Audio::GetInstance()->StopAllAudio();
+	Audio::GetInstance()->ResetBusVolumes(); // a script's mute must not outlive the run
+	audioFollowers_.clear();
 	for (auto& obj : gameObjects_) {
 		obj.runtimeVoiceHandle = 0;
 	}

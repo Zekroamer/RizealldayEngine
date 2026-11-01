@@ -29,6 +29,14 @@ bool EditorSuite::CreateThirdPersonDemo()
 	shot.hasBoxCollider = false;
 	shot.isLit = false;
 	shot.materialColor = { 1.0f, 0.8f, 0.2f, 1.0f };
+	if (AddComponentByName(shot, kTrailComponent)) {
+		auto* trail = shot.components.Get<TrailComponent>(kTrailComponent);
+		trail->lifetime = 0.3f;
+		trail->widthStart = 0.25f;
+		trail->colorStart = { 1.0f, 0.7f, 0.2f, 1.0f };
+		trail->colorEnd = { 1.0f, 0.2f, 0.1f, 0.0f };
+		trail->intensity = 3.0f;
+	}
 	const uint32_t shotId = shot.id;
 	const bool saved = SavePrefab(shotId, "ThirdPersonShot");
 	QueueDeleteGameObjectById(shotId);
@@ -117,6 +125,25 @@ bool EditorSuite::CreateThirdPersonDemo()
 	held.parentId = static_cast<int>(dummyId);
 	if (AddComponentByName(held, "Bone Attachment")) {
 		strncpy_s(held.components.Get<BoneAttachmentComponent>("Bone Attachment")->bone, "mixamorig:RightHand", _TRUNCATE);
+	}
+
+	// A looping 3D sound: turn the camera to move it between the ears, walk away to fade it
+	GameObject& speaker = CreateCube("Speaker", { -7.0f, 0.5f, -4.0f });
+	speaker.isStatic = true;
+	speaker.materialColor = { 0.9f, 0.2f, 0.8f, 1.0f };
+	speaker.hasAudioSource = true;
+	speaker.audioClipName = "Resources/Sound/titlebgm.wav";
+	speaker.audioLoop = true;
+	speaker.audioPlayOnAwake = true;
+	speaker.audioSpatial = true;
+	speaker.audioMinDistance = 2.0f;
+	speaker.audioMaxDistance = 25.0f;
+
+	// Effects: a fire simulated on the GPU
+	GameObject& fire = CreateGameObject("Fire", GameObjectType::Empty);
+	fire.translation = { 7.0f, -0.4f, -4.0f };
+	if (AddComponentByName(fire, kGpuParticlesComponent)) {
+		ApplyGpuParticlePreset(*fire.components.Get<GpuParticlesComponent>(kGpuParticlesComponent), "Fire");
 	}
 
 	GameObject& player = CreateCube("Player", { 0.0f, 2.0f, 0.0f });

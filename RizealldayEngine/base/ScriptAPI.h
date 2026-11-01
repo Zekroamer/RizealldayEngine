@@ -174,6 +174,31 @@ struct ScriptCameraData {
 	bool orthographic = false;
 };
 
+/// Mixer groups for SetBusVolume / ScriptAudioParams
+enum class ScriptAudioBus : int { Effects, Music, Voice, UI };
+
+/// PlayAudioEx settings
+struct ScriptAudioParams {
+	float volume = 1.0f;
+	float pitch = 1.0f;
+	ScriptAudioBus bus = ScriptAudioBus::Effects;
+	bool loop = false;
+	bool spatial = false;       // 3D: pans with the camera, fades with distance
+	Vector3 position{ 0.0f, 0.0f, 0.0f };
+	float minDistance = 1.0f;   // full volume up to here
+	float maxDistance = 50.0f;  // silent from here on
+	uint32_t followObject = 0;  // != 0: spatial sound that stays on this object
+};
+
+/// One field of a data component. Crosses the DLL boundary, so plain data only.
+struct ScriptComponentValue {
+	enum Kind : int { Float, Int, Bool, Vector, Color, Text };
+	Kind kind = Float;
+	float number[4] = { 0.0f, 0.0f, 0.0f, 0.0f }; // Float: [0]; Vector: [0..2]; Color: [0..3]
+	int integer = 0; // Int, Bool (0 / 1)
+	char text[260] = {}; // Text and asset paths
+};
+
 /// Function-pointer table passed from the Engine to GameScripts.dll on load.
 struct EngineAPI {
 	void* hostContext = nullptr;
@@ -260,6 +285,21 @@ struct EngineAPI {
 	// One looping music track at a time; playing the same track again only changes the volume
 	void (*playMusic)(void* ctx, const char* path, float volume) = nullptr;
 	void (*stopMusic)(void* ctx) = nullptr;
+	// Bus, pitch, 3D position (API v12)
+	uint32_t (*playSoundEx)(void* ctx, const char* path, const ScriptAudioParams* params) = nullptr;
+	void (*setSoundPosition)(void* ctx, uint32_t voice, Vector3 position) = nullptr;
+	void (*setSoundPitch)(void* ctx, uint32_t voice, float pitch) = nullptr;
+	void (*setBusVolume)(void* ctx, int bus, float volume) = nullptr;
+	float (*getBusVolume)(void* ctx, int bus) = nullptr;
+	bool (*playAudioSource)(void* ctx, uint32_t id) = nullptr; // the object's Audio Source component
+	void (*stopAudioSource)(void* ctx, uint32_t id) = nullptr;
+
+	// Components by name (API v12). Fields: data components only (Animator, PBR Material, Joint, ...).
+	bool (*hasComponent)(void* ctx, uint32_t id, const char* component) = nullptr;
+	bool (*addComponent)(void* ctx, uint32_t id, const char* component) = nullptr;
+	bool (*removeComponent)(void* ctx, uint32_t id, const char* component) = nullptr;
+	bool (*getComponentField)(void* ctx, uint32_t id, const char* component, const char* field, ScriptComponentValue* out) = nullptr;
+	bool (*setComponentField)(void* ctx, uint32_t id, const char* component, const char* field, const ScriptComponentValue* value) = nullptr; // kind must match the field
 
 	// Particle System component. Both take effect at the end of the frame.
 	void (*emitParticles)(void* ctx, uint32_t id, int count) = nullptr;
@@ -353,7 +393,7 @@ struct EngineAPI {
 /// Engine <-> GameScripts.dll compatibility check. Bump kScriptApiVersion when the meaning of the API changes;
 /// layout changes of EngineAPI / ScriptGameObjectView / ScriptBase are caught automatically by the sizes.
 /// The fingerprint is defined at the end of this header (it needs the complete ScriptBase).
-constexpr uint32_t kScriptApiVersion = 11; // 4: Animator, 5: ShakeCamera / Hitstop / input actions, 6: MoveCharacter, 7: FindPath, 8: KeepAcrossScenes, 9: material outline, 10: camera input + projection + prewarm + post-processing, 11: animation layers + bones + IK + ragdoll
+constexpr uint32_t kScriptApiVersion = 12; // 4: Animator, 5: ShakeCamera / Hitstop / input actions, 6: MoveCharacter, 7: FindPath, 8: KeepAcrossScenes, 9: material outline, 10: camera input + projection + prewarm + post-processing, 11: animation layers + bones + IK + ragdoll, 12: audio buses + pitch + 3D + components by name
 
 /// Size of the UI canvas used by the UI* helpers (stretched over the game view)
 constexpr float kUICanvasWidth = 1280.0f;
@@ -859,6 +899,113 @@ public:
 	}
 	void StopMusic() const {
 		if (engineApi_ && engineApi_->stopMusic) engineApi_->stopMusic(engineApi_->hostContext);
+	}
+	/// Full control: bus, pitch, 3D position, following an object
+	uint32_t PlayAudioEx(const char* path, const ScriptAudioParams& params) const {
+		return (engineApi_ && engineApi_->playSoundEx && path) ? engineApi_->playSoundEx(engineApi_->hostContext, path, &params) : 0u;
+	}
+	/// A sound at a place in the world: pans with the camera and fades with distance (full up to minDistance, silent at maxDistance)
+	uint32_t PlayAudioAt(const char* path, const Vector3& position, float volume = 1.0f, float minDistance = 1.0f, float maxDistance = 50.0f, bool loop = false) const {
+		ScriptAudioParams params;
+		params.volume = volume;
+		params.loop = loop;
+		params.spatial = true;
+		params.position = position;
+		params.minDistance = minDistance;
+		params.maxDistance = maxDistance;
+		return PlayAudioEx(path, params);
+	}
+	/// Like PlayAudioAt, but the sound keeps following the object while it moves. objectId 0 = this object.
+	uint32_t PlayAudioOn(const char* path, uint32_t objectId = 0, float volume = 1.0f, float minDistance = 1.0f, float maxDistance = 50.0f, bool loop = false) const {
+		ScriptAudioParams params;
+		params.volume = volume;
+		params.loop = loop;
+		params.spatial = true;
+		params.followObject = ResolveId(objectId);
+		params.minDistance = minDistance;
+		params.maxDistance = maxDistance;
+		return PlayAudioEx(path, params);
+	}
+	void SetAudioPosition(uint32_t voice, const Vector3& position) const {
+		if (engineApi_ && engineApi_->setSoundPosition && voice != 0) engineApi_->setSoundPosition(engineApi_->hostContext, voice, position);
+	}
+	/// 1 = normal, 2 = one octave up and twice as fast (0.25 .. 4)
+	void SetAudioPitch(uint32_t voice, float pitch) const {
+		if (engineApi_ && engineApi_->setSoundPitch && voice != 0) engineApi_->setSoundPitch(engineApi_->hostContext, voice, pitch);
+	}
+	/// Volume of a whole group, e.g. for an options menu. Back to 1 when Play stops.
+	void SetBusVolume(ScriptAudioBus bus, float volume) const {
+		if (engineApi_ && engineApi_->setBusVolume) engineApi_->setBusVolume(engineApi_->hostContext, static_cast<int>(bus), volume);
+	}
+	float GetBusVolume(ScriptAudioBus bus) const {
+		return (engineApi_ && engineApi_->getBusVolume) ? engineApi_->getBusVolume(engineApi_->hostContext, static_cast<int>(bus)) : 0.0f;
+	}
+	/// Starts the clip set up in the object's Audio Source component
+	bool PlayAudioSource(uint32_t id = 0) const {
+		return engineApi_ && engineApi_->playAudioSource && engineApi_->playAudioSource(engineApi_->hostContext, ResolveId(id));
+	}
+	void StopAudioSource(uint32_t id = 0) const {
+		if (engineApi_ && engineApi_->stopAudioSource) engineApi_->stopAudioSource(engineApi_->hostContext, ResolveId(id));
+	}
+
+	// ---- Components by name -------------------------------------------------
+	bool HasComponent(const char* component, uint32_t id = 0) const {
+		return engineApi_ && engineApi_->hasComponent && component && engineApi_->hasComponent(engineApi_->hostContext, ResolveId(id), component);
+	}
+	bool AddComponent(const char* component, uint32_t id = 0) const {
+		return engineApi_ && engineApi_->addComponent && component && engineApi_->addComponent(engineApi_->hostContext, ResolveId(id), component);
+	}
+	bool RemoveComponent(const char* component, uint32_t id = 0) const {
+		return engineApi_ && engineApi_->removeComponent && component && engineApi_->removeComponent(engineApi_->hostContext, ResolveId(id), component);
+	}
+	/// Whole field as a value; the helpers below are shorter for one type
+	bool GetComponentField(const char* component, const char* field, ScriptComponentValue& out, uint32_t id = 0) const {
+		return engineApi_ && engineApi_->getComponentField && component && field && engineApi_->getComponentField(engineApi_->hostContext, ResolveId(id), component, field, &out);
+	}
+	bool SetComponentField(const char* component, const char* field, const ScriptComponentValue& value, uint32_t id = 0) const {
+		return engineApi_ && engineApi_->setComponentField && component && field && engineApi_->setComponentField(engineApi_->hostContext, ResolveId(id), component, field, &value);
+	}
+	float GetComponentFloat(const char* component, const char* field, float fallback = 0.0f, uint32_t id = 0) const {
+		ScriptComponentValue v;
+		return (GetComponentField(component, field, v, id) && v.kind == ScriptComponentValue::Float) ? v.number[0] : fallback;
+	}
+	bool SetComponentFloat(const char* component, const char* field, float value, uint32_t id = 0) const {
+		ScriptComponentValue v;
+		v.kind = ScriptComponentValue::Float;
+		v.number[0] = value;
+		return SetComponentField(component, field, v, id);
+	}
+	int GetComponentInt(const char* component, const char* field, int fallback = 0, uint32_t id = 0) const {
+		ScriptComponentValue v;
+		return (GetComponentField(component, field, v, id) && v.kind == ScriptComponentValue::Int) ? v.integer : fallback;
+	}
+	bool SetComponentInt(const char* component, const char* field, int value, uint32_t id = 0) const {
+		ScriptComponentValue v;
+		v.kind = ScriptComponentValue::Int;
+		v.integer = value;
+		return SetComponentField(component, field, v, id);
+	}
+	bool GetComponentBool(const char* component, const char* field, bool fallback = false, uint32_t id = 0) const {
+		ScriptComponentValue v;
+		return (GetComponentField(component, field, v, id) && v.kind == ScriptComponentValue::Bool) ? v.integer != 0 : fallback;
+	}
+	bool SetComponentBool(const char* component, const char* field, bool value, uint32_t id = 0) const {
+		ScriptComponentValue v;
+		v.kind = ScriptComponentValue::Bool;
+		v.integer = value ? 1 : 0;
+		return SetComponentField(component, field, v, id);
+	}
+	Vector3 GetComponentVector3(const char* component, const char* field, const Vector3& fallback = { 0.0f, 0.0f, 0.0f }, uint32_t id = 0) const {
+		ScriptComponentValue v;
+		return (GetComponentField(component, field, v, id) && v.kind == ScriptComponentValue::Vector) ? Vector3{ v.number[0], v.number[1], v.number[2] } : fallback;
+	}
+	bool SetComponentVector3(const char* component, const char* field, const Vector3& value, uint32_t id = 0) const {
+		ScriptComponentValue v;
+		v.kind = ScriptComponentValue::Vector;
+		v.number[0] = value.x;
+		v.number[1] = value.y;
+		v.number[2] = value.z;
+		return SetComponentField(component, field, v, id);
 	}
 
 	// ---- Particles & timers -------------------------------------------------

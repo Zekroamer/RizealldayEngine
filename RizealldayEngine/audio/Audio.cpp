@@ -9,6 +9,7 @@
 #include <cstring>
 #include <filesystem>
 #include <algorithm>
+#include <cmath>
 #include <format>
 
 #pragma comment(lib, "mfplat.lib")
@@ -43,6 +44,33 @@ void Audio::Initialize()
 		Log::GetInstance()->logOutput(std::format("[Audio] No audio output device (HRESULT=0x{:08X}); audio disabled.\n", static_cast<uint32_t>(result)));
 		masterVoice_ = nullptr;
 		xAudio2_.Reset();
+		return;
+	}
+
+	XAUDIO2_VOICE_DETAILS details{};
+	masterVoice_->GetVoiceDetails(&details);
+	for (size_t i = 0; i < busVoices_.size(); ++i) {
+		result = xAudio2_->CreateSubmixVoice(&busVoices_[i], 2, details.InputSampleRate);
+		if (FAILED(result) || !busVoices_[i]) {
+			Log::GetInstance()->logOutput(std::format("[Audio] CreateSubmixVoice failed (HRESULT=0x{:08X}); audio disabled.\n", static_cast<uint32_t>(result)));
+			busVoices_[i] = nullptr;
+			DestroyBuses();
+			masterVoice_->DestroyVoice();
+			masterVoice_ = nullptr;
+			xAudio2_.Reset();
+			return;
+		}
+		busVoices_[i]->SetVolume(busVolumes_[i]);
+	}
+}
+
+void Audio::DestroyBuses()
+{
+	for (auto& bus : busVoices_) {
+		if (bus) {
+			bus->DestroyVoice();
+			bus = nullptr;
+		}
 	}
 }
 
@@ -74,6 +102,7 @@ void Audio::Finalize()
 	StopAllAudio();
 	soundCache_.clear();
 	soundDataMap_.clear();
+	DestroyBuses();
 
 	if (masterVoice_) {
 		masterVoice_->DestroyVoice();
@@ -332,7 +361,23 @@ uint32_t Audio::LoadAudio(const std::string& filename)
 	return handle;
 }
 
+namespace {
+	constexpr float kMaxPitch = 4.0f;
+	constexpr uint32_t kMaxSpatialChannels = 8;
+
+	float SafeVolume(float volume) { return std::isfinite(volume) ? std::clamp(volume, 0.0f, 4.0f) : 1.0f; }
+	float SafePitch(float pitch) { return std::isfinite(pitch) ? std::clamp(pitch, 0.25f, kMaxPitch) : 1.0f; }
+}
+
 uint32_t Audio::PlayAudio(uint32_t soundHandle, bool loop, float volume)
+{
+	PlayParams params;
+	params.loop = loop;
+	params.volume = volume;
+	return PlayAudio(soundHandle, params);
+}
+
+uint32_t Audio::PlayAudio(uint32_t soundHandle, const PlayParams& params)
 {
 	if (!xAudio2_ || soundHandle == 0) {
 		return 0;
@@ -343,20 +388,55 @@ uint32_t Audio::PlayAudio(uint32_t soundHandle, bool loop, float volume)
 		return 0;
 	}
 
+	// Finished voices must not count against the limits
+	Update();
+	for (;;) {
+		std::vector<SpatialAudio::VoiceInfo> voices;
+		voices.reserve(activeVoices_.size());
+		for (const auto& active : activeVoices_) {
+			voices.push_back({ active.soundHandle, active.volume * active.gain, active.bus == AudioBus::Music });
+		}
+		const int steal = SpatialAudio::PickVoiceToSteal(voices, soundHandle, maxVoices_, maxVoicesPerSound_);
+		if (steal == SpatialAudio::kRefuse) {
+			return 0;
+		}
+		if (steal == SpatialAudio::kNoSteal) {
+			break;
+		}
+		StopAudio(activeVoices_[static_cast<size_t>(steal)].voiceHandle);
+	}
+
 	const SoundData& soundData = it->second;
+	const size_t busIndex = (std::min)(static_cast<size_t>((std::max)(static_cast<int>(params.bus), 0)), busVoices_.size() - 1);
+	XAUDIO2_SEND_DESCRIPTOR send{ 0, busVoices_[busIndex] };
+	XAUDIO2_VOICE_SENDS sends{ 1, &send };
 	IXAudio2SourceVoice* pSourceVoice = nullptr;
-	HRESULT result = xAudio2_->CreateSourceVoice(&pSourceVoice, &soundData.wfex);
+	HRESULT result = xAudio2_->CreateSourceVoice(&pSourceVoice, &soundData.wfex, 0, kMaxPitch, nullptr, &sends);
 	if (FAILED(result) || !pSourceVoice) {
 		return 0;
 	}
 
-	pSourceVoice->SetVolume(std::clamp(volume, 0.0f, 4.0f));
+	ActiveVoice voice;
+	voice.soundHandle = soundHandle;
+	voice.sourceVoice = pSourceVoice;
+	voice.loop = params.loop;
+	voice.bus = static_cast<AudioBus>(busIndex);
+	voice.channels = soundData.wfex.nChannels;
+	voice.volume = SafeVolume(params.volume);
+	voice.spatial = params.spatial && voice.channels <= kMaxSpatialChannels;
+	voice.position = params.position;
+	voice.minDistance = params.minDistance;
+	voice.maxDistance = params.maxDistance;
+
+	pSourceVoice->SetVolume(voice.volume);
+	pSourceVoice->SetFrequencyRatio(SafePitch(params.pitch));
+	ApplySpatial(voice); // before Start: the first samples already come from the right side
 
 	XAUDIO2_BUFFER buf{};
 	buf.pAudioData = soundData.buffer.data();
 	buf.AudioBytes = soundData.bufferSize;
 	buf.Flags = XAUDIO2_END_OF_STREAM;
-	if (loop) {
+	if (params.loop) {
 		buf.LoopCount = XAUDIO2_LOOP_INFINITE;
 	}
 
@@ -372,9 +452,120 @@ uint32_t Audio::PlayAudio(uint32_t soundHandle, bool loop, float volume)
 		return 0;
 	}
 
-	uint32_t voiceHandle = nextVoiceHandle_++;
-	activeVoices_.push_back({ voiceHandle, soundHandle, pSourceVoice, loop });
-	return voiceHandle;
+	voice.voiceHandle = nextVoiceHandle_++;
+	activeVoices_.push_back(voice);
+	return voice.voiceHandle;
+}
+
+void Audio::ApplySpatial(ActiveVoice& voice)
+{
+	if (!voice.spatial || !voice.sourceVoice) {
+		return;
+	}
+	const SpatialAudio::Levels levels = SpatialAudio::Compute(listener_, voice.position, voice.minDistance, voice.maxDistance);
+	voice.gain = levels.gain;
+	// Every source channel feeds both ears: a stereo clip becomes one point in the world
+	float matrix[kMaxSpatialChannels * 2] = {};
+	for (uint32_t source = 0; source < voice.channels; ++source) {
+		matrix[source] = levels.left / voice.channels;
+		matrix[voice.channels + source] = levels.right / voice.channels;
+	}
+	voice.sourceVoice->SetOutputMatrix(BusVoice(voice.bus), voice.channels, 2, matrix);
+}
+
+void Audio::ApplySpatial()
+{
+	for (auto& voice : activeVoices_) {
+		ApplySpatial(voice);
+	}
+}
+
+void Audio::SetListener(const Vector3& position, const Vector3& right)
+{
+	listener_.position = position;
+	listener_.right = right;
+}
+
+void Audio::SetVoicePosition(uint32_t voiceHandle, const Vector3& position)
+{
+	for (auto& active : activeVoices_) {
+		if (active.voiceHandle == voiceHandle) {
+			active.position = position;
+			return;
+		}
+	}
+}
+
+void Audio::SetVoicePitch(uint32_t voiceHandle, float pitch)
+{
+	for (auto& active : activeVoices_) {
+		if (active.voiceHandle == voiceHandle && active.sourceVoice) {
+			active.sourceVoice->SetFrequencyRatio(SafePitch(pitch));
+			return;
+		}
+	}
+}
+
+float Audio::GetVoicePitch(uint32_t voiceHandle) const
+{
+	for (const auto& active : activeVoices_) {
+		if (active.voiceHandle == voiceHandle && active.sourceVoice) {
+			float pitch = 0.0f;
+			active.sourceVoice->GetFrequencyRatio(&pitch);
+			return pitch;
+		}
+	}
+	return 0.0f;
+}
+
+bool Audio::GetVoiceLevels(uint32_t voiceHandle, float* left, float* right) const
+{
+	for (const auto& active : activeVoices_) {
+		if (active.voiceHandle != voiceHandle || !active.sourceVoice || active.channels > kMaxSpatialChannels) {
+			continue;
+		}
+		float matrix[kMaxSpatialChannels * 2] = {};
+		active.sourceVoice->GetOutputMatrix(BusVoice(active.bus), active.channels, 2, matrix);
+		*left = 0.0f;
+		*right = 0.0f;
+		for (uint32_t source = 0; source < active.channels; ++source) {
+			*left += matrix[source];
+			*right += matrix[active.channels + source];
+		}
+		return true;
+	}
+	return false;
+}
+
+void Audio::SetBusVolume(AudioBus bus, float volume)
+{
+	const int index = static_cast<int>(bus);
+	if (index < 0 || index >= static_cast<int>(AudioBus::Count)) {
+		return;
+	}
+	busVolumes_[static_cast<size_t>(index)] = SafeVolume(volume);
+	if (busVoices_[static_cast<size_t>(index)]) {
+		busVoices_[static_cast<size_t>(index)]->SetVolume(busVolumes_[static_cast<size_t>(index)]);
+	}
+}
+
+float Audio::GetBusVolume(AudioBus bus) const
+{
+	const int index = static_cast<int>(bus);
+	return (index >= 0 && index < static_cast<int>(AudioBus::Count)) ? busVolumes_[static_cast<size_t>(index)] : 0.0f;
+}
+
+void Audio::ResetBusVolumes()
+{
+	for (int i = 0; i < static_cast<int>(AudioBus::Count); ++i) {
+		SetBusVolume(static_cast<AudioBus>(i), 1.0f);
+	}
+}
+
+void Audio::SetVoiceLimits(int maxVoices, int maxVoicesPerSound)
+{
+	maxVoices_ = (std::max)(maxVoices, 1);
+	maxVoicesPerSound_ = (std::max)(maxVoicesPerSound, 1);
 }
 
 void Audio::StopAudio(uint32_t voiceHandle)
@@ -414,7 +605,8 @@ void Audio::SetVolume(uint32_t voiceHandle, float volume)
 	}
 	for (auto& active : activeVoices_) {
 		if (active.voiceHandle == voiceHandle && active.sourceVoice) {
-			active.sourceVoice->SetVolume(std::clamp(volume, 0.0f, 4.0f));
+			active.volume = SafeVolume(volume);
+			active.sourceVoice->SetVolume(active.volume);
 			return;
 		}
 	}

@@ -7,6 +7,7 @@
 #include "EditorSuiteInternal.h"
 #include "PhysicsComponents.h"
 #include "render/LightClusters.h"
+#include "render/GpuParticles.h"
 #include "base/TextureManager.h"
 #include "SceneJson.h"
 #include "Tests/TestFramework.h"
@@ -16,6 +17,7 @@
 #include "EngineUpdate.h"
 #include "NavGrid.h"
 #include "base/EngineVersion.h"
+#include "audio/Audio.h"
 #include <random>
 #include <set>
 
@@ -55,6 +57,14 @@ struct EditorSuiteTestAccess {
 	static void RestorePoses(EditorSuite& s) { s.RestoreSimulatedPoses(); }
 	static EditorSuite::CollisionEventCounts CollisionEvents(const EditorSuite& s) { return s.lastCollisionEvents_; }
 	static uint32_t MusicVoice(const EditorSuite& s) { return s.musicVoice_; }
+	static void AimAudioListener(EditorSuite& s, const Vector3& position, float yaw)
+	{
+		s.gameCamera_->translation = position;
+		s.gameCamera_->rotation = { 0.0f, yaw, 0.0f };
+		s.gameCamera_->Update();
+		s.UpdateWorldMatrices();
+		s.UpdateAudio();
+	}
 	static RenderTexture& GameViewRT(EditorSuite& s) { return s.gameViewRT_; }
 	static int ScriptFaults(const EditorSuite& s) { return s.scriptFaultCount_; }
 	static bool FaultPending(const EditorSuite& s) { return s.scriptFaultPending_; }
@@ -4610,7 +4620,7 @@ TEST_CASE(Lighting, MaterialAssetIsSharedAndSurvivesARestart)
 	CHECK_NEAR(loaded->roughness, 0.25f, 1e-5f);
 
 	s.Update(0.0f, RizeEngine::GetInput());
-	s.RenderViewports(A::Dx(s)->GetCommandList(), false);
+	CaptureGameViewSignature(s); // a whole frame: nothing recorded stays unsubmitted when the test deletes its objects
 	other = s.FindGameObjectById(secondId, false)->components.Get<PbrMaterialComponent>("PBR Material");
 	CHECK_NEAR(other->metallic, 0.75f, 1e-5f); // the asset's values reached the other object
 
@@ -4830,11 +4840,12 @@ TEST_CASE(Animation, ObjectFollowsTheBoneItIsAttachedTo)
 	character.hasMesh = true;
 	character.modelPath = "Resources/Model/Idle.fbx";
 	character.translation = { 3.0f, 0.0f, 2.0f };
+	character.scale = { 0.012f, 0.012f, 0.012f };
 	const uint32_t fighterId = character.id;
 	GameObject& sword = s.CreateGameObject("Sword", GameObjectType::Empty);
 	const uint32_t swordId = sword.id;
 
-	s.RenderViewports(A::Dx(s)->GetCommandList(), false); // creates the character's Object3d
+	CaptureGameViewSignature(s); // a whole frame: nothing recorded stays unsubmitted when the test deletes its objects // creates the character's Object3d
 	const Model* model = s.FindGameObjectById(fighterId, false)->editObject3d ? s.FindGameObjectById(fighterId, false)->editObject3d->GetModel() : nullptr;
 	REQUIRE(model != nullptr);
 	const std::string hand = FindBone(*model, "RightHand");
@@ -4871,7 +4882,7 @@ TEST_CASE(Animation, RagdollFallsAndStopsOnTheFloorThenGivesTheBodyBack)
 	character.hasBoxCollider = true;
 	character.boxSize = { 0.5f, 2.0f, 0.5f };
 	const uint32_t id = character.id;
-	s.RenderViewports(A::Dx(s)->GetCommandList(), false);
+	CaptureGameViewSignature(s); // a whole frame: nothing recorded stays unsubmitted when the test deletes its objects
 	const Model* model = s.FindGameObjectById(id, false)->editObject3d->GetModel();
 	REQUIRE(model != nullptr && model->HasBones());
 	const std::string head = FindBone(*model, "Head");
@@ -4956,7 +4967,7 @@ TEST_CASE(Animation, RagdollCollapsesWholeBody)
 	character.modelPath = "Resources/Model/Idle.fbx";
 	character.scale = { 0.012f, 0.012f, 0.012f };
 	const uint32_t id = character.id;
-	s.RenderViewports(A::Dx(s)->GetCommandList(), false);
+	CaptureGameViewSignature(s); // a whole frame: nothing recorded stays unsubmitted when the test deletes its objects
 	const Model* model = s.FindGameObjectById(id, false)->editObject3d->GetModel();
 	REQUIRE(model != nullptr && model->HasBones());
 	EngineAPI& api = A::Api(s);
@@ -5025,6 +5036,582 @@ TEST_CASE(Lighting, FloorHasNoHorizontalLines)
 	CHECK_MSG(worst < 0.25f, std::format("row {} of {} changed by {:.3f}; {} rows above 0.1", worstRow, without.size(), worst, changedRows));
 }
 
+namespace {
+	/// Silence, so that running the tests makes no noise
+	std::string WriteSilentWav(const std::string& name)
+	{
+		const std::filesystem::path path = A::TempRoot() / name;
+		std::error_code ec;
+		std::filesystem::create_directories(path.parent_path(), ec);
+		const uint32_t dataSize = 44100 * 2 * 5; // 5 seconds, 16 bit mono
+		const auto u32 = [](std::ofstream& f, uint32_t v) { f.write(reinterpret_cast<const char*>(&v), 4); };
+		const auto u16 = [](std::ofstream& f, uint16_t v) { f.write(reinterpret_cast<const char*>(&v), 2); };
+		std::ofstream f(path, std::ios::binary);
+		f.write("RIFF", 4); u32(f, 36 + dataSize); f.write("WAVEfmt ", 8); u32(f, 16);
+		u16(f, 1); u16(f, 1); u32(f, 44100); u32(f, 88200); u16(f, 2); u16(f, 16);
+		f.write("data", 4); u32(f, dataSize);
+		const std::vector<char> silence(dataSize, 0);
+		f.write(silence.data(), dataSize);
+		return path.string();
+	}
+
+	/// XAudio2 applies a new pitch the next time its engine runs (about 10 ms)
+	float PitchOnceApplied(uint32_t voice, float expected)
+	{
+		float pitch = 0.0f;
+		for (int i = 0; i < 50; ++i) {
+			pitch = Audio::GetInstance()->GetVoicePitch(voice);
+			if (std::abs(pitch - expected) < 1e-4f) break;
+			Sleep(10);
+		}
+		return pitch;
+	}
+
+	struct VoiceLevels { float left = -1.0f; float right = -1.0f; };
+	VoiceLevels LevelsOf(uint32_t voice)
+	{
+		VoiceLevels levels;
+		Audio::GetInstance()->GetVoiceLevels(voice, &levels.left, &levels.right);
+		return levels;
+	}
+}
+
+TEST_CASE(Audio, SoundMovesBetweenEarsWhenTheListenerTurns)
+{
+	using namespace SpatialAudio;
+	const Vector3 sound{ -10.0f, 0.0f, 0.0f };
+	const auto heard = [&](const Vector3& right) { return Compute({ { 0.0f, 0.0f, 0.0f }, right }, sound, 1.0f, 100.0f); };
+
+	// Facing +Z: the sound is on the left
+	const Levels onLeft = heard({ 1.0f, 0.0f, 0.0f });
+	CHECK(onLeft.left > onLeft.right * 3.0f);
+	CHECK(onLeft.right > 0.0f); // a real head hears it with the other ear too
+	// Turned so that it is behind (facing +X): both ears alike
+	const Levels behind = heard({ 0.0f, 0.0f, -1.0f });
+	CHECK_NEAR(behind.left, behind.right, 1e-4f);
+	// Facing it: both ears alike, and just as loud in total as from the side
+	const Levels front = heard({ 0.0f, 0.0f, 1.0f });
+	CHECK_NEAR(front.left, front.right, 1e-4f);
+	CHECK_NEAR(front.left * front.left + front.right * front.right, onLeft.left * onLeft.left + onLeft.right * onLeft.right, 1e-3f);
+	// Turned the other way: now the right ear
+	const Levels onRight = heard({ -1.0f, 0.0f, 0.0f });
+	CHECK(onRight.right > onRight.left * 3.0f);
+}
+
+TEST_CASE(Audio, SoundFadesWithDistance)
+{
+	using namespace SpatialAudio;
+	const auto gainAt = [](float distance) { return Compute({}, { 0.0f, 0.0f, distance }, 2.0f, 40.0f).gain; };
+	CHECK_NEAR(gainAt(0.5f), 1.0f, 1e-5f);
+	CHECK_NEAR(gainAt(2.0f), 1.0f, 1e-5f);
+	float previous = 1.0f;
+	for (float d = 3.0f; d < 40.0f; d += 1.0f) {
+		const float gain = gainAt(d);
+		CHECK(gain < previous);
+		CHECK(gain > 0.0f);
+		previous = gain;
+	}
+	CHECK(gainAt(40.0f) == 0.0f);
+	CHECK(gainAt(1000.0f) == 0.0f);
+	const Levels farAway = Compute({}, { 0.0f, 0.0f, 1000.0f }, 2.0f, 40.0f);
+	CHECK(farAway.left == 0.0f && farAway.right == 0.0f);
+}
+
+TEST_CASE(Audio, BadSpatialInputStaysSafe)
+{
+	using namespace SpatialAudio;
+	// On top of the listener there is no direction: centred, not a jump to one side
+	const Levels same = Compute({}, { 0.0f, 0.0f, 0.0f }, 1.0f, 10.0f);
+	CHECK_NEAR(same.left, same.right, 1e-5f);
+	CHECK(same.left > 0.0f);
+	// Very close sounds are near the centre, so passing through the head does not click
+	const Levels close = Compute({}, { -0.01f, 0.0f, 0.0f }, 1.0f, 10.0f);
+	CHECK_NEAR(close.left, close.right, 0.05f);
+	// Max below min, NaN, a listener whose camera was never updated
+	const Levels flipped = Compute({}, { 0.0f, 0.0f, 5.0f }, 10.0f, 1.0f);
+	CHECK(std::isfinite(flipped.left) && std::isfinite(flipped.right));
+	const float nan = std::numeric_limits<float>::quiet_NaN();
+	const Levels bad = Compute({}, { nan, 0.0f, 0.0f }, nan, nan);
+	CHECK(bad.left == 0.0f && bad.right == 0.0f);
+	const Levels noRight = Compute({ { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } }, { 3.0f, 0.0f, 0.0f }, 1.0f, 10.0f);
+	CHECK_NEAR(noRight.left, noRight.right, 1e-5f);
+}
+
+TEST_CASE(Audio, VoiceLimitChoosesWhatToReplace)
+{
+	using namespace SpatialAudio;
+	CHECK(PickVoiceToSteal({}, 1, 4, 2) == kNoSteal);
+	// Same sound over its own limit: its oldest voice, even when another sound is quieter
+	CHECK(PickVoiceToSteal({ { 2, 0.1f, false }, { 1, 0.9f, false }, { 1, 0.5f, false } }, 1, 8, 2) == 1);
+	// Total limit: the quietest; on a tie the oldest
+	CHECK(PickVoiceToSteal({ { 1, 0.9f, false }, { 2, 0.2f, false }, { 3, 0.5f, false } }, 4, 3, 8) == 1);
+	CHECK(PickVoiceToSteal({ { 1, 0.3f, false }, { 2, 0.3f, false } }, 4, 2, 8) == 0);
+	// Music is never replaced, even when it is the quietest
+	CHECK(PickVoiceToSteal({ { 1, 0.0f, true }, { 2, 0.5f, false } }, 4, 2, 8) == 1);
+	CHECK(PickVoiceToSteal({ { 1, 0.5f, true }, { 2, 0.5f, true } }, 4, 2, 8) == kRefuse);
+	CHECK(PickVoiceToSteal({ { 1, 0.5f, true } }, 1, 8, 1) == kRefuse);
+	// Room left
+	CHECK(PickVoiceToSteal({ { 1, 0.5f, false } }, 1, 8, 2) == kNoSteal);
+}
+
+TEST_CASE(Audio, GameCameraIsTheListenerAndVoicesFollowObjects)
+{
+	Audio* audio = Audio::GetInstance();
+	if (!audio->IsAvailable()) return; // no audio device (CI): the pure tests above still ran
+	EngineAPI& api = A::Api(s);
+	const std::string clip = WriteSilentWav("Audio/silence.wav");
+
+	GameObject& source = s.CreateGameObject("Source", GameObjectType::Empty);
+	source.translation = { -10.0f, 0.0f, 0.0f };
+	const uint32_t sourceId = source.id;
+	A::AimAudioListener(s, { 0.0f, 0.0f, 0.0f }, 0.0f);
+
+	ScriptAudioParams params;
+	params.spatial = true;
+	params.loop = true;
+	params.followObject = sourceId;
+	params.minDistance = 1.0f;
+	params.maxDistance = 100.0f;
+	const uint32_t voice = api.playSoundEx(&s, clip.c_str(), &params);
+	REQUIRE(voice != 0u);
+
+	// The user's example: on the left, then behind after turning right
+	VoiceLevels levels = LevelsOf(voice);
+	CHECK(levels.left > levels.right * 3.0f);
+	A::AimAudioListener(s, { 0.0f, 0.0f, 0.0f }, 3.14159265f * 0.5f); // yaw right, facing +X
+	levels = LevelsOf(voice);
+	CHECK_NEAR(levels.left, levels.right, 1e-3f);
+	A::AimAudioListener(s, { 0.0f, 0.0f, 0.0f }, 3.14159265f);
+	levels = LevelsOf(voice);
+	CHECK(levels.right > levels.left * 3.0f);
+
+	// Near is loud, far is quiet; the voice follows the object
+	A::AimAudioListener(s, { 0.0f, 0.0f, 0.0f }, 0.0f);
+	const float at10 = LevelsOf(voice).left;
+	s.FindGameObjectById(sourceId, false)->translation = { -2.0f, 0.0f, 0.0f };
+	A::AimAudioListener(s, { 0.0f, 0.0f, 0.0f }, 0.0f);
+	const float at2 = LevelsOf(voice).left;
+	s.FindGameObjectById(sourceId, false)->translation = { -60.0f, 0.0f, 0.0f };
+	A::AimAudioListener(s, { 0.0f, 0.0f, 0.0f }, 0.0f);
+	const float at60 = LevelsOf(voice).left;
+	CHECK(at2 > at10);
+	CHECK(at10 > at60);
+
+	// Pitch and buses
+	api.setSoundPitch(&s, voice, 2.0f);
+	CHECK_NEAR(PitchOnceApplied(voice, 2.0f), 2.0f, 1e-4f);
+	api.setSoundPitch(&s, voice, std::numeric_limits<float>::quiet_NaN());
+	CHECK_NEAR(PitchOnceApplied(voice, 1.0f), 1.0f, 1e-4f);
+	api.setBusVolume(&s, static_cast<int>(ScriptAudioBus::Music), 0.25f);
+	CHECK_NEAR(api.getBusVolume(&s, static_cast<int>(ScriptAudioBus::Music)), 0.25f, 1e-5f);
+	CHECK_NEAR(api.getBusVolume(&s, static_cast<int>(ScriptAudioBus::Effects)), 1.0f, 1e-5f);
+	CHECK(api.getBusVolume(&s, 99) == 0.0f);
+	api.setBusVolume(&s, 99, 0.5f); // ignored, no crash
+
+	// The object is gone: the sound stays where it was and nothing crashes
+	s.QueueDeleteGameObjectById(sourceId);
+	s.ProcessPendingDeletes();
+	A::AimAudioListener(s, { 0.0f, 0.0f, 0.0f }, 0.0f);
+	CHECK(audio->IsPlaying(voice));
+	audio->StopAllAudio();
+	audio->ResetBusVolumes();
+}
+
+TEST_CASE(Audio, VoiceLimitIsEnforced)
+{
+	Audio* audio = Audio::GetInstance();
+	if (!audio->IsAvailable()) return;
+	audio->StopAllAudio();
+	const uint32_t sound = audio->LoadAudio(WriteSilentWav("Audio/limit.wav"));
+	REQUIRE(sound != 0u);
+	audio->SetVoiceLimits(64, 3);
+	uint32_t voices[5] = {};
+	for (uint32_t& v : voices) v = audio->PlayAudio(sound, false, 1.0f);
+	CHECK(audio->GetActiveVoiceCount() == 3);
+	CHECK(!audio->IsPlaying(voices[0]));
+	CHECK(!audio->IsPlaying(voices[1]));
+	CHECK(audio->IsPlaying(voices[4]));
+	audio->StopAllAudio();
+	audio->SetVoiceLimits(64, 12);
+}
+
+TEST_CASE(Audio, AudioSourceComponentKeepsItsSettingsAndPlaysIn3D)
+{
+	GameObject& obj = s.CreateGameObject("Speaker", GameObjectType::Empty);
+	obj.hasAudioSource = true;
+	obj.audioClipName = WriteSilentWav("Audio/source.wav");
+	obj.audioPitch = 1.5f;
+	obj.audioBus = static_cast<int>(AudioBus::Voice);
+	obj.audioSpatial = true;
+	obj.audioMinDistance = 3.0f;
+	obj.audioMaxDistance = 30.0f;
+	obj.audioLoop = true;
+	obj.audioPlayOnAwake = true;
+	obj.translation = { -5.0f, 0.0f, 0.0f };
+	const uint32_t id = obj.id;
+
+	GameObject copy = obj;
+	CHECK(copy.audioSpatial && copy.audioBus == static_cast<int>(AudioBus::Voice));
+	CHECK_NEAR(copy.audioPitch, 1.5f, 1e-6f);
+
+	const std::string saved = s.SerializeSceneToString();
+	REQUIRE(s.DeserializeSceneFromString(saved));
+	const GameObject* loaded = s.FindGameObjectById(id, false);
+	REQUIRE(loaded != nullptr);
+	CHECK(loaded->audioSpatial && loaded->audioBus == static_cast<int>(AudioBus::Voice));
+	CHECK_NEAR(loaded->audioPitch, 1.5f, 1e-5f);
+	CHECK_NEAR(loaded->audioMinDistance, 3.0f, 1e-5f);
+	CHECK_NEAR(loaded->audioMaxDistance, 30.0f, 1e-5f);
+
+	Audio* audio = Audio::GetInstance();
+	if (!audio->IsAvailable()) return;
+	A::AimAudioListener(s, { 0.0f, 0.0f, 0.0f }, 0.0f);
+	s.StartPlayMode();
+	const uint32_t voice = s.FindGameObjectById(id, false)->runtimeVoiceHandle;
+	REQUIRE(voice != 0u); // Play On Awake
+	A::AimAudioListener(s, { 0.0f, 0.0f, 0.0f }, 0.0f);
+	const VoiceLevels levels = LevelsOf(voice);
+	CHECK(levels.left > levels.right * 3.0f);
+	CHECK_NEAR(PitchOnceApplied(voice, 1.5f), 1.5f, 1e-4f);
+
+	// Scripts can stop and restart it; a script's bus mute ends with Play
+	EngineAPI& api = A::Api(s);
+	api.stopAudioSource(&s, id);
+	CHECK(!audio->IsPlaying(voice));
+	CHECK(api.playAudioSource(&s, id));
+	api.setBusVolume(&s, static_cast<int>(ScriptAudioBus::Effects), 0.0f);
+	s.StopPlayMode();
+	CHECK_NEAR(audio->GetBusVolume(AudioBus::Effects), 1.0f, 1e-5f);
+	CHECK(audio->GetActiveVoiceCount() == 0);
+}
+
+TEST_CASE(ScriptAPI, DataComponentsByName)
+{
+	EngineAPI& api = A::Api(s);
+	const uint32_t id = s.CreateCube("Thing", { 0.0f, 0.0f, 0.0f }).id;
+	CHECK(!api.hasComponent(&s, id, "PBR Material"));
+	CHECK(api.addComponent(&s, id, "PBR Material"));
+	CHECK(api.hasComponent(&s, id, "PBR Material"));
+	CHECK(!api.addComponent(&s, id, "PBR Material")); // already there
+	CHECK(!api.addComponent(&s, id, "No Such Component"));
+	CHECK(api.hasComponent(&s, id, "Mesh Filter & Renderer")); // built-ins answer too
+
+	ScriptComponentValue value;
+	REQUIRE(api.getComponentField(&s, id, "PBR Material", "metallic", &value));
+	CHECK(value.kind == ScriptComponentValue::Float);
+
+	// Written through to the real component, clamped to the field's limits
+	value.number[0] = 0.75f;
+	REQUIRE(api.setComponentField(&s, id, "PBR Material", "metallic", &value));
+	CHECK_NEAR(s.FindGameObjectById(id, false)->components.Get<PbrMaterialComponent>("PBR Material")->metallic, 0.75f, 1e-6f);
+	value.number[0] = 50.0f;
+	REQUIRE(api.setComponentField(&s, id, "PBR Material", "metallic", &value));
+	CHECK_NEAR(s.FindGameObjectById(id, false)->components.Get<PbrMaterialComponent>("PBR Material")->metallic, 1.0f, 1e-6f);
+
+	// Wrong type, NaN, wrong names: refused, value unchanged
+	ScriptComponentValue wrong;
+	wrong.kind = ScriptComponentValue::Text;
+	CHECK(!api.setComponentField(&s, id, "PBR Material", "metallic", &wrong));
+	value.number[0] = std::numeric_limits<float>::quiet_NaN();
+	CHECK(!api.setComponentField(&s, id, "PBR Material", "metallic", &value));
+	CHECK_NEAR(s.FindGameObjectById(id, false)->components.Get<PbrMaterialComponent>("PBR Material")->metallic, 1.0f, 1e-6f);
+	CHECK(!api.getComponentField(&s, id, "PBR Material", "noSuchField", &value));
+	CHECK(!api.getComponentField(&s, id, "Mesh Filter & Renderer", "x", &value)); // built-ins have no fields
+	CHECK(!api.getComponentField(&s, 999999u, "PBR Material", "metallic", &value));
+
+	// Vector, int and long text across the boundary
+	REQUIRE(api.getComponentField(&s, id, "PBR Material", "emissive", &value));
+	CHECK(value.kind == ScriptComponentValue::Vector || value.kind == ScriptComponentValue::Color);
+	REQUIRE(api.addComponent(&s, id, "Joint"));
+	value = {};
+	value.kind = ScriptComponentValue::Int;
+	value.integer = 2;
+	REQUIRE(api.setComponentField(&s, id, "Joint", "jointType", &value));
+	CHECK(s.FindGameObjectById(id, false)->components.Get<JointComponent>("Joint")->jointType == 2);
+	REQUIRE(api.addComponent(&s, id, "Bone Attachment"));
+	value = {};
+	value.kind = ScriptComponentValue::Text;
+	std::fill(std::begin(value.text), std::end(value.text) - 1, 'x');
+	REQUIRE(api.setComponentField(&s, id, "Bone Attachment", "bone", &value)); // truncated, never overruns
+	const auto* bone = s.FindGameObjectById(id, false)->components.Get<BoneAttachmentComponent>("Bone Attachment");
+	CHECK(strnlen(bone->bone, sizeof(bone->bone)) < sizeof(bone->bone));
+
+	CHECK(api.removeComponent(&s, id, "PBR Material"));
+	CHECK(!api.hasComponent(&s, id, "PBR Material"));
+	CHECK(!api.getComponentField(&s, id, "PBR Material", "metallic", &value));
+}
+
+
+TEST_CASE(Render, SkinnedShadowCasterOnItsFirstFrame)
+{
+	// The shadow pass runs before the object's first draw creates its palette. On a strict driver a missing palette removes the device.
+	A::Instancing(s) = true;
+	GameObject& character = s.CreateGameObject("Fighter", GameObjectType::Empty);
+	character.meshType = GameObject::MeshType::CustomModel;
+	character.hasMesh = true;
+	character.modelPath = "Resources/Model/Idle.fbx";
+	character.scale = { 0.012f, 0.012f, 0.012f };
+	CHECK(!CaptureGameViewSignature(s).empty());
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+
+TEST_CASE(Vfx, TrailFollowsAndAgesAway)
+{
+	TrailStyle style;
+	style.lifetime = 1.0f;
+	style.minDistance = 0.5f;
+	TrailRibbon ribbon;
+	ribbon.Update({ 0.0f, 0.0f, 0.0f }, 0.0, style, true);
+	ribbon.Update({ 0.1f, 0.0f, 0.0f }, 0.1, style, true); // below minDistance: the head moves, no new point
+	CHECK(ribbon.PointCount() == 2);
+	ribbon.Update({ 1.0f, 0.0f, 0.0f }, 0.2, style, true);
+	ribbon.Update({ 2.0f, 0.0f, 0.0f }, 0.3, style, true);
+	CHECK(ribbon.PointCount() == 4);
+
+	// Stopped: nothing new, and everything is gone one lifetime later
+	ribbon.Update({ 9.0f, 0.0f, 0.0f }, 0.4, style, false);
+	CHECK(ribbon.PointCount() == 4);
+	ribbon.Update({ 9.0f, 0.0f, 0.0f }, 2.0, style, false);
+	CHECK(ribbon.PointCount() == 0);
+
+	// Starting again does not draw a line from the old place
+	ribbon.Update({ 50.0f, 0.0f, 0.0f }, 2.1, style, true);
+	ribbon.Update({ 51.0f, 0.0f, 0.0f }, 2.2, style, true);
+	std::vector<TrailVertex> mesh;
+	ribbon.BuildMesh({ 50.0f, 0.0f, -10.0f }, 2.2, style, mesh);
+	REQUIRE(!mesh.empty());
+	for (const TrailVertex& v : mesh) CHECK(v.position.x > 49.0f);
+
+	// Fast movement cannot grow it without limit
+	TrailRibbon fast;
+	style.lifetime = 1000.0f;
+	for (int i = 0; i < 2000; ++i) fast.Update({ static_cast<float>(i), 0.0f, 0.0f }, i * 0.01, style, true);
+	CHECK(fast.PointCount() <= TrailRibbon::kMaxPoints);
+}
+
+TEST_CASE(Vfx, TrailMeshFacesTheCameraAndTapers)
+{
+	TrailStyle style;
+	style.lifetime = 1.0f;
+	style.minDistance = 0.1f;
+	style.widthStart = 2.0f;
+	style.widthEnd = 0.0f;
+	style.colorStart = { 1.0f, 0.0f, 0.0f, 1.0f };
+	style.colorEnd = { 0.0f, 0.0f, 1.0f, 0.0f };
+	TrailRibbon ribbon;
+	ribbon.Update({ 0.0f, 0.0f, 0.0f }, 0.0, style, true);
+	ribbon.Update({ 5.0f, 0.0f, 0.0f }, 0.5, style, true);
+	ribbon.Update({ 10.0f, 0.0f, 0.0f }, 1.0, style, true);
+
+	// Camera looks along Z at a ribbon along X: the width must lie along Y
+	std::vector<TrailVertex> mesh;
+	ribbon.BuildMesh({ 5.0f, 0.0f, -20.0f }, 1.0, style, mesh);
+	REQUIRE(!mesh.empty());
+	CHECK(mesh.size() % 3 == 0);
+	float highestAtHead = 0.0f;
+	float highestAtTail = 0.0f;
+	bool sawSoftEdge = false;
+	for (const TrailVertex& v : mesh) {
+		CHECK_NEAR(v.position.z, 0.0f, 1e-4f);
+		CHECK(std::isfinite(v.position.y));
+		if (v.position.x > 9.0f) highestAtHead = (std::max)(highestAtHead, std::abs(v.position.y));
+		if (v.position.x < 1.0f) highestAtTail = (std::max)(highestAtTail, std::abs(v.position.y));
+		if (v.position.y != 0.0f) sawSoftEdge = sawSoftEdge || v.color.w == 0.0f;
+		if (v.position.y == 0.0f && v.position.x > 9.0f) CHECK(v.color.x > 0.9f && v.color.w > 0.9f);
+		if (v.position.y == 0.0f && v.position.x < 1.0f) CHECK(v.color.z > 0.9f && v.color.w < 0.1f);
+	}
+	CHECK_NEAR(highestAtHead, 1.0f, 1e-3f); // half the width on each side
+	CHECK(highestAtTail < 0.01f);
+	CHECK(sawSoftEdge);
+
+	// The camera exactly on the line, repeated points, NaN: nothing invalid reaches the GPU
+	mesh.clear();
+	ribbon.BuildMesh({ -5.0f, 0.0f, 0.0f }, 1.0, style, mesh);
+	TrailRibbon bad;
+	const float nan = std::numeric_limits<float>::quiet_NaN();
+	bad.Update({ 1.0f, 1.0f, 1.0f }, 0.0, style, true);
+	bad.Update({ nan, 1.0f, 1.0f }, 0.1, style, true);
+	bad.Update({ 2.0f, 1.0f, 1.0f }, 0.2, style, true);
+	bad.BuildMesh({ 0.0f, 0.0f, -5.0f }, 0.2, style, mesh);
+	for (const TrailVertex& v : mesh) CHECK(std::isfinite(v.position.x) && std::isfinite(v.position.y) && std::isfinite(v.position.z) && std::isfinite(v.color.w));
+}
+
+TEST_CASE(Vfx, TrailComponentSavesAndDrawsInPlay)
+{
+	GameObject& obj = s.CreateGameObject("Comet", GameObjectType::Empty);
+	const uint32_t id = obj.id;
+	REQUIRE(s.AddComponentByName(obj, kTrailComponent));
+	auto* trail = obj.components.Get<TrailComponent>(kTrailComponent);
+	REQUIRE(trail != nullptr);
+	trail->widthStart = 3.0f;
+	trail->lifetime = 2.0f;
+	trail->intensity = 4.0f;
+	trail->colorStart = { 1.0f, 0.2f, 0.1f, 1.0f };
+
+	// Saved settings come back, the runtime history does not
+	REQUIRE(s.DeserializeSceneFromString(s.SerializeSceneToString()));
+	trail = s.FindGameObjectById(id, false)->components.Get<TrailComponent>(kTrailComponent);
+	REQUIRE(trail != nullptr);
+	CHECK_NEAR(trail->widthStart, 3.0f, 1e-5f);
+	CHECK_NEAR(trail->intensity, 4.0f, 1e-5f);
+	CHECK_NEAR(trail->colorStart.y, 0.2f, 1e-5f);
+
+	A::AimAudioListener(s, { 0.0f, 2.0f, -10.0f }, 0.0f); // the game camera; tests do not run the camera sync
+
+	// Not in Edit mode
+	const auto move = [&](float x, double time) {
+		s.FindGameObjectById(id, false)->translation = { x, 2.0f, 0.0f };
+		A::GameTime(s) = time;
+		s.UpdateWorldMatrices();
+		s.UpdateTrails();
+	};
+	move(-4.0f, 0.0);
+	move(4.0f, 0.1);
+	CHECK(s.FindGameObjectById(id, false)->components.Get<TrailComponent>(kTrailComponent)->ribbon.PointCount() == 0);
+	const std::vector<float> before = CaptureGameViewSignature(s);
+
+	A::State(s) = EditorSceneState::Play;
+	move(-4.0f, 0.0);
+	for (int i = 1; i <= 8; ++i) move(-4.0f + i, i * 0.02);
+	CHECK(s.FindGameObjectById(id, false)->components.Get<TrailComponent>(kTrailComponent)->ribbon.PointCount() > 2);
+	const std::vector<float> after = CaptureGameViewSignature(s);
+	A::State(s) = EditorSceneState::Edit;
+	REQUIRE(before.size() == after.size() && !before.empty());
+	float brightest = 0.0f;
+	for (size_t i = 0; i < before.size(); ++i) brightest = (std::max)(brightest, after[i] - before[i]);
+	CHECK_MSG(brightest > 5.0f, std::format("largest change {:.2f}", brightest));
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+
+TEST_CASE(Vfx, GpuParticleEmissionKeepsFractions)
+{
+	float carry = 0.0f;
+	uint32_t total = 0;
+	for (int i = 0; i < 60; ++i) total += GpuParticleEmitCount(10.0f, 1.0f / 60.0f, carry);
+	CHECK(total >= 9u && total <= 10u); // float rounding may leave the last one for the next step
+	carry = 0.0f;
+	CHECK(GpuParticleEmitCount(0.0f, 1.0f, carry) == 0u);
+	CHECK(GpuParticleEmitCount(100.0f, 0.0f, carry) == 0u); // paused
+	CHECK(GpuParticleEmitCount(std::numeric_limits<float>::quiet_NaN(), 1.0f, carry) == 0u);
+
+	GpuParticlesComponent p;
+	p.capacity = 77;
+	for (const char* preset : kGpuParticlePresets) {
+		REQUIRE(ApplyGpuParticlePreset(p, preset));
+		CHECK(p.capacity == 77);
+		CHECK(p.lifeMin <= p.lifeMax);
+		CHECK(p.speedMin <= p.speedMax);
+	}
+	CHECK(!ApplyGpuParticlePreset(p, "No Such Preset"));
+}
+
+namespace {
+	/// Row where the picture gained the most light compared with `baseline`, top = 0
+	float BrightestRowGain(const std::vector<float>& rows, const std::vector<float>& baseline)
+	{
+		float weighted = 0.0f;
+		float total = 0.0f;
+		for (size_t y = 0; y < rows.size() && y < baseline.size(); ++y) {
+			const float gain = (std::max)(rows[y] - baseline[y], 0.0f);
+			weighted += gain * static_cast<float>(y);
+			total += gain;
+		}
+		return total > 0.0f ? weighted / total : -1.0f;
+	}
+}
+
+TEST_CASE(Vfx, GpuParticlesAreSimulatedAndDrawn)
+{
+	A::AimAudioListener(s, { 0.0f, 0.0f, -20.0f }, 0.0f); // the game camera; tests do not run the camera sync
+	s.UpdateWorldMatrices();
+	A::State(s) = EditorSceneState::Play;
+	A::GameTime(s) = 0.0;
+	CaptureGameViewSignature(s);
+	const std::vector<float> emptySignature = CaptureGameViewSignature(s);
+	const std::vector<float> emptyRows = gCapturedRowMeans;
+
+	GameObject& obj = s.CreateGameObject("Fountain", GameObjectType::Empty);
+	obj.translation = { 0.0f, 5.0f, 0.0f };
+	const uint32_t id = obj.id;
+	REQUIRE(s.AddComponentByName(obj, kGpuParticlesComponent));
+	auto* p = obj.components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+	p->emitting = false;
+	p->burst = 2000;
+	p->capacity = 2000;
+	p->lifeMin = 0.7f;
+	p->lifeMax = 0.7f;
+	p->speedMin = 0.0f;
+	p->speedMax = 0.5f;
+	p->spreadDegrees = 180.0f;
+	p->gravity = { 0.0f, -20.0f, 0.0f };
+	p->sizeStart = 1.0f;
+	p->sizeEnd = 1.0f;
+	p->colorStart = { 1.0f, 0.5f, 0.2f, 1.0f };
+	p->colorEnd = { 1.0f, 0.5f, 0.2f, 1.0f };
+	p->intensity = 2.0f;
+	s.UpdateWorldMatrices();
+
+	// Burst: visible, and only once
+	CaptureGameViewSignature(s); // the first frame only starts the clock of the emitter
+	const std::vector<float> atStart = gCapturedRowMeans;
+	CHECK(s.FindGameObjectById(id, false)->components.Get<GpuParticlesComponent>(kGpuParticlesComponent)->burst == 0);
+	CHECK(GpuParticles::GetInstance()->EmitterCount() == 1u);
+	const float rowAtStart = BrightestRowGain(atStart, emptyRows);
+	CHECK(rowAtStart >= 0.0f);
+
+	// Gravity pulls them down the picture
+	for (int i = 1; i <= 6; ++i) {
+		A::GameTime(s) = i * 0.1;
+		CaptureGameViewSignature(s);
+	}
+	const float rowLater = BrightestRowGain(gCapturedRowMeans, emptyRows);
+	CHECK_MSG(rowLater > rowAtStart + 10.0f, std::format("row {:.1f} -> {:.1f}", rowAtStart, rowLater));
+
+	// Their life ends: the picture is back to what it was
+	for (int i = 7; i <= 12; ++i) {
+		A::GameTime(s) = i * 0.1;
+		CaptureGameViewSignature(s);
+	}
+	const std::vector<float> finished = CaptureGameViewSignature(s);
+	REQUIRE(finished.size() == emptySignature.size());
+	float largest = 0.0f;
+	for (size_t i = 0; i < finished.size(); ++i) largest = (std::max)(largest, std::abs(finished[i] - emptySignature[i]));
+	CHECK_MSG(largest < 1.0f, std::format("largest difference {:.2f}", largest));
+
+	// A new capacity starts over without trouble; a deleted object frees its emitter
+	s.FindGameObjectById(id, false)->components.Get<GpuParticlesComponent>(kGpuParticlesComponent)->capacity = 100;
+	CaptureGameViewSignature(s);
+	s.QueueDeleteGameObjectById(id);
+	s.ProcessPendingDeletes();
+	CaptureGameViewSignature(s);
+	CHECK(GpuParticles::GetInstance()->EmitterCount() == 0u);
+	A::State(s) = EditorSceneState::Edit;
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+TEST_CASE(Vfx, GpuParticleSettingsAreSavedAndReachableFromScripts)
+{
+	GameObject& obj = s.CreateGameObject("Fx", GameObjectType::Empty);
+	const uint32_t id = obj.id;
+	REQUIRE(s.AddComponentByName(obj, kGpuParticlesComponent));
+	REQUIRE(ApplyGpuParticlePreset(*obj.components.Get<GpuParticlesComponent>(kGpuParticlesComponent), "Sparks"));
+	REQUIRE(s.DeserializeSceneFromString(s.SerializeSceneToString()));
+	auto* p = s.FindGameObjectById(id, false)->components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+	REQUIRE(p != nullptr);
+	CHECK_NEAR(p->gravity.y, -9.8f, 1e-4f);
+	CHECK_NEAR(p->intensity, 5.0f, 1e-5f);
+
+	EngineAPI& api = A::Api(s);
+	ScriptComponentValue value;
+	value.kind = ScriptComponentValue::Int;
+	value.integer = 50;
+	REQUIRE(api.setComponentField(&s, id, kGpuParticlesComponent, "burst", &value));
+	CHECK(s.FindGameObjectById(id, false)->components.Get<GpuParticlesComponent>(kGpuParticlesComponent)->burst == 50);
+}
+
+
 // ===========================================================================
 // Runner
 // ===========================================================================
@@ -5064,6 +5651,12 @@ int EditorSuite::RunSelfTests(const std::string& filter)
 			ctx.Fail(__FILE__, __LINE__, std::string("unhandled exception: ") + e.what());
 		} catch (...) {
 			ctx.Fail(__FILE__, __LINE__, "unhandled unknown exception");
+		}
+		// Rendering stops once the device is gone: later picture checks would compare nothing and still pass
+		if (dxCommon_) {
+			if (const HRESULT removed = dxCommon_->GetDevice()->GetDeviceRemovedReason(); FAILED(removed)) {
+				ctx.Fail(__FILE__, __LINE__, std::format("D3D12 device removed (0x{:08X})", static_cast<uint32_t>(removed)));
+			}
 		}
 
 		// A failed test must not leave Play mode or a foreign project behind

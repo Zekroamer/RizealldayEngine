@@ -737,6 +737,37 @@ void EditorSuite::DrawAudioSourceComponentInspector(GameObject& obj)
 			PushUndoSnapshot();
 		}
 
+		if (ImGui::SliderFloat(TrId("Pitch"), &obj.audioPitch, 0.25f, 4.0f, "%.2f")) {
+			if (obj.runtimeVoiceHandle != 0) {
+				Audio::GetInstance()->SetVoicePitch(obj.runtimeVoiceHandle, obj.audioPitch);
+			}
+			isSceneDirty_ = true;
+		}
+		if (ImGui::IsItemDeactivatedAfterEdit()) PushUndoSnapshot();
+
+		const std::string busNames = std::string(Tr("Effects")) + '\0' + Tr("Music") + '\0' + Tr("Voice") + '\0' + Tr("UI") + '\0';
+		if (ImGui::Combo(TrId("Bus"), &obj.audioBus, busNames.c_str())) {
+			isSceneDirty_ = true;
+			PushUndoSnapshot();
+		}
+
+		if (ImGui::Checkbox(TrId("3D Sound"), &obj.audioSpatial)) {
+			isSceneDirty_ = true;
+			PushUndoSnapshot();
+		}
+		ImGui::SetItemTooltip("%s", Tr("Pans with the game camera and fades with distance during Play"));
+		if (obj.audioSpatial) {
+			if (ImGui::DragFloat(TrId("Min Distance"), &obj.audioMinDistance, 0.1f, 0.01f, 10000.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp)) {
+				obj.audioMaxDistance = (std::max)(obj.audioMaxDistance, obj.audioMinDistance + 0.01f);
+				isSceneDirty_ = true;
+			}
+			if (ImGui::IsItemDeactivatedAfterEdit()) PushUndoSnapshot();
+			if (ImGui::DragFloat(TrId("Max Distance"), &obj.audioMaxDistance, 0.1f, obj.audioMinDistance + 0.01f, 10000.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp)) {
+				isSceneDirty_ = true;
+			}
+			if (ImGui::IsItemDeactivatedAfterEdit()) PushUndoSnapshot();
+		}
+
 		bool isPlayingNow = (obj.runtimeVoiceHandle != 0) && Audio::GetInstance()->IsPlaying(obj.runtimeVoiceHandle);
 		if (isPlayingNow) {
 			ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.45f, 1.0f), "Status: Playing (Voice #%u)", obj.runtimeVoiceHandle);
@@ -745,13 +776,7 @@ void EditorSuite::DrawAudioSourceComponentInspector(GameObject& obj)
 		}
 
 		if (ImGui::Button("[ > Play Preview ]", ImVec2(135.0f, 24.0f))) {
-			if (obj.audioClipName != "None" && !obj.audioClipName.empty()) {
-				if (obj.runtimeVoiceHandle != 0) {
-					Audio::GetInstance()->StopAudio(obj.runtimeVoiceHandle);
-				}
-				obj.runtimeSoundHandle = Audio::GetInstance()->LoadAudio(ResolveAssetPath(obj.audioClipName));
-				obj.runtimeVoiceHandle = Audio::GetInstance()->PlayAudio(obj.runtimeSoundHandle, obj.audioLoop, obj.audioVolume);
-			}
+			StartAudioSource(obj, true);
 		}
 		ImGui::SameLine();
 		if (ImGui::Button("[ [] Stop ]##AudioStop", ImVec2(100.0f, 24.0f))) {

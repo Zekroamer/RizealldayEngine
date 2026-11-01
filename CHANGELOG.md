@@ -4,6 +4,12 @@
 
 
 ### Fitur Baru
+- **Trail**: komponen `Trail`, ekor pita yang selalu menghadap kamera, untuk tebasan, dash, dan peluru.
+- **Partikel GPU**: komponen `GPU Particles` untuk ribuan partikel lewat compute shader, dengan preset Fire, Sparks, Smoke, Magic, dan Snow serta pratinjau langsung di Scene view.
+- **Audio 3D**: suara mengikuti posisi dan arah kamera game (kiri/kanan) serta mengecil dengan jarak. Bisa lewat komponen Audio Source (`3D Sound`, `Min/Max Distance`) atau script (`PlayAudioAt`, `PlayAudioOn`).
+- **Bus audio, pitch, dan batas suara**: bus Effects/Music/Voice/UI dengan `SetBusVolume`, `SetAudioPitch`, maksimal 64 suara (12 per klip); musik tidak pernah tergantikan.
+- **Audio Source dari script**: `PlayAudioSource`, `StopAudioSource`. Play On Awake kini juga berlaku untuk objek yang muncul saat Play (spawn, pool, `LoadScene`).
+- **Komponen dari script**: `HasComponent`, `AddComponent`, `RemoveComponent`, dan `GetComponentFloat/Int/Bool/Vector3` beserta `Set...`-nya untuk data component.
 - **Kamera first/third person**: `GetMouseDelta`, `GetMouseWheel`, `SetCursorLocked`.
 - **Proyeksi**: `ScreenPointToRay` dan `WorldToCanvas` untuk memilih objek 3D dan UI yang mengikuti objek.
 - **`PrewarmPrefab(nama, jumlah)`**: mengisi pool lebih awal agar spawn pertama tidak tersendat.

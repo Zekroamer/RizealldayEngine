@@ -293,11 +293,9 @@ void EditorSuite::RenderShadowPass(ID3D12GraphicsCommandList* cmdList, const Cam
 			cmdList->SetGraphicsRootConstantBufferView(1, shadowTransformAddr);
 			// Skinned casters use the animated palette of the edit (or game) instance; others get the shared identity
 			const Object3d* paletteSource = obj.editObject3d ? obj.editObject3d.get() : obj.gameObject3d.get();
-			if (paletteSource) {
-				if (const D3D12_GPU_VIRTUAL_ADDRESS boneAddr = paletteSource->UploadBonePalette()) {
-					cmdList->SetGraphicsRootConstantBufferView(4, boneAddr);
-				}
-			}
+			const D3D12_GPU_VIRTUAL_ADDRESS boneAddr = paletteSource ? paletteSource->UploadBonePalette() : 0;
+			if (boneAddr == 0) continue; // first frame of this object: drawing without a palette would read a null constant buffer
+			cmdList->SetGraphicsRootConstantBufferView(4, boneAddr);
 			caster.model->DrawGeometry(cmdList);
 		}
 
@@ -470,6 +468,7 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 	RIZE_PROFILE_CPU("Record 3D");
 
 	UpdateWorldMatrices();
+	UpdateGpuParticles(cmdList);
 
 	bool activeParticles = HasActiveParticleSystem() && showParticles;
 
@@ -516,6 +515,7 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 			}
 		}
 	}
+	DrawEffects(cmdList, editorCamera_);
 	editSceneRT_.EndRender();
 	// The Scene view shows the scene itself: post-processing is the game's look
 	editViewRT_.BeginRender(false);
@@ -545,6 +545,7 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 				}
 			}
 		}
+		DrawEffects(cmdList, *gameCamera_);
 	}
 	gameSceneRT_.EndRender();
 	{
@@ -629,6 +630,7 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 				}
 			}
 		}
+		DrawEffects(cmdList, *gameCamera_);
 	}
 	gameSceneRT_.EndRender();
 	{

@@ -15,6 +15,8 @@
 #include "3d/Camera.h"
 #include "3d/LightGroup.h"
 #include "3d/PrimitiveDrawer.h"
+#include "render/TrailRenderer.h"
+#include "render/GpuParticles.h"
 #include "2d/UIRenderer.h"
 #include "3d/CircleShadow.h"
 #include <memory>
@@ -77,6 +79,8 @@ void Initialize(const char* title, int width, int height) {
 	Camera::StaticInitialize(sDxCommon);
 	LightGroup::StaticInitialize(sDxCommon);
 	PrimitiveDrawer::GetInstance()->Initialize(sDxCommon, sDxcManager.get());
+	TrailRenderer::GetInstance()->Initialize(sDxCommon, sDxcManager.get());
+	GpuParticles::GetInstance()->Initialize(sDxCommon, sDxcManager.get());
 	UIRenderer::GetInstance()->Initialize(sDxCommon, sDxcManager.get());
 
 	// Register pipeline with Object3d so Draw() can bind blend modes
@@ -141,6 +145,8 @@ void Finalize() {
 	sAudio->Finalize();
 
 	PrimitiveDrawer::GetInstance()->Finalize();
+	TrailRenderer::GetInstance()->Finalize();
+	GpuParticles::GetInstance()->Finalize();
 	UIRenderer::GetInstance()->Finalize();
 
 	// Release the query heaps before DirectXCommon flushes its deferred-release queue

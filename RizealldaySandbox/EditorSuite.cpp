@@ -117,6 +117,11 @@ GameObject::GameObject(const GameObject& other) {
 	audioVolume = other.audioVolume;
 	audioPlayOnAwake = other.audioPlayOnAwake;
 	audioLoop = other.audioLoop;
+	audioPitch = other.audioPitch;
+	audioBus = other.audioBus;
+	audioSpatial = other.audioSpatial;
+	audioMinDistance = other.audioMinDistance;
+	audioMaxDistance = other.audioMaxDistance;
 	hasScript = other.hasScript;
 	scriptClassName = other.scriptClassName;
 	scripts = other.scripts;
@@ -251,6 +256,11 @@ GameObject& GameObject::operator=(const GameObject& other) {
 		audioVolume = other.audioVolume;
 		audioPlayOnAwake = other.audioPlayOnAwake;
 		audioLoop = other.audioLoop;
+		audioPitch = other.audioPitch;
+		audioBus = other.audioBus;
+		audioSpatial = other.audioSpatial;
+		audioMinDistance = other.audioMinDistance;
+		audioMaxDistance = other.audioMaxDistance;
 		hasScript = other.hasScript;
 		scriptClassName = other.scriptClassName;
 		scripts = other.scripts;
@@ -809,6 +819,8 @@ void EditorSuite::Update(float deltaTime, Input* input)
 			break;
 		}
 	}
+	UpdateAudio();
+	UpdateTrails();
 
 	// 4. Authoritative Punctual Lights Sync to lights_ (LightGroup)
 	if (lights_) {

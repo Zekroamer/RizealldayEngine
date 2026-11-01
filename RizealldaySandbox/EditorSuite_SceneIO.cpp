@@ -248,6 +248,11 @@ void EditorSuite::WriteGameObjectJson(const GameObject& obj, void* outJson) cons
 	o["audioVolume"] = Num(obj.audioVolume);
 	o["audioPlayOnAwake"] = obj.audioPlayOnAwake;
 	o["audioLoop"] = obj.audioLoop;
+	o["audioPitch"] = Num(obj.audioPitch);
+	o["audioBus"] = obj.audioBus;
+	o["audioSpatial"] = obj.audioSpatial;
+	o["audioMinDistance"] = Num(obj.audioMinDistance);
+	o["audioMaxDistance"] = Num(obj.audioMaxDistance);
 	o["animationIndex"] = obj.animationIndex;
 	o["animationSpeed"] = Num(obj.animationSpeed);
 	o["animationLoop"] = obj.animationLoop;
@@ -683,6 +688,11 @@ void EditorSuite::ReadGameObjectJson(const void* json, GameObject& obj)
 	SceneJson::Read(j, "audioVolume", obj.audioVolume);
 	SceneJson::Read(j, "audioPlayOnAwake", obj.audioPlayOnAwake);
 	SceneJson::Read(j, "audioLoop", obj.audioLoop);
+	SceneJson::Read(j, "audioPitch", obj.audioPitch);
+	SceneJson::Read(j, "audioBus", obj.audioBus);
+	SceneJson::Read(j, "audioSpatial", obj.audioSpatial);
+	SceneJson::Read(j, "audioMinDistance", obj.audioMinDistance);
+	SceneJson::Read(j, "audioMaxDistance", obj.audioMaxDistance);
 	SceneJson::Read(j, "animationIndex", obj.animationIndex);
 	SceneJson::Read(j, "animationSpeed", obj.animationSpeed);
 	SceneJson::Read(j, "animationLoop", obj.animationLoop);

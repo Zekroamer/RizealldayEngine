@@ -5,6 +5,26 @@
 // material and component access. EngineAPI entries are filled in by SetupEngineAPIExtensions().
 
 namespace {
+Vector3 WorldPosition(const GameObject& obj)
+{
+	return { obj.worldMatrix.m[3][0], obj.worldMatrix.m[3][1], obj.worldMatrix.m[3][2] };
+}
+
+/// Address of one field of a data component the object has, nullptr when any part is missing
+void* FindDataComponentField(GameObject& obj, const char* component, const char* field, const ComponentField*& outField)
+{
+	const ComponentInfo* info = ComponentRegistry::Get().Find(component);
+	ComponentData* data = (info && info->IsDataComponent()) ? obj.components.Find(component) : nullptr;
+	if (!data) return nullptr;
+	for (const ComponentField& candidate : info->fields) {
+		if (std::strcmp(candidate.name, field) == 0) {
+			outField = &candidate;
+			return static_cast<char*>(data->Data()) + candidate.offset;
+		}
+	}
+	return nullptr;
+}
+
 /// Animator of a script target, started at its entry state if the state machine has not run yet
 /// (Initialize runs before the first animation update, and parameters set there must not be lost)
 AnimatorComponent* ScriptAnimator(void* ctx, uint32_t id, std::shared_ptr<AnimatorController>& outController)
@@ -356,8 +376,48 @@ void EditorSuite::HandleScriptFault()
 }
 #endif
 
+bool EditorSuite::StartAudioSource(GameObject& obj, bool preview)
+{
+	if (obj.audioClipName.empty() || obj.audioClipName == "None") return false;
+	Audio* audio = Audio::GetInstance();
+	if (obj.runtimeVoiceHandle != 0) audio->StopAudio(obj.runtimeVoiceHandle);
+	obj.runtimeSoundHandle = audio->LoadAudio(ResolveAssetPath(obj.audioClipName));
+	Audio::PlayParams params;
+	params.loop = obj.audioLoop;
+	params.volume = obj.audioVolume;
+	params.pitch = obj.audioPitch;
+	params.bus = static_cast<AudioBus>(obj.audioBus);
+	params.spatial = obj.audioSpatial && !preview;
+	params.position = WorldPosition(obj);
+	params.minDistance = obj.audioMinDistance;
+	params.maxDistance = obj.audioMaxDistance;
+	obj.runtimeVoiceHandle = audio->PlayAudio(obj.runtimeSoundHandle, params);
+	return obj.runtimeVoiceHandle != 0;
+}
+
+void EditorSuite::UpdateAudio()
+{
+	Audio* audio = Audio::GetInstance();
+	if (!audio->IsAvailable()) return;
+	if (gameCamera_) {
+		const Matrix4x4& view = gameCamera_->GetViewMatrix();
+		audio->SetListener(gameCamera_->translation, { view.m[0][0], view.m[1][0], view.m[2][0] }); // first column of a view matrix = camera right
+	}
+	for (const GameObject& obj : gameObjects_) {
+		if (obj.runtimeVoiceHandle != 0 && obj.audioSpatial) audio->SetVoicePosition(obj.runtimeVoiceHandle, WorldPosition(obj));
+	}
+	std::erase_if(audioFollowers_, [&](const AudioFollower& follower) {
+		const GameObject* obj = FindGameObjectById(follower.objectId, false);
+		if (!obj || !audio->IsPlaying(follower.voice)) return true;
+		audio->SetVoicePosition(follower.voice, WorldPosition(*obj));
+		return false;
+	});
+	audio->ApplySpatial();
+}
+
 void EditorSuite::ResetScriptRuntimeState()
 {
+	audioFollowers_.clear();
 	cursorLocked_ = false;
 	postProcess_.ClearScreenEffects();
 	navGridValid_ = false; // the next FindPath sees the current level
@@ -544,7 +604,11 @@ void EditorSuite::SetupEngineAPIExtensions()
 		}
 		if (self->musicVoice_ != 0) audio->StopAudio(self->musicVoice_);
 		const uint32_t sound = audio->LoadAudio(resolved);
-		self->musicVoice_ = (sound != 0) ? audio->PlayAudio(sound, true, v) : 0u;
+		Audio::PlayParams params;
+		params.loop = true;
+		params.volume = v;
+		params.bus = AudioBus::Music;
+		self->musicVoice_ = (sound != 0) ? audio->PlayAudio(sound, params) : 0u;
 		self->musicPath_ = (self->musicVoice_ != 0) ? resolved : std::string();
 	};
 	engineApi_.stopMusic = [](void* ctx) {
@@ -553,6 +617,148 @@ void EditorSuite::SetupEngineAPIExtensions()
 		if (self->musicVoice_ != 0) Audio::GetInstance()->StopAudio(self->musicVoice_);
 		self->musicVoice_ = 0;
 		self->musicPath_.clear();
+	};
+	engineApi_.playSoundEx = [](void* ctx, const char* path, const ScriptAudioParams* in) -> uint32_t {
+		auto* self = static_cast<EditorSuite*>(ctx);
+		if (!self || !path || path[0] == '\0' || !in) return 0u;
+		Audio* audio = Audio::GetInstance();
+		const uint32_t sound = audio->LoadAudio(self->ResolveAssetPath(path));
+		if (sound == 0) return 0u;
+		Audio::PlayParams params;
+		params.loop = in->loop;
+		params.volume = in->volume;
+		params.pitch = in->pitch;
+		params.bus = static_cast<AudioBus>(in->bus);
+		params.spatial = in->spatial || in->followObject != 0;
+		params.position = in->position;
+		params.minDistance = in->minDistance;
+		params.maxDistance = in->maxDistance;
+		const GameObject* followed = in->followObject != 0 ? self->FindGameObjectById(in->followObject, false) : nullptr;
+		if (followed) params.position = WorldPosition(*followed);
+		const uint32_t voice = audio->PlayAudio(sound, params);
+		if (voice != 0 && followed) self->audioFollowers_.push_back({ voice, in->followObject });
+		return voice;
+	};
+	engineApi_.setSoundPosition = [](void*, uint32_t voice, Vector3 position) {
+		Audio::GetInstance()->SetVoicePosition(voice, position);
+	};
+	engineApi_.setSoundPitch = [](void*, uint32_t voice, float pitch) {
+		Audio::GetInstance()->SetVoicePitch(voice, pitch);
+	};
+	engineApi_.setBusVolume = [](void*, int bus, float volume) {
+		Audio::GetInstance()->SetBusVolume(static_cast<AudioBus>(bus), volume);
+	};
+	engineApi_.getBusVolume = [](void*, int bus) -> float {
+		return Audio::GetInstance()->GetBusVolume(static_cast<AudioBus>(bus));
+	};
+	engineApi_.playAudioSource = [](void* ctx, uint32_t id) -> bool {
+		auto* self = static_cast<EditorSuite*>(ctx);
+		GameObject* obj = self ? self->FindGameObjectById(id, false) : nullptr;
+		return obj && (obj->hasAudioSource || obj->type == GameObjectType::AudioSource) && self->StartAudioSource(*obj);
+	};
+	engineApi_.stopAudioSource = [](void* ctx, uint32_t id) {
+		auto* self = static_cast<EditorSuite*>(ctx);
+		GameObject* obj = self ? self->FindGameObjectById(id, false) : nullptr;
+		if (!obj || obj->runtimeVoiceHandle == 0) return;
+		Audio::GetInstance()->StopAudio(obj->runtimeVoiceHandle);
+		obj->runtimeVoiceHandle = 0;
+	};
+
+	// ---- Components by name ----
+	engineApi_.hasComponent = [](void* ctx, uint32_t id, const char* component) -> bool {
+		auto* self = static_cast<EditorSuite*>(ctx);
+		const GameObject* obj = (self && component) ? self->FindGameObjectById(id, false) : nullptr;
+		return obj && self->HasComponentByName(*obj, component);
+	};
+	engineApi_.addComponent = [](void* ctx, uint32_t id, const char* component) -> bool {
+		auto* self = static_cast<EditorSuite*>(ctx);
+		GameObject* obj = (self && component) ? self->FindGameObjectById(id, false) : nullptr;
+		return obj && self->AddComponentByName(*obj, component);
+	};
+	engineApi_.removeComponent = [](void* ctx, uint32_t id, const char* component) -> bool {
+		auto* self = static_cast<EditorSuite*>(ctx);
+		GameObject* obj = (self && component) ? self->FindGameObjectById(id, false) : nullptr;
+		return obj && self->RemoveComponentByName(*obj, component);
+	};
+	engineApi_.getComponentField = [](void* ctx, uint32_t id, const char* component, const char* field, ScriptComponentValue* out) -> bool {
+		auto* self = static_cast<EditorSuite*>(ctx);
+		if (!self || !component || !field || !out) return false;
+		GameObject* obj = self->FindGameObjectById(id, false);
+		const ComponentField* info = nullptr;
+		void* ptr = obj ? FindDataComponentField(*obj, component, field, info) : nullptr;
+		if (!ptr) return false;
+		switch (info->type) {
+		case ComponentFieldType::Float:
+			out->kind = ScriptComponentValue::Float;
+			out->number[0] = *static_cast<const float*>(ptr);
+			break;
+		case ComponentFieldType::Int:
+			out->kind = ScriptComponentValue::Int;
+			out->integer = *static_cast<const int*>(ptr);
+			break;
+		case ComponentFieldType::Bool:
+			out->kind = ScriptComponentValue::Bool;
+			out->integer = *static_cast<const bool*>(ptr) ? 1 : 0;
+			break;
+		case ComponentFieldType::Vector3:
+			out->kind = ScriptComponentValue::Vector;
+			std::memcpy(out->number, ptr, sizeof(float) * 3);
+			break;
+		case ComponentFieldType::Color:
+			out->kind = ScriptComponentValue::Color;
+			out->number[3] = 1.0f;
+			std::memcpy(out->number, ptr, (std::min)(info->size, sizeof(out->number)));
+			break;
+		case ComponentFieldType::Text:
+		case ComponentFieldType::Asset:
+			out->kind = ScriptComponentValue::Text;
+			strncpy_s(out->text, static_cast<const char*>(ptr), _TRUNCATE);
+			break;
+		}
+		return true;
+	};
+	engineApi_.setComponentField = [](void* ctx, uint32_t id, const char* component, const char* field, const ScriptComponentValue* value) -> bool {
+		auto* self = static_cast<EditorSuite*>(ctx);
+		if (!self || !component || !field || !value) return false;
+		GameObject* obj = self->FindGameObjectById(id, false);
+		const ComponentField* info = nullptr;
+		void* ptr = obj ? FindDataComponentField(*obj, component, field, info) : nullptr;
+		if (!ptr) return false;
+		const auto allFinite = [&](int count) {
+			for (int i = 0; i < count; ++i) {
+				if (!std::isfinite(value->number[i])) return false;
+			}
+			return true;
+		};
+		const bool limited = info->minValue != info->maxValue;
+		switch (info->type) {
+		case ComponentFieldType::Float:
+			if (value->kind != ScriptComponentValue::Float || !allFinite(1)) return false;
+			*static_cast<float*>(ptr) = limited ? std::clamp(value->number[0], info->minValue, info->maxValue) : value->number[0];
+			break;
+		case ComponentFieldType::Int:
+			if (value->kind != ScriptComponentValue::Int) return false;
+			*static_cast<int*>(ptr) = limited ? std::clamp(value->integer, static_cast<int>(info->minValue), static_cast<int>(info->maxValue)) : value->integer;
+			break;
+		case ComponentFieldType::Bool:
+			if (value->kind != ScriptComponentValue::Bool) return false;
+			*static_cast<bool*>(ptr) = value->integer != 0;
+			break;
+		case ComponentFieldType::Vector3:
+			if (value->kind != ScriptComponentValue::Vector || !allFinite(3)) return false;
+			std::memcpy(ptr, value->number, sizeof(float) * 3);
+			break;
+		case ComponentFieldType::Color:
+			if (value->kind != ScriptComponentValue::Color || !allFinite(4)) return false;
+			std::memcpy(ptr, value->number, (std::min)(info->size, sizeof(value->number)));
+			break;
+		case ComponentFieldType::Text:
+		case ComponentFieldType::Asset:
+			if (value->kind != ScriptComponentValue::Text) return false;
+			strncpy_s(static_cast<char*>(ptr), info->size, value->text, _TRUNCATE);
+			break;
+		}
+		return true;
 	};
 
 	// ---- Particles & timers ----
