@@ -30,6 +30,7 @@ public:
 	Vector3 translation = {0.0f, 0.0f, 0.0f};
 
 	Matrix4x4 matWorld = {};
+	const TransformationMatrix& GetMatrices() const { return data_; }
 
 private:
 	static DirectXCommon* sDxCommon_;

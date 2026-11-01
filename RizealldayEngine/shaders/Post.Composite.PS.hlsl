@@ -14,6 +14,9 @@ float4 main(PostVSOutput input) : SV_TARGET
         return float4(saturate(color), 1.0f); // the sRGB render target encodes it, like rendering directly into it
     }
 
+    if (gFlags & 8) {
+        color *= gOcclusion.Sample(gLinearSampler, input.uv);
+    }
     if (gFlags & 4) {
         color += gBloom.Sample(gLinearSampler, input.uv).rgb * gBloomIntensity;
     }

@@ -1,5 +1,6 @@
 ﻿#include "EditorSuiteInternal.h"
 #include "PhysicsComponents.h"
+#include "PbrMaterial.h"
 
 // Sample content generators (GameObject > Samples). Everything they create is ordinary scene /
 // prefab data, so the result can be edited freely afterwards.
@@ -61,6 +62,35 @@ bool EditorSuite::CreateThirdPersonDemo()
 		joint->anchor = { -0.5f, 0.0f, 0.0f }; // left edge, in local units
 		joint->axis = { 0.0f, 1.0f, 0.0f };
 	}
+	// Materials and lights: metal to smooth plastic, a glowing ball, and more lamps than the old limit of three
+	for (int i = 0; i < 5; ++i) {
+		GameObject& ball = CreateSphere("Material Ball", { -4.0f + i * 2.0f, 1.0f, 6.0f });
+		ball.hasSphereCollider = false;
+		ball.isStatic = true;
+		ball.materialColor = { 0.9f, 0.75f, 0.4f, 1.0f };
+		if (AddComponentByName(ball, "PBR Material")) {
+			auto* pbr = ball.components.Get<PbrMaterialComponent>("PBR Material");
+			pbr->metallic = i < 3 ? 1.0f : 0.0f;
+			pbr->roughness = 0.1f + 0.2f * static_cast<float>(i % 3);
+			if (i == 4) {
+				pbr->emissive = { 0.2f, 0.8f, 1.0f };
+				pbr->emissiveStrength = 4.0f;
+			}
+		}
+	}
+	for (int i = 0; i < 6; ++i) {
+		GameObject& lamp = CreateGameObject("Lamp", GameObjectType::Empty);
+		const float angle = 6.2831853f * i / 6.0f;
+		lamp.translation = { std::cos(angle) * 6.0f, 1.5f, std::sin(angle) * 6.0f };
+		lamp.hasLight = true;
+		lamp.lightEnabled = true;
+		lamp.lightType = GameObject::LightType::Point;
+		lamp.lightColor = (i % 2) == 0 ? Vector3{ 1.0f, 0.5f, 0.2f } : Vector3{ 0.3f, 0.6f, 1.0f };
+		lamp.lightIntensity = 2.0f;
+		lamp.lightRange = 6.0f;
+		lamp.lightDecay = 1.5f;
+	}
+
 	GameObject& player = CreateCube("Player", { 0.0f, 2.0f, 0.0f });
 	player.materialColor = { 0.9f, 0.35f, 0.25f, 1.0f };
 	AddScriptComponent(player, "ThirdPersonPlayer");

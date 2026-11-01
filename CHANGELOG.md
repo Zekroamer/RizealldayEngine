@@ -17,7 +17,15 @@ Project lama perlu Build Scripts ulang (`kScriptApiVersion` 10).
 - **Rigidbody**: Friction, Freeze Rotation, Continuous Collision (peluru cepat tidak menembus dinding tipis). Gerakan Rigidbody kini halus di monitor di atas 60 Hz.
 - **`Raycast` dan `OverlapSphere`** kini mengikuti rotasi, kapsul, dan mesh.
 
+- **PBR**: komponen **PBR Material** (metallic, roughness, emissive, normal map, peta occlusion/roughness/metallic). Peta yang dibawa model dipakai otomatis. **Save As Material Asset** membuat `.material.json` yang bisa dipakai bersama banyak objek.
+- **Cahaya dari langit (IBL)**: material PBR memantulkan skybox, termasuk mode gradient dan warna polos. **Environment Intensity** ada di Lighting & Environment.
+- **Bayangan cascade**: bayangan tajam di dekat kamera sampai **Shadow Distance**. Scene baru memakai 3 cascade; scene lama tetap satu shadow map (Shadow Cascades 0) sampai diubah.
+- **Lampu tanpa batas 3**: sampai 1024 point dan spot light, dengan cluster agar setiap piksel hanya menghitung lampu terdekat (maksimum 64 per cluster).
+- **Ambient Occlusion** di Post Processing: aktif di scene baru.
+- **Instancing otomatis**: mesh statis dengan model dan material yang sama digambar dalam satu draw call, termasuk di shadow pass.
+
 ### Perubahan Perilaku
+- Scene lama dengan lebih dari 3 point light atau 3 spot light kini menampilkan semuanya.
 - Scene lama tetap tanpa gesekan dan rotasi fisika (Friction 0, Freeze Rotation aktif) sampai diubah. Objek baru: Friction 0.5, boleh berputar.
 - Collider tanpa Rigidbody yang digerakkan script melaporkan kontak barunya satu step fisika kemudian (1/60 detik).
 - Dua objek yang sama-sama bertanda Static tidak lagi saling melaporkan tabrakan.

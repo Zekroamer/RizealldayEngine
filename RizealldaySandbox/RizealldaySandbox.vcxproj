@@ -194,6 +194,7 @@ if exist "$(ProjectDir)Resources" xcopy "$(ProjectDir)Resources" "$(OutDir)Resou
     <ClCompile Include="EditorSuite_Modals.cpp" />
     <ClCompile Include="EditorSuite_Mapchip.cpp" />
     <ClCompile Include="EditorSuite_Physics.cpp" />
+    <ClCompile Include="EditorSuite_Materials.cpp" />
     <ClCompile Include="EditorSuite_Prefabs.cpp" />
     <ClCompile Include="EditorSuite_Runtime.cpp" />
     <ClCompile Include="EditorSuite_Samples.cpp" />
@@ -245,6 +246,7 @@ if exist "$(ProjectDir)Resources" xcopy "$(ProjectDir)Resources" "$(OutDir)Resou
   <ItemGroup>
     <ClInclude Include="ParticleQuad.h" />
     <ClInclude Include="PhysicsComponents.h" />
+    <ClInclude Include="PbrMaterial.h" />
     <ClInclude Include="AssetDatabase.h" />
     <ClInclude Include="AnimatorController.h" />
     <ClInclude Include="InputActions.h" />

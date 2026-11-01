@@ -85,6 +85,12 @@ void EditorSuite::WriteSceneSettingsJson(void* outJson) const
 	post["tint"] = Arr(postSettings_.tint);
 	post["vignette"] = Num(postSettings_.vignette);
 	post["letterbox"] = Num(postSettings_.letterbox);
+	post["ssao"] = postSettings_.ssao;
+	post["ssaoRadius"] = Num(postSettings_.ssaoRadius);
+	post["ssaoIntensity"] = Num(postSettings_.ssaoIntensity);
+	post["shadowCascades"] = postSettings_.shadowCascades;
+	post["shadowDistance"] = Num(postSettings_.shadowDistance);
+	post["environmentIntensity"] = Num(postSettings_.environmentIntensity);
 	root["postProcess"] = std::move(post);
 
 	// Mapchip Data
@@ -445,6 +451,12 @@ void EditorSuite::ReadSceneSettingsJson(const void* json)
 		SceneJson::Read(*post, "tint", postSettings_.tint);
 		SceneJson::Read(*post, "vignette", postSettings_.vignette);
 		SceneJson::Read(*post, "letterbox", postSettings_.letterbox);
+		SceneJson::Read(*post, "ssao", postSettings_.ssao);
+		SceneJson::Read(*post, "ssaoRadius", postSettings_.ssaoRadius);
+		SceneJson::Read(*post, "ssaoIntensity", postSettings_.ssaoIntensity);
+		SceneJson::Read(*post, "shadowCascades", postSettings_.shadowCascades);
+		SceneJson::Read(*post, "shadowDistance", postSettings_.shadowDistance);
+		SceneJson::Read(*post, "environmentIntensity", postSettings_.environmentIntensity);
 	}
 
 	// Skybox
@@ -843,6 +855,8 @@ void EditorSuite::NewScene()
 
 	postSettings_ = PostProcessSettings{};
 	postSettings_.enabled = true; // new scenes start with the filmic look
+	postSettings_.ssao = true;
+	postSettings_.shadowCascades = 3;
 
 	// 1. Main Camera
 	{

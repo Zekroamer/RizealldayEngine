@@ -20,6 +20,7 @@ public:
     ID3D12RootSignature* GetRootSignature() const { return rootSignature.Get(); }
     /// Switches to the outline PSO after a mesh was drawn with Bind() (root arguments stay bound)
     void BindOutline(ID3D12GraphicsCommandList* commandList);
+    void BindInstanced(ID3D12GraphicsCommandList* commandList);
     bool HasOutline() const { return psos_.outline != nullptr; }
 
     /// Shader hot reload: recompiles the Object3d shaders from `shaderDir` and swaps in new PSOs only when every
@@ -29,7 +30,7 @@ public:
 
 private:
     struct ShaderBlobs {
-        Microsoft::WRL::ComPtr<IDxcBlob> vs, ps, gs, explode, outlineVs, outlinePs;
+        Microsoft::WRL::ComPtr<IDxcBlob> vs, ps, gs, explode, outlineVs, outlinePs, instancedVs;
     };
     struct PsoSet {
         Microsoft::WRL::ComPtr<ID3D12PipelineState> standard[static_cast<int>(BlendMode::Count)];
@@ -37,6 +38,7 @@ private:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> gs[static_cast<int>(BlendMode::Count)];
         Microsoft::WRL::ComPtr<ID3D12PipelineState> explode[static_cast<int>(BlendMode::Count)];
         Microsoft::WRL::ComPtr<ID3D12PipelineState> outline;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> instanced; // opaque only
     };
 
     void CreateRootSignature();

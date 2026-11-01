@@ -37,6 +37,9 @@ public:
 	void Initialize(DirectXCommon* dxCommon, DXCManager* dxc);
 	bool LoadCubemap(const std::string& filePath);
 	void Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera);
+	// The sky into the bound HDR target without a depth buffer (environment capture)
+	void DrawToTarget(ID3D12GraphicsCommandList* cmdList, const Matrix4x4& invViewProj);
+	SkyboxConstants BuildConstants(const Matrix4x4& invViewProj) const;
 
 	SkyboxMode GetMode() const { return mode_; }
 	void SetMode(SkyboxMode mode) { mode_ = mode; }
@@ -72,6 +75,8 @@ private:
 	DirectXCommon* dxCommon_ = nullptr;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature_;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> pso_;
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> psoNoDepth_;
+	void DrawWith(ID3D12GraphicsCommandList* cmdList, ID3D12PipelineState* pso, const Matrix4x4& invViewProj);
 
 	SkyboxMode mode_ = SkyboxMode::Gradient;
 	Vector4 topColor_ = { 0.22f, 0.45f, 0.78f, 1.0f };

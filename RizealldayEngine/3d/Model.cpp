@@ -570,6 +570,20 @@ void Model::LoadAssimpModel(const std::string& filePath) {
                 std::string texFilePath = directory + "/" + filenameOnly;
                 meshData.textureHandle = TextureManager::GetInstance()->LoadTexture(texFilePath);
             }
+            // PBR maps next to the model (embedded textures are not supported, like the diffuse above)
+            const auto loadMap = [&](std::initializer_list<aiTextureType> types, bool linear) -> uint32_t {
+                for (aiTextureType type : types) {
+                    aiString path;
+                    if (material->GetTexture(type, 0, &path) != AI_SUCCESS || path.C_Str()[0] == '*') continue;
+                    const std::string raw = path.C_Str();
+                    const size_t cut = raw.find_last_of("\\/");
+                    return TextureManager::GetInstance()->LoadTexture(directory + "/" + (cut != std::string::npos ? raw.substr(cut + 1) : raw), linear);
+                }
+                return 0;
+            };
+            meshData.maps.normal = loadMap({ aiTextureType_NORMALS, aiTextureType_NORMAL_CAMERA }, true);
+            meshData.maps.orm = loadMap({ aiTextureType_UNKNOWN, aiTextureType_METALNESS }, true);
+            meshData.maps.emissive = loadMap({ aiTextureType_EMISSIVE, aiTextureType_EMISSION_COLOR }, false);
         }
         if (meshData.textureHandle == 0) {
             meshData.textureHandle = TextureManager::GetInstance()->GetDefaultWhiteTexture();
@@ -769,10 +783,29 @@ void Model::CreateGPUBuffers() {
     }
 }
 
-void Model::Draw(ID3D12GraphicsCommandList* cmdList, uint32_t overrideTextureHandle) {
+void Model::DrawGeometry(ID3D12GraphicsCommandList* cmdList, UINT instanceCount) {
     if (!cmdList || !sDxCommon_ || sDxCommon_->IsDeviceLost()) {
         return;
     }
+    for (const auto& mesh : meshes_) {
+        if (!mesh.vertexBuffer || !mesh.indexBuffer || mesh.indices.empty()) {
+            continue;
+        }
+        cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        cmdList->IASetVertexBuffers(0, 1, &mesh.vbView);
+        cmdList->IASetIndexBuffer(&mesh.ibView);
+        cmdList->DrawIndexedInstanced(static_cast<UINT>(mesh.indices.size()), instanceCount, 0, 0, 0);
+        Profiler::GetInstance()->CountDrawCall();
+    }
+}
+
+void Model::Draw(ID3D12GraphicsCommandList* cmdList, uint32_t overrideTextureHandle, const MaterialMaps* maps, UINT instanceCount) {
+    if (!cmdList || !sDxCommon_ || sDxCommon_->IsDeviceLost()) {
+        return;
+    }
+    TextureManager* textures = TextureManager::GetInstance();
+    const uint32_t white = textures->GetDefaultWhiteTexture();
+    const uint32_t flat = textures->GetDefaultNormalTexture();
     for (const auto& mesh : meshes_) {
         if (!mesh.vertexBuffer || !mesh.indexBuffer || mesh.indices.empty()) {
             continue;
@@ -787,10 +820,16 @@ void Model::Draw(ID3D12GraphicsCommandList* cmdList, uint32_t overrideTextureHan
             continue;
         }
         cmdList->SetGraphicsRootDescriptorTable(2, gpuHandle);
+        const uint32_t normal = (maps && maps->normal) ? maps->normal : (mesh.maps.normal ? mesh.maps.normal : flat);
+        const uint32_t orm = (maps && maps->orm) ? maps->orm : (mesh.maps.orm ? mesh.maps.orm : white);
+        const uint32_t emissive = (maps && maps->emissive) ? maps->emissive : (mesh.maps.emissive ? mesh.maps.emissive : white);
+        cmdList->SetGraphicsRootDescriptorTable(7, textures->GetGPUHandle(normal));
+        cmdList->SetGraphicsRootDescriptorTable(8, textures->GetGPUHandle(orm));
+        cmdList->SetGraphicsRootDescriptorTable(9, textures->GetGPUHandle(emissive));
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         cmdList->IASetVertexBuffers(0, 1, &mesh.vbView);
         cmdList->IASetIndexBuffer(&mesh.ibView);
-        cmdList->DrawIndexedInstanced(static_cast<UINT>(mesh.indices.size()), 1, 0, 0, 0);
+        cmdList->DrawIndexedInstanced(static_cast<UINT>(mesh.indices.size()), instanceCount, 0, 0, 0);
         Profiler::GetInstance()->CountDrawCall();
     }
 }

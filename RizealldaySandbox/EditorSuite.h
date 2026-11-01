@@ -5,6 +5,8 @@
 #include "base/DirectXCommon.h"
 #include "render/PostProcess.h"
 #include "physics/PhysicsWorld.h"
+#include "render/EnvironmentProbe.h"
+#include "PbrMaterial.h"
 #include "3d/Camera.h"
 #include "3d/ShadowMap.h"
 #include "3d/Skybox.h"
@@ -386,6 +388,7 @@ public:
 	// Animator (EditorSuite_Animator.cpp, roadmap 5.1)
 	static void RegisterAnimatorComponent();
 	static void RegisterPhysicsComponents();
+	static void RegisterMaterialComponent();
 	/// Moves skeletal animation time: Animator state machines when `runStateMachines` (Play), else the Inspector clip
 	/// (or the Animator's entry / previewed state). Called from Update with game time, never from rendering.
 	void UpdateAnimations(float deltaTime, bool runStateMachines);
@@ -673,7 +676,15 @@ private:
 	void RestoreSimulatedPoses();
 	void ApplyRenderPoses(float alpha);
 	void CalculateLightViewProjection();
-	void RenderShadowPass(ID3D12GraphicsCommandList* cmdList);
+	void RenderShadowPass(ID3D12GraphicsCommandList* cmdList, const Camera& camera);
+	struct ShadowCascade {
+		Matrix4x4 lightViewProjection{};
+		float end = 0.0f;
+		float depthScale = 1.0f;
+		float normalScale = 1.0f;
+	};
+	int ComputeShadowCascades(const Camera& camera, ShadowCascade outCascades[4]);
+	Model* ResolveMeshModel(const GameObject& obj);
 	void RenderScene3D(ID3D12GraphicsCommandList* cmdList, Camera& camera, bool isEditView);
 	void ApplyUnity6DarkTheme();
 	// Height of the Play/Build toolbar below the main menu bar; panels are laid out under it
@@ -871,6 +882,20 @@ private:
 	uint32_t gameDepthSrvIndex_ = DirectXCommon::kInvalidSrvIndex;
 	void InitializeGameSceneTarget(uint32_t width, uint32_t height);
 	PostProcess postProcess_{};
+	EnvironmentProbe environmentProbe_{};
+	bool enableInstancing_ = true;
+	struct MaterialAssetEntry {
+		PbrMaterialComponent values;
+		bool dirty = false;
+		bool failed = false;
+	};
+	std::unordered_map<std::string, MaterialAssetEntry> materialAssets_; // by asset path; every object using one follows it
+	std::unordered_map<std::string, uint32_t> materialTextures_;
+	const PbrMaterialComponent* FindMaterialAsset(const std::string& assetPath);
+	bool WriteMaterialAssetFile(const std::string& assetPath, const PbrMaterialComponent& values);
+	void SaveMaterialAsset(GameObject& obj, PbrMaterialComponent& material);
+	uint32_t LoadMaterialTexture(const char* assetPath, bool linear);
+	bool ApplyPbrMaterial(GameObject& obj, Material& material, MaterialMaps& maps, uint32_t& albedoHandle);
 	PostProcessSettings postSettings_{}; // saved per scene
 	PostProcessSettings playModePostSettings_{};
 	Camera previewCamera_{};

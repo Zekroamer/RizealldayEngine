@@ -16,6 +16,7 @@ struct MeshData {
 	std::vector<VertexData> vertices;
 	std::vector<uint32_t> indices;
 	uint32_t textureHandle = 0;
+	MaterialMaps maps; // PBR maps found in the model file
 	Microsoft::WRL::ComPtr<ID3D12Resource> vertexBuffer;
 	Microsoft::WRL::ComPtr<ID3D12Resource> indexBuffer;
 	D3D12_VERTEX_BUFFER_VIEW vbView{};
@@ -85,7 +86,9 @@ public:
 	static Model* CreatePlane();
 	static Model* CreateQuad();
 	
-	void Draw(ID3D12GraphicsCommandList* cmdList, uint32_t overrideTextureHandle = 0);
+	void Draw(ID3D12GraphicsCommandList* cmdList, uint32_t overrideTextureHandle = 0, const MaterialMaps* maps = nullptr, UINT instanceCount = 1);
+	// Vertices only, nothing bound: depth passes
+	void DrawGeometry(ID3D12GraphicsCommandList* cmdList, UINT instanceCount = 1);
 	const std::vector<MeshData>& GetMeshes() const { return meshes_; }
 	uint32_t GetTotalVertexCount() const;
 	uint32_t GetTotalTriangleCount() const;

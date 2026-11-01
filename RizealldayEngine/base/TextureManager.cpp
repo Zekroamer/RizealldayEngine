@@ -97,13 +97,13 @@ std::string TextureManager::NormalizePath(const std::string& filePath)
 	return norm;
 }
 
-uint32_t TextureManager::LoadTexture(const std::string& filePath)
+uint32_t TextureManager::LoadTexture(const std::string& filePath, bool linear)
 {
 	if (!dxCommon_ || dxCommon_->IsDeviceLost()) {
 		return defaultWhiteHandle_;
 	}
 
-	std::string normKey = NormalizePath(filePath);
+	std::string normKey = NormalizePath(filePath) + (linear ? "|linear" : "");
 
 	// Check cache
 	auto it = textureCache_.find(normKey);
@@ -129,7 +129,7 @@ uint32_t TextureManager::LoadTexture(const std::string& filePath)
 	DirectX::ScratchImage image{};
 	std::wstring filePathW = convertString.ConvertString(filePath);
 
-	HRESULT hr = DirectX::LoadFromWICFile(filePathW.c_str(), DirectX::WIC_FLAGS_FORCE_SRGB, nullptr, image);
+	HRESULT hr = DirectX::LoadFromWICFile(filePathW.c_str(), linear ? DirectX::WIC_FLAGS_IGNORE_SRGB : DirectX::WIC_FLAGS_FORCE_SRGB, nullptr, image);
 	if (FAILED(hr)) {
 		hr = DirectX::LoadFromDDSFile(filePathW.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, image);
 	}
@@ -158,7 +158,7 @@ uint32_t TextureManager::LoadTexture(const std::string& filePath)
 		DirectX::ScratchImage converted{};
 		if (SUCCEEDED(DirectX::Convert(
 			image.GetImages(), image.GetImageCount(), image.GetMetadata(),
-			DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted))) {
+			linear ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, converted))) {
 			image = std::move(converted);
 		}
 	}
@@ -170,7 +170,7 @@ uint32_t TextureManager::LoadTexture(const std::string& filePath)
 	}
 
 	DirectX::ScratchImage mipImages{};
-	hr = DirectX::GenerateMipMaps(image.GetImages(), image.GetImageCount(), image.GetMetadata(), DirectX::TEX_FILTER_SRGB, 0, mipImages);
+	hr = DirectX::GenerateMipMaps(image.GetImages(), image.GetImageCount(), image.GetMetadata(), linear ? DirectX::TEX_FILTER_LINEAR : DirectX::TEX_FILTER_SRGB, 0, mipImages);
 	const DirectX::ScratchImage& finalImg = SUCCEEDED(hr) ? mipImages : image;
 	const DirectX::TexMetadata& metadata = finalImg.GetMetadata();
 
@@ -212,6 +212,15 @@ uint32_t TextureManager::LoadTexture(const std::string& filePath)
 	textureCache_[normKey] = handle;
 
 	return handle;
+}
+
+uint32_t TextureManager::GetDefaultNormalTexture()
+{
+	if (defaultNormalHandle_ == 0) {
+		const uint8_t flat[4] = { 128, 128, 255, 255 };
+		defaultNormalHandle_ = CreateTextureFromRGBA("defaultNormal", flat, 1, 1);
+	}
+	return defaultNormalHandle_;
 }
 
 uint32_t TextureManager::CreateTextureFromRGBA(const std::string& cacheKey, const uint8_t* rgba, uint32_t width, uint32_t height)

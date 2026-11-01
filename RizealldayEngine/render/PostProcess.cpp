@@ -12,6 +12,9 @@ PostProcess::~PostProcess()
 	for (Target& t : effectTargets_) ReleaseTarget(t);
 	ReleaseTarget(fxaaSource_);
 	for (Target& t : bloom_) ReleaseTarget(t);
+	for (Target& t : ssao_) ReleaseTarget(t);
+	if (ssaoPass_) dxCommon_->DeferRelease(ssaoPass_);
+	if (ssaoBlur_) dxCommon_->DeferRelease(ssaoBlur_);
 	for (auto& [file, pso] : effectPsos_) {
 		if (pso) dxCommon_->DeferRelease(pso);
 	}
@@ -45,15 +48,17 @@ void PostProcess::Initialize(DirectXCommon* dxCommon, DXCManager* dxc)
 	fxaaFinal_ = CreatePso(fxaa.Get(), DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, true, false);
 	bloomDown_ = CreatePso(down.Get(), DirectXCommon::kSceneColorFormat, false, false);
 	bloomUp_ = CreatePso(up.Get(), DirectXCommon::kSceneColorFormat, false, true);
+	ssaoPass_ = CreatePso(compile(L"shaders/Post.Ssao.PS.hlsl", L"ps_6_0").Get(), DXGI_FORMAT_R8_UNORM, false, false);
+	ssaoBlur_ = CreatePso(compile(L"shaders/Post.SsaoBlur.PS.hlsl", L"ps_6_0").Get(), DXGI_FORMAT_R8_UNORM, false, false);
 }
 
 void PostProcess::CreateRootSignature()
 {
-	D3D12_DESCRIPTOR_RANGE ranges[3] = {};
-	D3D12_ROOT_PARAMETER params[4] = {};
+	D3D12_DESCRIPTOR_RANGE ranges[4] = {};
+	D3D12_ROOT_PARAMETER params[5] = {};
 	params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 	params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-	for (uint32_t i = 0; i < 3; ++i) {
+	for (uint32_t i = 0; i < 4; ++i) {
 		ranges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
 		ranges[i].NumDescriptors = 1;
 		ranges[i].BaseShaderRegister = i;
@@ -174,6 +179,10 @@ void PostProcess::Resize(uint32_t width, uint32_t height)
 		h = (std::max)(h / 2u, 1u);
 		CreateTarget(level, rtv++, w, h, DirectXCommon::kSceneColorFormat);
 	}
+	const uint32_t halfWidth = (std::max)(width / 2u, 1u);
+	const uint32_t halfHeight = (std::max)(height / 2u, 1u);
+	CreateTarget(ssao_[0], rtv++, halfWidth, halfHeight, DXGI_FORMAT_R8_UNORM);
+	CreateTarget(ssao_[1], rtv++, halfWidth, halfHeight, DXGI_FORMAT_R8_UNORM);
 }
 
 void PostProcess::BeginPass(ID3D12GraphicsCommandList* cmdList, Target& target, bool clear)
@@ -219,8 +228,18 @@ void PostProcess::DrawFullscreen(ID3D12GraphicsCommandList* cmdList, ID3D12Pipel
 	cmdList->SetGraphicsRootDescriptorTable(1, source);
 	cmdList->SetGraphicsRootDescriptorTable(2, bloom);
 	cmdList->SetGraphicsRootDescriptorTable(3, depth);
+	cmdList->SetGraphicsRootDescriptorTable(4, occlusion_.ptr != 0 ? occlusion_ : source); // read only with flag 8
 	cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	cmdList->DrawInstanced(3, 1, 0, 0);
+}
+
+void PostProcess::SetCamera(float tanHalfFovX, float tanHalfFovY, float nearZ, float farZ, bool perspective)
+{
+	cameraInfo_[0] = tanHalfFovX;
+	cameraInfo_[1] = tanHalfFovY;
+	cameraInfo_[2] = nearZ;
+	cameraInfo_[3] = farZ;
+	cameraPerspective_ = perspective;
 }
 
 void PostProcess::Prepare(ID3D12GraphicsCommandList* cmdList, RenderTexture& scene, const PostProcessSettings& settings, float gameTime)
@@ -244,6 +263,24 @@ void PostProcess::Prepare(ID3D12GraphicsCommandList* cmdList, RenderTexture& sce
 	constants.time = gameTime;
 	constants.texelSize[0] = 1.0f / static_cast<float>(scene.GetWidth());
 	constants.texelSize[1] = 1.0f / static_cast<float>(scene.GetHeight());
+
+	occlusion_ = {};
+	if (settings.enabled && settings.ssao && settings.ssaoIntensity > 0.0f && cameraPerspective_) {
+		Constants pass = constants;
+		std::memcpy(pass.params, cameraInfo_, sizeof(cameraInfo_));
+		pass.params[4] = settings.ssaoRadius;
+		pass.params[5] = settings.ssaoIntensity;
+		BeginPass(cmdList, ssao_[0], false);
+		DrawFullscreen(cmdList, ssaoPass_.Get(), pass, source, source, depth);
+		EndPass(cmdList, ssao_[0]);
+		pass.texelSize[0] = 1.0f / static_cast<float>(ssao_[0].width);
+		pass.texelSize[1] = 1.0f / static_cast<float>(ssao_[0].height);
+		BeginPass(cmdList, ssao_[1], false);
+		DrawFullscreen(cmdList, ssaoBlur_.Get(), pass, ssao_[0].srv, ssao_[0].srv, depth);
+		EndPass(cmdList, ssao_[1]);
+		occlusion_ = ssao_[1].srv;
+		constants.flags |= 8u;
+	}
 
 	// Screen effects run even with the look settings off: they are gameplay, not a look
 	int nextTarget = 0;
@@ -308,6 +345,7 @@ void PostProcess::Composite(ID3D12GraphicsCommandList* cmdList)
 void PostProcess::Resolve(ID3D12GraphicsCommandList* cmdList, RenderTexture& scene)
 {
 	Constants constants{}; // flags 0 = pass-through
+	occlusion_ = {};
 	const D3D12_GPU_DESCRIPTOR_HANDLE source = scene.GetSrvGPUHandle();
 	DrawFullscreen(cmdList, compositeFinal_.Get(), constants, source, source, source);
 }

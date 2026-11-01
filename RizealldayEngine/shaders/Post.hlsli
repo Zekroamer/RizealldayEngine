@@ -17,7 +17,7 @@ cbuffer PostConstants : register(b0)
     float gLetterbox;
     float gBloomIntensity;
     float gBloomThreshold;
-    uint gFlags; // 1 = enabled, 2 = tone mapping, 4 = bloom
+    uint gFlags; // 1 = enabled, 2 = tone mapping, 4 = bloom, 8 = ambient occlusion
     float gTime; // game time in seconds
     float2 gTexelSize;
     float2 gPad;
@@ -27,5 +27,6 @@ cbuffer PostConstants : register(b0)
 Texture2D<float4> gScene : register(t0); // HDR scene (effects) / source of this pass
 Texture2D<float4> gBloom : register(t1);
 Texture2D<float> gDepth : register(t2); // 0 near .. 1 far
+Texture2D<float> gOcclusion : register(t3); // ambient occlusion (composite only)
 SamplerState gLinearSampler : register(s0);
 SamplerState gPointSampler : register(s1);

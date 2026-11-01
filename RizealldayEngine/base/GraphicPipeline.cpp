@@ -19,6 +19,7 @@ void GraphicPipeline::Initialize(ID3D12Device* pDevice, DXCManager* dxc)
 	blobs.explode = dxc->CompileShader(L"shaders/Object3d.Explode.GS.hlsl", L"gs_6_0", dxc->GetDxcUtils(), dxc->GetDxcCompiler(), dxc->GetIncludeHandler());
 	blobs.outlineVs = dxc->CompileShader(L"shaders/Object3d.Outline.VS.hlsl", L"vs_6_0", dxc->GetDxcUtils(), dxc->GetDxcCompiler(), dxc->GetIncludeHandler());
 	blobs.outlinePs = dxc->CompileShader(L"shaders/Object3d.Outline.PS.hlsl", L"ps_6_0", dxc->GetDxcUtils(), dxc->GetDxcCompiler(), dxc->GetIncludeHandler());
+	blobs.instancedVs = dxc->CompileShader(L"shaders/Object3d.Instanced.VS.hlsl", L"vs_6_0", dxc->GetDxcUtils(), dxc->GetDxcCompiler(), dxc->GetIncludeHandler());
 	assert(blobs.vs != nullptr && blobs.ps != nullptr);
 	for (int i = 0; i < static_cast<int>(BlendMode::Count); i++) {
 		const bool created = CreatePso(static_cast<BlendMode>(i), blobs, psos_);
@@ -42,6 +43,7 @@ bool GraphicPipeline::Reload(DXCManager* dxc, const std::wstring& shaderDir, std
 		{ L"Object3d.Explode.GS.hlsl", L"gs_6_0", &blobs.explode },
 		{ L"Object3d.Outline.VS.hlsl", L"vs_6_0", &blobs.outlineVs },
 		{ L"Object3d.Outline.PS.hlsl", L"ps_6_0", &blobs.outlinePs },
+		{ L"Object3d.Instanced.VS.hlsl", L"vs_6_0", &blobs.instancedVs },
 	};
 	for (const Stage& stage : stages) {
 		*stage.out = dxc->TryCompileShader(shaderDir + L"/" + stage.file, stage.profile, error);
@@ -60,6 +62,7 @@ bool GraphicPipeline::Reload(DXCManager* dxc, const std::wstring& shaderDir, std
 		}
 	}
 	if (psos_.outline) retired.push_back(psos_.outline);
+	if (psos_.instanced) retired.push_back(psos_.instanced);
 	psos_ = std::move(fresh);
 	return true;
 }
@@ -156,7 +159,31 @@ void GraphicPipeline::CreateRootSignature()
 	// [4] -> CBV              -> register(b1) -> D3D12_SHADER_VISIBILITY_VERTEX (BonePalette: Object3d.VS.hlsl)
 	// [5] -> CBV              -> register(b2) -> D3D12_SHADER_VISIBILITY_PIXEL  (CameraForGPU: Object3d.PS.hlsl)
 	// [6] -> DESCRIPTOR_TABLE -> register(t1) -> D3D12_SHADER_VISIBILITY_PIXEL  (ShadowMap SRV: Object3d.PS.hlsl)
-	D3D12_ROOT_PARAMETER rootParamaters[7] = {};
+	// [7..9] -> DESCRIPTOR_TABLE -> register(t2..t4) -> PIXEL (normal, occlusion/roughness/metallic, emissive maps)
+	// [10] -> DESCRIPTOR_TABLE -> register(t5) -> PIXEL (environment cube)
+	// [11..13] -> SRV -> register(t6..t8) -> PIXEL (lights, clusters, cluster light lists)
+	// [14] -> SRV -> register(t0, space1) -> VERTEX (instance transforms of the instanced vertex shaders)
+	D3D12_DESCRIPTOR_RANGE mapRanges[4] = {};
+	D3D12_ROOT_PARAMETER rootParamaters[15] = {};
+	for (UINT i = 0; i < 4; ++i) {
+		mapRanges[i].BaseShaderRegister = 2 + i;
+		mapRanges[i].NumDescriptors = 1;
+		mapRanges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+		mapRanges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+		rootParamaters[7 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		rootParamaters[7 + i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+		rootParamaters[7 + i].DescriptorTable.pDescriptorRanges = &mapRanges[i];
+		rootParamaters[7 + i].DescriptorTable.NumDescriptorRanges = 1;
+	}
+	for (UINT i = 0; i < 3; ++i) {
+		rootParamaters[11 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+		rootParamaters[11 + i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+		rootParamaters[11 + i].Descriptor.ShaderRegister = 6 + i;
+	}
+	rootParamaters[14].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+	rootParamaters[14].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+	rootParamaters[14].Descriptor.ShaderRegister = 0;
+	rootParamaters[14].Descriptor.RegisterSpace = 1;
 	rootParamaters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 	rootParamaters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 	rootParamaters[0].Descriptor.ShaderRegister = 3;
@@ -330,7 +357,20 @@ bool GraphicPipeline::CreatePso(BlendMode mode, const ShaderBlobs& blobs, PsoSet
 		hr = device->CreateGraphicsPipelineState(&outlineDesc, IID_PPV_ARGS(&out.outline));
 		if (FAILED(hr)) return false;
 	}
+
+	if (mode == BlendMode::Opaque && blobs.instancedVs) {
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC instancedDesc = graphicsPipelineStateDesc;
+		instancedDesc.VS = { blobs.instancedVs->GetBufferPointer(), blobs.instancedVs->GetBufferSize() };
+		hr = device->CreateGraphicsPipelineState(&instancedDesc, IID_PPV_ARGS(&out.instanced));
+		if (FAILED(hr)) return false;
+	}
 	return true;
+}
+
+void GraphicPipeline::BindInstanced(ID3D12GraphicsCommandList* commandList)
+{
+	commandList->SetGraphicsRootSignature(rootSignature.Get());
+	commandList->SetPipelineState(psos_.instanced.Get());
 }
 
 void GraphicPipeline::BindOutline(ID3D12GraphicsCommandList* commandList)

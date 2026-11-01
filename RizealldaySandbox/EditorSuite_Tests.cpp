@@ -6,6 +6,8 @@
 
 #include "EditorSuiteInternal.h"
 #include "PhysicsComponents.h"
+#include "render/LightClusters.h"
+#include "base/TextureManager.h"
 #include "SceneJson.h"
 #include "Tests/TestFramework.h"
 #include "base/DirectXCommon.h"
@@ -35,6 +37,12 @@ struct EditorSuiteTestAccess {
 	static DirectXCommon* Dx(EditorSuite& s) { return s.dxCommon_; }
 	static LightGroup* Lights(EditorSuite& s) { return s.lights_; }
 	static Skybox& Sky(EditorSuite& s) { return s.skybox_; }
+	static bool& Instancing(EditorSuite& s) { return s.enableInstancing_; }
+	static uint64_t EnvironmentBakes(EditorSuite& s) { return s.environmentProbe_.GetBakeCount(); }
+	static std::unordered_map<std::string, uint32_t>& MaterialTextures(EditorSuite& s) { return s.materialTextures_; }
+	static void SaveMaterial(EditorSuite& s, GameObject& o, PbrMaterialComponent& m) { s.SaveMaterialAsset(o, m); }
+	static const PbrMaterialComponent* FindMaterial(EditorSuite& s, const std::string& path) { return s.FindMaterialAsset(path); }
+	static void ForgetMaterials(EditorSuite& s) { s.materialAssets_.clear(); }
 	static std::filesystem::path& ProjectRoot(EditorSuite& s) { return s.currentProjectRoot_; }
 	static std::filesystem::path& CurrentDirectory(EditorSuite& s) { return s.currentDirectory_; }
 	static ScriptGameObjectView* ViewFor(EditorSuite& s, uint32_t id)
@@ -905,7 +913,7 @@ TEST_CASE(Lighting, SwitchingTypeDisablesDirectional)
 	sun->lightType = GameObject::LightType::Point;
 	s.Update(0.0f, RizeEngine::GetInput());
 	CHECK(lights->GetDirectionalLight().active == 0);
-	CHECK(lights->GetPointLight(0).active == 1);
+	CHECK(lights->GetLightCount() == 1);
 }
 
 // ===========================================================================
@@ -4217,6 +4225,330 @@ TEST_CASE(PhysicsBaseline, RenderingBlendsBetweenStepsAndScriptsSeeTheSimulatedP
 	A::PhysicsAccumulator(s) = 0.0;
 	s.ResetScriptRuntimeState();
 }
+// ===========================================================================
+// Fase 4: lighting
+// ===========================================================================
+
+namespace {
+
+// A dark room: black sky, no sun, a big floor, the camera looking down at it. Restores the sky when the test ends.
+struct LightingScene {
+	EditorSuite& s;
+	SkyboxMode savedMode;
+	Vector4 savedColor;
+
+	explicit LightingScene(EditorSuite& suite) : s(suite), savedMode(A::Sky(suite).GetMode()), savedColor(A::Sky(suite).GetSolidColor()) {
+		s.NewScene();
+		for (auto& obj : A::Objects(s)) {
+			if (obj.hasLight) obj.lightEnabled = false;
+			if (obj.hasMesh) obj.meshEnabled = false; // the default ground
+		}
+		A::Sky(s).SetMode(SkyboxMode::SolidColor);
+		A::Sky(s).SetSolidColor({ 0.0f, 0.0f, 0.0f, 1.0f });
+		GameObject& floor = s.CreateCube("Floor", { 0.0f, -0.5f, 0.0f });
+		floor.scale = { 60.0f, 1.0f, 60.0f };
+		floor.materialColor = { 0.8f, 0.8f, 0.8f, 1.0f };
+		GameObject* camera = s.FindGameObjectByName("Main Camera", false);
+		camera->translation = { 0.0f, 12.0f, -12.0f };
+		camera->rotation = { 0.785f, 0.0f, 0.0f };
+		camera->rotationQuat = Quaternion::FromEuler(camera->rotation);
+		s.PostSettings() = PostProcessSettings{};
+		UIRenderer::GetInstance()->Clear();
+	}
+	~LightingScene() {
+		A::Sky(s).SetMode(savedMode);
+		A::Sky(s).SetSolidColor(savedColor);
+	}
+	std::vector<float> Capture() {
+		s.Update(0.0f, RizeEngine::GetInput());
+		UIRenderer::GetInstance()->Clear();
+		return CaptureGameViewSignature(s);
+	}
+	GameObject& AddSun(const Vector3& rotation) {
+		// The first directional light in the hierarchy is the sun, so this reuses the scene's own
+		for (auto& obj : A::Objects(s)) {
+			if (obj.hasLight && obj.lightType == GameObject::LightType::Directional) {
+				obj.lightEnabled = true;
+				obj.lightCastShadow = true;
+				obj.lightIntensity = 1.0f;
+				obj.lightColor = { 1.0f, 1.0f, 1.0f };
+				obj.rotation = rotation;
+				obj.rotationQuat = Quaternion::FromEuler(rotation);
+				return obj;
+			}
+		}
+		return A::Objects(s).front();
+	}
+};
+
+float Brightness(const std::vector<float>& signature)
+{
+	float sum = 0.0f;
+	for (float v : signature) sum += v;
+	return sum / static_cast<float>(signature.size());
+}
+
+PbrMaterialComponent* AddPbr(EditorSuite& s, GameObject& obj)
+{
+	s.AddComponentByName(obj, "PBR Material");
+	return obj.components.Get<PbrMaterialComponent>("PBR Material");
+}
+
+} // namespace
+
+TEST_CASE(Lighting, ClustersListOnlyTheLightsThatReachThem)
+{
+	LightClusters::Projection projection;
+	projection.tanHalfFovX = 1.0f;
+	projection.tanHalfFovY = 1.0f;
+	projection.nearZ = 1.0f;
+	projection.farZ = 100.0f;
+	std::vector<LightClusters::Sphere> lights(3);
+	lights[0].viewPosition = { 0.0f, 0.0f, 10.0f }; lights[0].radius = 1.0f;  // straight ahead
+	lights[1].viewPosition = { 0.0f, 0.0f, -50.0f }; lights[1].radius = 5.0f; // behind the camera
+	lights[2].viewPosition = { 9.0f, 9.0f, 10.0f }; lights[2].radius = 1.0f;  // top right
+	std::vector<uint32_t> clusters, indices;
+	LightClusters::Build(lights, projection, clusters, indices);
+	REQUIRE(clusters.size() == LightClusters::kCount);
+
+	const auto lightsAt = [&](float x, float y, float z) {
+		const uint32_t tileX = (std::min)(static_cast<uint32_t>((x / z * 0.5f + 0.5f) * LightClusters::kX), LightClusters::kX - 1);
+		const uint32_t tileY = (std::min)(static_cast<uint32_t>((0.5f - y / z * 0.5f) * LightClusters::kY), LightClusters::kY - 1);
+		const uint32_t slice = static_cast<uint32_t>(std::log(z) / std::log(100.0f) * LightClusters::kZ);
+		const uint32_t cluster = clusters[(slice * LightClusters::kY + tileY) * LightClusters::kX + tileX];
+		std::vector<uint32_t> result;
+		for (uint32_t i = 0; i < (cluster >> 24); ++i) result.push_back(indices[(cluster & 0xFFFFFFu) + i]);
+		return result;
+	};
+	const auto center = lightsAt(0.1f, 0.1f, 10.0f);
+	CHECK(center.size() == 1 && center[0] == 0);
+	const auto corner = lightsAt(9.0f, 9.0f, 10.0f);
+	CHECK(corner.size() == 1 && corner[0] == 2);
+	CHECK(lightsAt(-5.0f, -5.0f, 10.0f).empty());
+	CHECK(lightsAt(0.1f, 0.1f, 80.0f).empty());
+	for (uint32_t index : indices) CHECK(index != 1);
+}
+
+TEST_CASE(Lighting, MoreThanThreePointLightsShine)
+{
+	LightingScene scene(s);
+	const std::vector<float> dark = scene.Capture();
+	REQUIRE(dark.size() == kSignatureColumns * kSignatureRows * 3);
+
+	std::vector<float> previous = dark;
+	for (int i = 0; i < 8; ++i) {
+		GameObject& lamp = s.CreateGameObject("Lamp", GameObjectType::Empty);
+		lamp.hasLight = true;
+		lamp.lightEnabled = true;
+		lamp.lightType = GameObject::LightType::Point;
+		lamp.lightColor = { 1.0f, 1.0f, 1.0f };
+		lamp.lightIntensity = 3.0f;
+		lamp.lightRange = 5.0f;
+		lamp.lightDecay = 1.0f;
+		lamp.translation = { -7.0f + i * 2.0f, 1.5f, 0.0f };
+		const std::vector<float> now = scene.Capture();
+		CHECK_MSG(Brightness(now) > Brightness(previous) + 0.1f, std::format("lamp {} added nothing: {:.2f} -> {:.2f}", i, Brightness(previous), Brightness(now)));
+		previous = now;
+	}
+}
+
+TEST_CASE(Lighting, PbrReflectsTheSkyAndFollowsItWhenItChanges)
+{
+	LightingScene scene(s);
+	A::Sky(s).SetSolidColor({ 1.0f, 0.0f, 0.0f, 1.0f });
+	GameObject& ball = s.CreateCube("Metal", { 0.0f, 3.0f, 0.0f });
+	ball.scale = { 6.0f, 6.0f, 6.0f };
+	PbrMaterialComponent* pbr = AddPbr(s, ball);
+	REQUIRE(pbr != nullptr);
+	pbr->metallic = 1.0f;
+	pbr->roughness = 0.2f;
+
+	const uint64_t bakesBefore = A::EnvironmentBakes(s);
+	const std::vector<float> red = scene.Capture();
+	REQUIRE(red.size() == kSignatureColumns * kSignatureRows * 3);
+	CHECK(A::EnvironmentBakes(s) == bakesBefore + 1);
+	CHECK_MSG(SignatureCell(red, 8, 4, 0) > 120.0f && SignatureCell(red, 8, 4, 2) < 30.0f, std::format("red sky: {:.0f} {:.0f}", SignatureCell(red, 8, 4, 0), SignatureCell(red, 8, 4, 2)));
+
+	const std::vector<float> same = scene.Capture();
+	CHECK(A::EnvironmentBakes(s) == bakesBefore + 1); // nothing changed, nothing baked
+
+	A::Sky(s).SetSolidColor({ 0.0f, 0.0f, 1.0f, 1.0f });
+	const std::vector<float> blue = scene.Capture();
+	CHECK(A::EnvironmentBakes(s) == bakesBefore + 2);
+	CHECK_MSG(SignatureCell(blue, 8, 4, 2) > 120.0f && SignatureCell(blue, 8, 4, 0) < 30.0f, std::format("blue sky: {:.0f} {:.0f}", SignatureCell(blue, 8, 4, 0), SignatureCell(blue, 8, 4, 2)));
+
+	A::Sky(s).SetSolidColor({ 0.0f, 0.0f, 0.0f, 1.0f });
+	s.FindGameObjectByName("Metal", false)->components.Get<PbrMaterialComponent>("PBR Material")->emissive = { 0.0f, 1.0f, 0.0f };
+	s.FindGameObjectByName("Metal", false)->components.Get<PbrMaterialComponent>("PBR Material")->emissiveStrength = 2.0f;
+	const std::vector<float> glowing = scene.Capture();
+	CHECK_MSG(SignatureCell(glowing, 8, 4, 1) > 200.0f, std::format("emissive {:.0f}", SignatureCell(glowing, 8, 4, 1)));
+}
+
+TEST_CASE(Lighting, NormalMapBendsTheLightTowardsItsTilt)
+{
+	LightingScene scene(s);
+	GameObject* camera = s.FindGameObjectByName("Main Camera", false);
+	camera->translation = { 0.0f, 3.0f, -8.0f };
+	camera->rotation = { 0.0f, 0.0f, 0.0f };
+	camera->rotationQuat = Quaternion::Identity();
+	GameObject& wall = s.CreateCube("Wall", { 0.0f, 3.0f, 0.0f });
+	wall.scale = { 8.0f, 8.0f, 1.0f };
+	wall.lightingType = 1;
+	// Light comes from the +X side of the wall: the sun travels towards -X and +Z
+	scene.AddSun({ 0.0f, -0.6f, 0.0f });
+	const std::vector<float> flat = scene.Capture();
+	REQUIRE(flat.size() == kSignatureColumns * kSignatureRows * 3);
+
+	// Red above 128 tilts the normal towards +u. On the cube face looking at -Z, +u is world -X (Model::CreateCube),
+	// so that tilt turns the wall away from this sun. Green above 128 tilts towards image up, which is world +Y there.
+	const uint8_t towardsRight[4] = { 220, 128, 180, 255 };
+	const uint8_t towardsLeft[4] = { 36, 128, 180, 255 };
+	const uint8_t towardsUp[4] = { 128, 220, 180, 255 };
+	const uint8_t towardsDown[4] = { 128, 36, 180, 255 };
+	A::MaterialTextures(s)["test/up.png|linear"] = TextureManager::GetInstance()->CreateTextureFromRGBA("testNormalUp", towardsUp, 1, 1);
+	A::MaterialTextures(s)["test/down.png|linear"] = TextureManager::GetInstance()->CreateTextureFromRGBA("testNormalDown", towardsDown, 1, 1);
+	A::MaterialTextures(s)["test/right.png|linear"] = TextureManager::GetInstance()->CreateTextureFromRGBA("testNormalRight", towardsRight, 1, 1);
+	A::MaterialTextures(s)["test/left.png|linear"] = TextureManager::GetInstance()->CreateTextureFromRGBA("testNormalLeft", towardsLeft, 1, 1);
+	PbrMaterialComponent* pbr = AddPbr(s, *s.FindGameObjectByName("Wall", false));
+	REQUIRE(pbr != nullptr);
+	pbr->metallic = 0.0f;
+	pbr->roughness = 1.0f;
+	strncpy_s(pbr->normalMap, "test/right.png", _TRUNCATE);
+	const float right = SignatureCell(scene.Capture(), 8, 4, 0);
+	pbr = s.FindGameObjectByName("Wall", false)->components.Get<PbrMaterialComponent>("PBR Material");
+	strncpy_s(pbr->normalMap, "test/left.png", _TRUNCATE);
+	const float left = SignatureCell(scene.Capture(), 8, 4, 0);
+	CHECK_MSG(right + 10.0f < left, std::format("+u {:.0f} -u {:.0f}", right, left));
+
+	scene.AddSun({ 0.6f, 0.0f, 0.0f }); // from above
+	pbr = s.FindGameObjectByName("Wall", false)->components.Get<PbrMaterialComponent>("PBR Material");
+	strncpy_s(pbr->normalMap, "test/up.png", _TRUNCATE);
+	const float up = SignatureCell(scene.Capture(), 8, 4, 0);
+	pbr = s.FindGameObjectByName("Wall", false)->components.Get<PbrMaterialComponent>("PBR Material");
+	strncpy_s(pbr->normalMap, "test/down.png", _TRUNCATE);
+	const float down = SignatureCell(scene.Capture(), 8, 4, 0);
+	CHECK_MSG(down + 10.0f < up, std::format("up {:.0f} down {:.0f}", up, down));
+}
+
+TEST_CASE(Lighting, CascadesCastShadowsNearTheCameraUpToTheDistance)
+{
+	LightingScene scene(s);
+	GameObject& floor = *s.FindGameObjectByName("Floor", false);
+	floor.lightingType = 1;
+	scene.AddSun({ 1.2f, 0.4f, 0.0f });
+	GameObject& box = s.CreateCube("Box", { 0.0f, 2.0f, 0.0f });
+	box.scale = { 3.0f, 4.0f, 3.0f };
+	box.isLit = false;
+	box.materialColor = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+	const auto shadowDepth = [&](int cascades, float distance) {
+		s.PostSettings().shadowCascades = cascades;
+		s.PostSettings().shadowDistance = distance;
+		s.FindGameObjectByName("Box", false)->castShadow = true;
+		const std::vector<float> withShadow = scene.Capture();
+		s.FindGameObjectByName("Box", false)->castShadow = false;
+		const std::vector<float> without = scene.Capture();
+		float largest = 0.0f;
+		for (size_t i = 0; i < withShadow.size() && i < without.size(); ++i) largest = (std::max)(largest, without[i] - withShadow[i]);
+		return largest;
+	};
+	const float legacy = shadowDepth(0, 80.0f);
+	const float cascaded = shadowDepth(3, 80.0f);
+	const float four = shadowDepth(4, 80.0f);
+	const float tooShort = shadowDepth(3, 2.0f); // everything visible is farther than this
+	CHECK_MSG(legacy > 10.0f, std::format("legacy {:.1f}", legacy));
+	CHECK_MSG(cascaded > 10.0f, std::format("cascaded {:.1f}", cascaded));
+	CHECK_MSG(four > 10.0f, std::format("four {:.1f}", four));
+	CHECK_MSG(tooShort < 1.0f, std::format("beyond the distance {:.1f}", tooShort));
+}
+
+TEST_CASE(Lighting, AmbientOcclusionDarkensContactsAndNotTheSky)
+{
+	LightingScene scene(s);
+	GameObject& floor = *s.FindGameObjectByName("Floor", false);
+	floor.isLit = false;
+	GameObject& box = s.CreateCube("Box", { 0.0f, 1.0f, 2.0f });
+	box.scale = { 3.0f, 2.0f, 3.0f };
+	box.isLit = false;
+	s.PostSettings().enabled = true;
+	s.PostSettings().toneMapping = false;
+	s.PostSettings().bloom = false;
+	s.PostSettings().fxaa = false;
+	const std::vector<float> off = scene.Capture();
+	s.PostSettings().ssao = true;
+	s.PostSettings().ssaoRadius = 1.5f;
+	const std::vector<float> on = scene.Capture();
+	REQUIRE(off.size() == on.size() && !on.empty());
+	float darkest = 0.0f;
+	float brighter = 0.0f;
+	for (size_t i = 0; i < on.size(); ++i) {
+		darkest = (std::max)(darkest, off[i] - on[i]);
+		brighter = (std::max)(brighter, on[i] - off[i]);
+	}
+	CHECK_MSG(darkest > 3.0f, std::format("darkest {:.1f}", darkest));
+	CHECK_MSG(brighter < 0.5f, std::format("brighter {:.1f}", brighter));
+}
+
+TEST_CASE(Lighting, InstancingDrawsTheSamePicture)
+{
+	LightingScene scene(s);
+	scene.AddSun({ 1.0f, 0.5f, 0.0f });
+	for (int i = 0; i < 40; ++i) {
+		GameObject& cube = s.CreateCube("Crowd", { -10.0f + (i % 8) * 3.0f, 0.5f + (i % 3), -4.0f + (i / 8) * 3.0f });
+		cube.materialColor = (i % 2) == 0 ? Vector4{ 0.9f, 0.3f, 0.2f, 1.0f } : Vector4{ 0.2f, 0.5f, 0.9f, 1.0f };
+		cube.rotation = { 0.0f, i * 0.2f, 0.0f };
+		cube.rotationQuat = Quaternion::FromEuler(cube.rotation);
+	}
+	A::Instancing(s) = false;
+	const std::vector<float> single = scene.Capture();
+	A::Instancing(s) = true;
+	const std::vector<float> instanced = scene.Capture();
+	REQUIRE(single.size() == instanced.size() && !single.empty());
+	float largest = 0.0f;
+	for (size_t i = 0; i < single.size(); ++i) largest = (std::max)(largest, std::abs(single[i] - instanced[i]));
+	CHECK_MSG(largest < 0.5f, std::format("largest difference {:.2f}", largest));
+}
+
+TEST_CASE(Lighting, MaterialAssetIsSharedAndSurvivesARestart)
+{
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "MaterialGame";
+	fs::create_directories(root / "Assets");
+	const fs::path savedRoot = A::ProjectRoot(s);
+	A::ProjectRoot(s) = root;
+
+	GameObject& first = s.CreateCube("Shared", { 0.0f, 0.0f, 0.0f });
+	PbrMaterialComponent* pbr = AddPbr(s, first);
+	REQUIRE(pbr != nullptr);
+	pbr->metallic = 0.75f;
+	pbr->roughness = 0.25f;
+	A::SaveMaterial(s, first, *pbr);
+	const std::string asset = pbr->material;
+	CHECK_MSG(asset == "Assets/Materials/Shared.material.json", "asset [" + asset + "]");
+	CHECK(fs::exists(root / asset));
+
+	GameObject& second = s.CreateCube("Other", { 2.0f, 0.0f, 0.0f });
+	PbrMaterialComponent* other = AddPbr(s, second);
+	REQUIRE(other != nullptr);
+	strncpy_s(other->material, asset.c_str(), _TRUNCATE);
+	const uint32_t secondId = second.id;
+
+	A::ForgetMaterials(s); // read back from the file
+	const PbrMaterialComponent* loaded = A::FindMaterial(s, asset);
+	REQUIRE(loaded != nullptr);
+	CHECK_NEAR(loaded->metallic, 0.75f, 1e-5f);
+	CHECK_NEAR(loaded->roughness, 0.25f, 1e-5f);
+
+	s.Update(0.0f, RizeEngine::GetInput());
+	s.RenderViewports(A::Dx(s)->GetCommandList(), false);
+	other = s.FindGameObjectById(secondId, false)->components.Get<PbrMaterialComponent>("PBR Material");
+	CHECK_NEAR(other->metallic, 0.75f, 1e-5f); // the asset's values reached the other object
+
+	CHECK(A::FindMaterial(s, "Assets/Materials/Missing.material.json") == nullptr);
+	A::ForgetMaterials(s);
+	A::ProjectRoot(s) = savedRoot;
+}
+
 // ===========================================================================
 // Runner
 // ===========================================================================

@@ -18,7 +18,8 @@ public:
 
 	/// Load texture (cached)
 	/// @return Texture handle ID
-	uint32_t LoadTexture(const std::string& filePath);
+	/// linear = data, not color (normal, roughness, ...): no sRGB decoding when sampled
+	uint32_t LoadTexture(const std::string& filePath, bool linear = false);
 
 	/// Create (or return the cached) RGBA8 texture from memory, e.g. a generated font atlas.
 	/// `cacheKey` must be unique and is never a file path. rgba holds width * height * 4 bytes, top row first.
@@ -47,6 +48,7 @@ public:
 
 	/// Default white texture handle
 	uint32_t GetDefaultWhiteTexture() const { return defaultWhiteHandle_; }
+	uint32_t GetDefaultNormalTexture();
 
 	/// Load cubemap texture (cached)
 	/// @return Texture handle ID (0 on failure)
@@ -80,6 +82,7 @@ private:
 	static const uint32_t kPreviewSrvSlotCount = 4;
 	DirectXCommon* dxCommon_ = nullptr;
 	uint32_t defaultWhiteHandle_ = 0;
+	uint32_t defaultNormalHandle_ = 0;
 	uint32_t defaultCubemapHandle_ = 0;
 	uint32_t previewSrvRingOffset_ = 0;
 	uint32_t currentPreviewSrvIndex_ = kPreviewSrvBaseIndex;

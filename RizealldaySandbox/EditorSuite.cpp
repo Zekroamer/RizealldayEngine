@@ -313,6 +313,7 @@ EditorSuite::~EditorSuite()
 	DestroyAllScriptInstances();
 	scriptModule_.Unload();
 	Object3d::StaticSetShadowMap(nullptr);
+	Object3d::StaticSetEnvironment({});
 	Object3d::StaticSetLightGroup(nullptr);
 }
 
@@ -435,12 +436,14 @@ void EditorSuite::Initialize(
 
 	// Setup Directional Light Shadow Map (2048x2048 depth texture at DSV #3, SRV #130)
 	shadowWorldTransform_.Initialize();
-	shadowMap_.Initialize(dxCommon_, &dxc_, nullptr, 3, 130);
+	shadowMap_.Initialize(dxCommon_, &dxc_, RizeEngine::GetGraphicPipeline()->GetRootSignature(), 3, 130);
 	Object3d::StaticSetShadowMap(&shadowMap_);
 
 	// Setup Skybox & Environment
 	TextureManager::CreateProceduralSkyboxDDS("Resources/skybox.dds");
 	skybox_.Initialize(dxCommon_, &dxc_);
+	environmentProbe_.Initialize(dxCommon_, &dxc_);
+	Object3d::StaticSetEnvironment(environmentProbe_.GetSrv());
 	RefreshAvailableCubemaps();
 
 	// Initialize Mapchip Grid
@@ -809,16 +812,13 @@ void EditorSuite::Update(float deltaTime, Input* input)
 
 	// 4. Authoritative Punctual Lights Sync to lights_ (LightGroup)
 	if (lights_) {
-		int ptCount = 0;
-		int spCount = 0;
 		bool hasDirectional = false;
 		// Every light slot starts disabled each frame; only lights that exist in the scene re-enable one.
 		// (The directional light used to stay on after its object was switched to Point/Spot, so the
 		// sphere received a second highlight from the stale directional light.)
 		lights_->GetDirectionalLight().active = 0;
 		lights_->SetShadowActive(0);
-		for (int i = 0; i < LightGroup::MaxPointLights; ++i) lights_->GetPointLight(i).active = 0;
-		for (int i = 0; i < LightGroup::MaxSpotLights; ++i) lights_->GetSpotLight(i).active = 0;
+		lights_->ClearLights();
 
 		// Forward (+Z) of the object's world rotation: the same rotation the object/gizmo is drawn with.
 		// (Building it from Euler X*Y*Z disagreed with Quaternion::FromEuler's Z-X-Y order when Z != 0.)
@@ -853,16 +853,16 @@ void EditorSuite::Update(float deltaTime, Input* input)
 				lights_->SetShadowBias(obj.lightShadowBias);
 				lights_->SetShadowStrength(obj.lightShadowStrength);
 				lights_->SetShadowNormalBias(obj.lightShadowNormalBias);
-			} else if (obj.lightType == GameObject::LightType::Point && ptCount < LightGroup::MaxPointLights) {
-				auto& pl = lights_->GetPointLight(ptCount++);
+			} else if (obj.lightType == GameObject::LightType::Point) {
+				PointLightData pl;
 				pl.position = worldPos;
 				pl.color = { obj.lightColor.x, obj.lightColor.y, obj.lightColor.z, 1.0f };
 				pl.intensity = obj.lightIntensity;
 				pl.radius = obj.lightRange;
 				pl.decay = obj.lightDecay;
-				pl.active = obj.lightEnabled ? 1 : 0;
-			} else if (obj.lightType == GameObject::LightType::Spot && spCount < LightGroup::MaxSpotLights) {
-				auto& sl = lights_->GetSpotLight(spCount++);
+				if (obj.lightEnabled) lights_->AddPointLight(pl);
+			} else if (obj.lightType == GameObject::LightType::Spot) {
+				SpotLightData sl;
 				sl.position = worldPos;
 
 				// Cone direction follows the Transform rotation (local forward is +Z)
@@ -880,7 +880,7 @@ void EditorSuite::Update(float deltaTime, Input* input)
 				if (sl.cosFalloffStart <= sl.cosAngle + 0.001f) {
 					sl.cosFalloffStart = sl.cosAngle + 0.001f;
 				}
-				sl.active = obj.lightEnabled ? 1 : 0;
+				if (obj.lightEnabled) lights_->AddSpotLight(sl);
 			}
 		}
 		lights_->Update();

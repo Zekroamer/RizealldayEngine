@@ -28,6 +28,20 @@ struct Material {
 	float outlineWidth = 0.0f; // world units; > 0 draws an inverted-hull outline (Object3d.Outline.*.hlsl)
 	float pad[2] = {};
 	Vector4 outlineColor = { 0.0f, 0.0f, 0.0f, 1.0f };
+	// PBR (lightingType 6); multiplied with the maps (see MaterialMaps)
+	float metallic = 0.0f;
+	float roughness = 0.5f;
+	float normalStrength = 1.0f;
+	float emissiveStrength = 0.0f;
+	Vector3 emissiveColor = { 1.0f, 1.0f, 1.0f };
+	float pad2 = 0.0f;
+};
+
+// Texture handles of the PBR maps; 0 = what the mesh brought along, else the neutral default
+struct MaterialMaps {
+	uint32_t normal = 0;
+	uint32_t orm = 0;
+	uint32_t emissive = 0;
 };
 
 struct MaterialData {

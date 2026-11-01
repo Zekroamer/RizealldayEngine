@@ -9,6 +9,7 @@ ShadowMap::~ShadowMap()
 	if (dxCommon_) {
 		if (textureResource_) dxCommon_->DeferRelease(textureResource_);
 		if (pipelineState_) dxCommon_->DeferRelease(pipelineState_);
+		if (instancedPipelineState_) dxCommon_->DeferRelease(instancedPipelineState_);
 		if (rootSignature_) dxCommon_->DeferRelease(rootSignature_);
 	}
 	textureResource_.Reset();
@@ -108,88 +109,8 @@ void ShadowMap::CreatePipeline(DXCManager* dxc, ID3D12RootSignature* rootSignatu
 {
 	ID3D12Device* device = dxCommon_->GetDevice();
 
-	if (rootSignature != nullptr) {
-		rootSignature_ = rootSignature;
-	} else {
-		D3D12_DESCRIPTOR_RANGE descriptorRange[1] = {};
-		descriptorRange[0].BaseShaderRegister = 0;
-		descriptorRange[0].NumDescriptors = 1;
-		descriptorRange[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-		descriptorRange[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-		D3D12_DESCRIPTOR_RANGE shadowRange[1] = {};
-		shadowRange[0].BaseShaderRegister = 1;
-		shadowRange[0].NumDescriptors = 1;
-		shadowRange[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-		shadowRange[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-		D3D12_ROOT_PARAMETER rootParameters[7] = {};
-		rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-		rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-		rootParameters[0].Descriptor.ShaderRegister = 0;
-
-		rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-		rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-		rootParameters[1].Descriptor.ShaderRegister = 0;
-
-		rootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-		rootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-		rootParameters[2].DescriptorTable.pDescriptorRanges = descriptorRange;
-		rootParameters[2].DescriptorTable.NumDescriptorRanges = 1;
-
-		rootParameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-		rootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-		rootParameters[3].Descriptor.ShaderRegister = 1;
-
-		rootParameters[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-		rootParameters[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-		rootParameters[4].Descriptor.ShaderRegister = 1;
-
-		rootParameters[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-		rootParameters[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-		rootParameters[5].Descriptor.ShaderRegister = 2;
-
-		rootParameters[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-		rootParameters[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-		rootParameters[6].DescriptorTable.pDescriptorRanges = shadowRange;
-		rootParameters[6].DescriptorTable.NumDescriptorRanges = 1;
-
-		D3D12_STATIC_SAMPLER_DESC staticSamplers[2] = {};
-		staticSamplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-		staticSamplers[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-		staticSamplers[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-		staticSamplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-		staticSamplers[0].ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-		staticSamplers[0].MaxLOD = D3D12_FLOAT32_MAX;
-		staticSamplers[0].ShaderRegister = 0;
-		staticSamplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-		staticSamplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
-		staticSamplers[1].AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-		staticSamplers[1].AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-		staticSamplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-		staticSamplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-		staticSamplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-		staticSamplers[1].MaxLOD = D3D12_FLOAT32_MAX;
-		staticSamplers[1].ShaderRegister = 1;
-		staticSamplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-		D3D12_ROOT_SIGNATURE_DESC rootDesc{};
-		rootDesc.pParameters = rootParameters;
-		rootDesc.NumParameters = _countof(rootParameters);
-		rootDesc.pStaticSamplers = staticSamplers;
-		rootDesc.NumStaticSamplers = _countof(staticSamplers);
-		rootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-		Microsoft::WRL::ComPtr<ID3DBlob> sigBlob, errBlob;
-		HRESULT hr = D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sigBlob, &errBlob);
-		if (FAILED(hr)) {
-			if (errBlob) Log::GetInstance()->logOutput(reinterpret_cast<char*>(errBlob->GetBufferPointer()));
-			assert(false);
-		}
-		hr = device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&rootSignature_));
-		assert(SUCCEEDED(hr));
-	}
+	assert(rootSignature != nullptr);
+	rootSignature_ = rootSignature; // the object pipeline's: casters bind the same transform, bones and instances
 
 	// Input Elements
 	D3D12_INPUT_ELEMENT_DESC inputElementDescs[5] = {};
@@ -260,6 +181,13 @@ void ShadowMap::CreatePipeline(DXCManager* dxc, ID3D12RootSignature* rootSignatu
 
 	HRESULT hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipelineState_));
 	assert(SUCCEEDED(hr));
+
+	Microsoft::WRL::ComPtr<IDxcBlob> instancedBlob = dxc->CompileShader(L"shaders/Shadow.Instanced.VS.hlsl", L"vs_6_0",
+		dxc->GetDxcUtils(), dxc->GetDxcCompiler(), dxc->GetIncludeHandler());
+	assert(instancedBlob != nullptr);
+	psoDesc.VS = { instancedBlob->GetBufferPointer(), instancedBlob->GetBufferSize() };
+	hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&instancedPipelineState_));
+	assert(SUCCEEDED(hr));
 }
 
 void ShadowMap::BeginShadowPass(ID3D12GraphicsCommandList* cmdList)
@@ -283,6 +211,16 @@ void ShadowMap::BeginShadowPass(ID3D12GraphicsCommandList* cmdList)
 
 	cmdList->SetGraphicsRootSignature(rootSignature_.Get());
 	cmdList->SetPipelineState(pipelineState_.Get());
+}
+
+void ShadowMap::SetCascadeTile(ID3D12GraphicsCommandList* cmdList, int cascade)
+{
+	const LONG x = static_cast<LONG>((cascade % 2) * kTileSize);
+	const LONG y = static_cast<LONG>((cascade / 2) * kTileSize);
+	const D3D12_VIEWPORT viewport{ static_cast<float>(x), static_cast<float>(y), static_cast<float>(kTileSize), static_cast<float>(kTileSize), 0.0f, 1.0f };
+	const D3D12_RECT scissor{ x, y, x + static_cast<LONG>(kTileSize), y + static_cast<LONG>(kTileSize) };
+	cmdList->RSSetViewports(1, &viewport);
+	cmdList->RSSetScissorRects(1, &scissor);
 }
 
 void ShadowMap::EndShadowPass(ID3D12GraphicsCommandList* cmdList)

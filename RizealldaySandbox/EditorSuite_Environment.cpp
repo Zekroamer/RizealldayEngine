@@ -39,7 +39,19 @@ void EditorSuite::DrawPostProcessSettingsUI()
 	changed |= ImGui::DragFloat(TrId("Vignette"), &post.vignette, 0.01f, 0.0f, 1.0f);
 	changed |= ImGui::DragFloat(TrId("Letterbox"), &post.letterbox, 0.002f, 0.0f, 0.45f);
 	changed |= ImGui::Checkbox(TrId("FXAA"), &post.fxaa);
+	changed |= ImGui::Checkbox(TrId("Ambient Occlusion"), &post.ssao);
+	changed |= ImGui::DragFloat(TrId("Occlusion Radius"), &post.ssaoRadius, 0.01f, 0.05f, 5.0f);
+	changed |= ImGui::DragFloat(TrId("Occlusion Intensity"), &post.ssaoIntensity, 0.01f, 0.0f, 3.0f);
 	ImGui::EndDisabled();
+
+	ImGui::Spacing();
+	ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s", Tr("Lighting Quality"));
+	ImGui::Separator();
+	changed |= ImGui::SliderInt(TrId("Shadow Cascades"), &post.shadowCascades, 0, 4);
+	ImGui::SetItemTooltip("%s", Tr("0 = one shadow map over the whole scene. More = sharper shadows near the camera."));
+	changed |= ImGui::DragFloat(TrId("Shadow Distance"), &post.shadowDistance, 1.0f, 5.0f, 1000.0f);
+	changed |= ImGui::DragFloat(TrId("Environment Intensity"), &post.environmentIntensity, 0.01f, 0.0f, 10.0f);
+	ImGui::SetItemTooltip("%s", Tr("How much the sky lights PBR materials"));
 	if (changed) {
 		isSceneDirty_ = true;
 		PushUndoSnapshot();

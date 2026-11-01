@@ -25,6 +25,13 @@ struct PostProcessSettings {
 	Vector3 tint = { 1.0f, 1.0f, 1.0f };
 	float vignette = 0.0f;
 	float letterbox = 0.0f; // fraction of the height covered at the top and at the bottom
+	bool ssao = false;
+	float ssaoRadius = 0.6f; // world units
+	float ssaoIntensity = 1.0f;
+	// Lighting quality of the scene; saved here with the rest of its look, read by the renderer
+	int shadowCascades = 0; // 0 = one shadow map over all casters (scenes from before cascades)
+	float shadowDistance = 80.0f;
+	float environmentIntensity = 1.0f;
 };
 
 /// HDR scene -> 8-bit output. Knows nothing about the editor: it takes textures and settings.
@@ -34,6 +41,9 @@ public:
 	static constexpr int kMaxScreenEffects = 4;
 	static constexpr int kBloomLevels = 5;
 	static constexpr int kScreenEffectParams = 16;
+
+	/// The camera of the next Prepare (ambient occlusion rebuilds positions from depth)
+	void SetCamera(float tanHalfFovX, float tanHalfFovY, float nearZ, float farZ, bool perspective);
 
 	~PostProcess();
 	void Initialize(DirectXCommon* dxCommon, DXCManager* dxc);
@@ -94,13 +104,17 @@ private:
 	DXCManager* dxc_ = nullptr;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature_;
 	Microsoft::WRL::ComPtr<IDxcBlob> vertexShader_;
-	Microsoft::WRL::ComPtr<ID3D12PipelineState> compositeFinal_, compositeTemp_, fxaaFinal_, bloomDown_, bloomUp_;
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> compositeFinal_, compositeTemp_, fxaaFinal_, bloomDown_, bloomUp_, ssaoPass_, ssaoBlur_;
 	std::map<std::wstring, Microsoft::WRL::ComPtr<ID3D12PipelineState>> effectPsos_;
 	ScreenEffect effects_[kMaxScreenEffects];
 
 	Target effectTargets_[2];
 	Target fxaaSource_;
 	Target bloom_[kBloomLevels];
+	Target ssao_[2];
+	float cameraInfo_[4] = { 1.0f, 1.0f, 0.1f, 1000.0f };
+	bool cameraPerspective_ = true;
+	D3D12_GPU_DESCRIPTOR_HANDLE occlusion_{};
 
 	// Result of the last Prepare, consumed by Composite
 	Constants composite_{};

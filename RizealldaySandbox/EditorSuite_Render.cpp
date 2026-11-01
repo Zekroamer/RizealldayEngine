@@ -1,4 +1,5 @@
 ﻿#include "EditorSuiteInternal.h"
+#include <cfloat>
 
 void EditorSuite::CalculateLightViewProjection()
 {
@@ -101,7 +102,106 @@ void EditorSuite::CalculateLightViewProjection()
 	lightViewProjectionMatrix_ = Mathematics::Multiply(viewMat, projMat);
 }
 
-void EditorSuite::RenderShadowPass(ID3D12GraphicsCommandList* cmdList)
+Model* EditorSuite::ResolveMeshModel(const GameObject& obj)
+{
+	switch (obj.meshType) {
+	case GameObject::MeshType::Cube: return Model::CreateCube();
+	case GameObject::MeshType::Sphere: return Model::CreateSphere();
+	case GameObject::MeshType::Plane: return Model::CreatePlane();
+	case GameObject::MeshType::Quad: return Model::CreateQuad();
+	case GameObject::MeshType::CustomModel:
+		if (!obj.modelPath.empty()) {
+			std::filesystem::path mp(ResolveAssetPath(obj.modelPath));
+			return Model::CreateFromFile(mp.parent_path().string(), mp.filename().string());
+		}
+		return nullptr;
+	default: return nullptr;
+	}
+}
+
+int EditorSuite::ComputeShadowCascades(const Camera& camera, ShadowCascade outCascades[LightGroup::kMaxCascades])
+{
+	if (postSettings_.shadowCascades <= 0) {
+		CalculateLightViewProjection();
+		outCascades[0] = { lightViewProjectionMatrix_, FLT_MAX, 1.0f, 1.0f };
+		return 1;
+	}
+
+	Vector3 lightDir = { 0.0f, -1.0f, 0.0f };
+	for (const auto& obj : gameObjects_) {
+		if (obj.isActive && obj.hasLight && obj.lightEnabled && obj.lightType == GameObject::LightType::Directional) {
+			const float len = std::sqrt(obj.lightDirection.x * obj.lightDirection.x + obj.lightDirection.y * obj.lightDirection.y + obj.lightDirection.z * obj.lightDirection.z);
+			if (len > 0.0001f) lightDir = { obj.lightDirection.x / len, obj.lightDirection.y / len, obj.lightDirection.z / len };
+			break;
+		}
+	}
+	const int count = (std::min)(postSettings_.shadowCascades, LightGroup::kMaxCascades);
+	const float nearZ = (std::max)(camera.nearClip, 0.01f);
+	const float farZ = std::clamp(postSettings_.shadowDistance, nearZ * 2.0f, (std::max)(camera.farClip, nearZ * 2.0f));
+	const Matrix4x4& proj = camera.GetProjectionMatrix();
+	const Matrix4x4 invViewProj = Mathematics::Inverse(camera.GetViewProjectionMatrix());
+	const auto ndcDepth = [&](float z) { return (proj.m[2][2] * z + proj.m[3][2]) / (proj.m[2][3] * z + proj.m[3][3]); };
+	const auto unproject = [&](float x, float y, float ndcZ) {
+		const float wx = x * invViewProj.m[0][0] + y * invViewProj.m[1][0] + ndcZ * invViewProj.m[2][0] + invViewProj.m[3][0];
+		const float wy = x * invViewProj.m[0][1] + y * invViewProj.m[1][1] + ndcZ * invViewProj.m[2][1] + invViewProj.m[3][1];
+		const float wz = x * invViewProj.m[0][2] + y * invViewProj.m[1][2] + ndcZ * invViewProj.m[2][2] + invViewProj.m[3][2];
+		const float w = x * invViewProj.m[0][3] + y * invViewProj.m[1][3] + ndcZ * invViewProj.m[2][3] + invViewProj.m[3][3];
+		return Vector3{ wx / w, wy / w, wz / w };
+	};
+
+	Vector3 up = { 0.0f, 1.0f, 0.0f };
+	if (std::abs(lightDir.y) > 0.99f) up = { 0.0f, 0.0f, 1.0f };
+	const auto dot = [](const Vector3& a, const Vector3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
+	const auto cross = [](const Vector3& a, const Vector3& b) { return Vector3{ a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; };
+	Vector3 right = cross(up, lightDir);
+	const float rightLen = std::sqrt(dot(right, right));
+	right = { right.x / rightLen, right.y / rightLen, right.z / rightLen };
+	const Vector3 realUp = cross(lightDir, right);
+
+	constexpr float kCasterReach = 100.0f; // casters this far behind a cascade still throw shadows into it
+	constexpr float kLegacyDepthRange = 119.9f; // the shadow bias settings were tuned for this range
+	constexpr float kLegacyOrthoSize = 20.0f;
+	float previousEnd = nearZ;
+	for (int i = 0; i < count; ++i) {
+		const float t = static_cast<float>(i + 1) / static_cast<float>(count);
+		const float uniform = nearZ + (farZ - nearZ) * t;
+		const float logarithmic = nearZ * std::pow(farZ / nearZ, t);
+		const float end = i == count - 1 ? farZ : logarithmic * 0.75f + uniform * 0.25f;
+
+		Vector3 corners[8];
+		int cornerIndex = 0;
+		for (const float depth : { ndcDepth(previousEnd), ndcDepth(end) }) {
+			for (const float x : { -1.0f, 1.0f }) {
+				for (const float y : { -1.0f, 1.0f }) corners[cornerIndex++] = unproject(x, y, depth);
+			}
+		}
+		Vector3 center{};
+		for (const Vector3& c : corners) center = { center.x + c.x * 0.125f, center.y + c.y * 0.125f, center.z + c.z * 0.125f };
+		float radius = 0.0f;
+		for (const Vector3& c : corners) {
+			const Vector3 d = { c.x - center.x, c.y - center.y, c.z - center.z };
+			radius = (std::max)(radius, std::sqrt(dot(d, d)));
+		}
+		radius = std::ceil(radius * 16.0f) / 16.0f; // a constant size and whole-texel steps keep the edges from crawling
+
+		const float texel = 2.0f * radius / static_cast<float>(ShadowMap::kTileSize);
+		const float cx = std::round(dot(center, right) / texel) * texel;
+		const float cy = std::round(dot(center, realUp) / texel) * texel;
+		const float cz = dot(center, lightDir) - radius - kCasterReach;
+
+		Matrix4x4 view = Mathematics::MakeIdentity4x4();
+		view.m[0][0] = right.x; view.m[1][0] = right.y; view.m[2][0] = right.z; view.m[3][0] = -cx;
+		view.m[0][1] = realUp.x; view.m[1][1] = realUp.y; view.m[2][1] = realUp.z; view.m[3][1] = -cy;
+		view.m[0][2] = lightDir.x; view.m[1][2] = lightDir.y; view.m[2][2] = lightDir.z; view.m[3][2] = -cz;
+		const float depthRange = 2.0f * radius + kCasterReach;
+		const Matrix4x4 ortho = Mathematics::MakeOrthographicMatrix(-radius, radius, radius, -radius, 0.0f, depthRange);
+		outCascades[i] = { Mathematics::Multiply(view, ortho), end, kLegacyDepthRange / depthRange, radius / kLegacyOrthoSize };
+		previousEnd = end;
+	}
+	return count;
+}
+
+void EditorSuite::RenderShadowPass(ID3D12GraphicsCommandList* cmdList, const Camera& camera)
 {
 	bool dirFound = false;
 	bool castShadows = true;
@@ -130,10 +230,14 @@ void EditorSuite::RenderShadowPass(ID3D12GraphicsCommandList* cmdList)
 		return;
 	}
 
-	CalculateLightViewProjection();
+	ShadowCascade cascades[LightGroup::kMaxCascades];
+	const int cascadeCount = ComputeShadowCascades(camera, cascades);
 
 	if (lights_) {
-		lights_->SetLightViewProjection(lightViewProjectionMatrix_);
+		lights_->ClearCascades();
+		for (int i = 0; i < cascadeCount; ++i) {
+			lights_->SetCascade(i, cascades[i].lightViewProjection, cascades[i].end, cascades[i].depthScale, cascades[i].normalScale);
+		}
 		lights_->SetShadowActive(1);
 		lights_->SetShadowBias(shadowBias);
 		lights_->SetShadowStrength(shadowStrength);
@@ -141,36 +245,39 @@ void EditorSuite::RenderShadowPass(ID3D12GraphicsCommandList* cmdList)
 		lights_->Update();
 	}
 
-	shadowMap_.BeginShadowPass(cmdList);
-
-	Frustum shadowFrustum = Frustum::ExtractFromViewProjection(lightViewProjectionMatrix_);
-
-	for (auto& obj : gameObjects_) {
-		if (!obj.isActive || !obj.hasMesh || !obj.meshEnabled || !obj.castShadow) {
-			continue;
-		}
-
+	struct Caster {
+		GameObject* obj = nullptr;
 		Model* model = nullptr;
-		if (obj.meshType == GameObject::MeshType::Cube) {
-			model = Model::CreateCube();
-		} else if (obj.meshType == GameObject::MeshType::Sphere) {
-			model = Model::CreateSphere();
-		} else if (obj.meshType == GameObject::MeshType::Plane) {
-			model = Model::CreatePlane();
-		} else if (obj.meshType == GameObject::MeshType::Quad) {
-			model = Model::CreateQuad();
-		} else if (obj.meshType == GameObject::MeshType::CustomModel && !obj.modelPath.empty()) {
-			std::filesystem::path mp(ResolveAssetPath(obj.modelPath));
-			model = Model::CreateFromFile(mp.parent_path().string(), mp.filename().string());
-		}
+		AABB bounds{};
+	};
+	std::vector<Caster> casters;
+	casters.reserve(gameObjects_.size());
+	for (auto& obj : gameObjects_) {
+		if (!obj.isActive || !obj.hasMesh || !obj.meshEnabled || !obj.castShadow) continue;
+		Model* model = ResolveMeshModel(obj);
+		if (model) casters.push_back({ &obj, model, Frustum::TransformAABB(model->GetLocalAABB(), obj.worldMatrix) });
+	}
 
-		if (!model) continue;
+	shadowMap_.BeginShadowPass(cmdList);
+	std::unordered_map<Model*, std::vector<Matrix4x4>> instances;
+	for (int cascade = 0; cascade < cascadeCount; ++cascade) {
+		const Matrix4x4& lightViewProjection = cascades[cascade].lightViewProjection;
+		shadowMap_.SetCascadeTile(cmdList, cascade);
+		const Frustum frustum = Frustum::ExtractFromViewProjection(lightViewProjection);
+		for (auto& [model, matrices] : instances) matrices.clear();
 
-		if (!obj.shadowTransform) {
-			obj.shadowTransform = std::make_unique<WorldTransform>();
-			obj.shadowTransform->Initialize();
-		}
-		{
+		cmdList->SetPipelineState(shadowMap_.GetPipelineState());
+		for (const Caster& caster : casters) {
+			if (enableFrustumCulling_ && !frustum.IsAABBVisible(caster.bounds)) continue;
+			if (enableInstancing_ && !caster.model->HasBones()) {
+				instances[caster.model].push_back(Mathematics::Multiply(caster.obj->worldMatrix, lightViewProjection));
+				continue;
+			}
+			GameObject& obj = *caster.obj;
+			if (!obj.shadowTransform) {
+				obj.shadowTransform = std::make_unique<WorldTransform>();
+				obj.shadowTransform->Initialize();
+			}
 			Vector3 wPos{};
 			Quaternion wRot = Quaternion::Identity();
 			Vector3 wScale{};
@@ -179,27 +286,29 @@ void EditorSuite::RenderShadowPass(ID3D12GraphicsCommandList* cmdList)
 			obj.shadowTransform->rotation = (obj.parentId == -1) ? obj.rotation : wRot.ToEuler();
 			obj.shadowTransform->scale = wScale;
 			obj.shadowTransform->rotationQuat = wRot;
-		}
-		obj.shadowTransform->UpdateMatrix(lightViewProjectionMatrix_);
+			obj.shadowTransform->UpdateMatrix(lightViewProjection);
 
-		if (enableFrustumCulling_) {
-			AABB worldBox = Frustum::TransformAABB(model->GetLocalAABB(), obj.shadowTransform->matWorld);
-			if (!shadowFrustum.IsAABBVisible(worldBox)) {
-				continue;
+			const D3D12_GPU_VIRTUAL_ADDRESS shadowTransformAddr = obj.shadowTransform->Upload();
+			if (shadowTransformAddr == 0) continue;
+			cmdList->SetGraphicsRootConstantBufferView(1, shadowTransformAddr);
+			// Skinned casters use the animated palette of the edit (or game) instance; others get the shared identity
+			const Object3d* paletteSource = obj.editObject3d ? obj.editObject3d.get() : obj.gameObject3d.get();
+			if (paletteSource) {
+				if (const D3D12_GPU_VIRTUAL_ADDRESS boneAddr = paletteSource->UploadBonePalette()) {
+					cmdList->SetGraphicsRootConstantBufferView(4, boneAddr);
+				}
 			}
+			caster.model->DrawGeometry(cmdList);
 		}
 
-		const D3D12_GPU_VIRTUAL_ADDRESS shadowTransformAddr = obj.shadowTransform->Upload();
-		if (shadowTransformAddr == 0) continue;
-		cmdList->SetGraphicsRootConstantBufferView(1, shadowTransformAddr);
-		// Skinned casters use the animated palette of the edit (or game) instance; others get the shared identity
-		const Object3d* paletteSource = obj.editObject3d ? obj.editObject3d.get() : obj.gameObject3d.get();
-		if (paletteSource) {
-			if (const D3D12_GPU_VIRTUAL_ADDRESS boneAddr = paletteSource->UploadBonePalette()) {
-				cmdList->SetGraphicsRootConstantBufferView(4, boneAddr);
-			}
+		cmdList->SetPipelineState(shadowMap_.GetInstancedPipelineState());
+		for (const auto& [model, matrices] : instances) {
+			if (matrices.empty()) continue;
+			const D3D12_GPU_VIRTUAL_ADDRESS address = dxCommon_->UploadData(matrices.data(), matrices.size() * sizeof(Matrix4x4));
+			if (address == 0) continue;
+			cmdList->SetGraphicsRootShaderResourceView(14, address);
+			model->DrawGeometry(cmdList, static_cast<UINT>(matrices.size()));
 		}
-		model->Draw(cmdList);
 	}
 
 	shadowMap_.EndShadowPass(cmdList);
@@ -216,6 +325,15 @@ void EditorSuite::RenderScene3D(ID3D12GraphicsCommandList* cmdList, Camera& came
 	int visibleCount = 0;
 	int culledCount = 0;
 
+	// Static meshes with the same model and material become one instanced draw
+	struct InstanceGroup {
+		Object3d* first = nullptr;
+		std::vector<TransformationMatrix> matrices;
+	};
+	std::unordered_map<uint64_t, size_t> groupIndex;
+	std::vector<InstanceGroup> groups;
+	std::vector<Object3d*> singles;
+
 	for (auto& obj : gameObjects_) {
 		if (!obj.isActive || !obj.hasMesh || !obj.meshEnabled) {
 			continue;
@@ -228,19 +346,7 @@ void EditorSuite::RenderScene3D(ID3D12GraphicsCommandList* cmdList, Camera& came
 		}
 
 		// Bind Model Primitive or Custom 3D Mesh
-		Model* model = nullptr;
-		if (obj.meshType == GameObject::MeshType::Cube) {
-			model = Model::CreateCube();
-		} else if (obj.meshType == GameObject::MeshType::Sphere) {
-			model = Model::CreateSphere();
-		} else if (obj.meshType == GameObject::MeshType::Plane) {
-			model = Model::CreatePlane();
-		} else if (obj.meshType == GameObject::MeshType::Quad) {
-			model = Model::CreateQuad();
-		} else if (obj.meshType == GameObject::MeshType::CustomModel && !obj.modelPath.empty()) {
-			std::filesystem::path mp(ResolveAssetPath(obj.modelPath));
-			model = Model::CreateFromFile(mp.parent_path().string(), mp.filename().string());
-		}
+		Model* model = ResolveMeshModel(obj);
 
 		if (model && obj3d->GetModel() != model) {
 			obj3d->SetModel(model);
@@ -262,7 +368,11 @@ void EditorSuite::RenderScene3D(ID3D12GraphicsCommandList* cmdList, Camera& came
 			mat->outlineColor = obj.outlineColor;
 		}
 
-		obj3d->SetTextureHandle(obj.textureHandle);
+		MaterialMaps maps;
+		uint32_t albedoHandle = obj.textureHandle;
+		if (mat) ApplyPbrMaterial(obj, *mat, maps, albedoHandle);
+		obj3d->SetMaterialMaps(maps);
+		obj3d->SetTextureHandle(albedoHandle);
 		GeometryShaderMode gsMode = static_cast<GeometryShaderMode>(obj.geometryShaderEffect);
 		if (gsMode == GeometryShaderMode::None && obj.useGeometryShader) {
 			gsMode = GeometryShaderMode::PassThrough;
@@ -307,8 +417,43 @@ void EditorSuite::RenderScene3D(ID3D12GraphicsCommandList* cmdList, Camera& came
 		}
 
 		visibleCount++;
-		obj3d->Draw(cmdList);
+		if (enableInstancing_ && model && mat && !model->HasBones() && gsMode == GeometryShaderMode::None && !obj.useGeometryShader &&
+			obj3d->GetBlendMode() == BlendMode::Opaque && mat->outlineWidth <= 0.0f) {
+			// FNV-1a over everything that must match. A 64-bit collision would only give one object the other's material.
+			uint64_t hash = 14695981039346656037ull;
+			const auto mix = [&hash](const void* data, size_t size) {
+				const auto* bytes = static_cast<const unsigned char*>(data);
+				for (size_t i = 0; i < size; ++i) { hash ^= bytes[i]; hash *= 1099511628211ull; }
+			};
+			mix(&model, sizeof(model));
+			mix(&albedoHandle, sizeof(albedoHandle));
+			mix(&maps, sizeof(maps));
+			mix(mat, sizeof(Material));
+			const auto [entry, isNew] = groupIndex.try_emplace(hash, groups.size());
+			if (isNew) groups.push_back({ obj3d.get(), {} });
+			groups[entry->second].matrices.push_back(obj3d->worldTransform.GetMatrices());
+			continue;
+		}
+		singles.push_back(obj3d.get());
 	}
+
+	// Instanced groups are opaque, so they go first: blended singles must see them in the depth buffer
+	GraphicPipeline* pipeline = RizeEngine::GetGraphicPipeline();
+	for (const InstanceGroup& group : groups) {
+		if (group.matrices.size() == 1 || !pipeline) {
+			singles.insert(singles.begin(), group.first);
+			continue;
+		}
+		const D3D12_GPU_VIRTUAL_ADDRESS materialAddr = dxCommon_->UploadConstants(*group.first->GetMaterial());
+		const D3D12_GPU_VIRTUAL_ADDRESS instanceAddr = dxCommon_->UploadData(group.matrices.data(), group.matrices.size() * sizeof(TransformationMatrix));
+		if (materialAddr == 0 || instanceAddr == 0) continue;
+		pipeline->BindInstanced(cmdList);
+		cmdList->SetGraphicsRootConstantBufferView(0, materialAddr);
+		cmdList->SetGraphicsRootShaderResourceView(14, instanceAddr);
+		Object3d::BindSceneData(cmdList, &camera);
+		group.first->GetModel()->Draw(cmdList, group.first->GetTextureHandle(), &group.first->GetMaterialMaps(), static_cast<UINT>(group.matrices.size()));
+	}
+	for (Object3d* single : singles) single->Draw(cmdList);
 
 	if (isEditView) {
 		lastVisibleObjects_ = visibleCount;
@@ -328,19 +473,29 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 
 	bool activeParticles = HasActiveParticleSystem() && showParticles;
 
-	// 0. Directional Light Shadow Pass (Render active casters into shadow map)
-	{
+	environmentProbe_.Update(cmdList, skybox_);
+	if (lights_) lights_->SetEnvironment(postSettings_.environmentIntensity, environmentProbe_.GetMaxMip());
+	if (previewLights_) previewLights_->SetEnvironment(1.0f, environmentProbe_.GetMaxMip());
+
+	// Shadows and light clusters depend on the camera, so each view prepares its own
+	const auto prepareView = [&](const Camera& camera, const RenderTexture& target) {
 		RIZE_PROFILE_GPU(cmdList, "Shadow Pass");
-		RenderShadowPass(cmdList);
-	}
+		RenderShadowPass(cmdList, camera);
+		if (lights_) lights_->SetView(camera, target.GetWidth(), target.GetHeight());
+	};
+	const auto setPostCamera = [&](const Camera& camera) {
+		const Matrix4x4& proj = camera.GetProjectionMatrix();
+		postProcess_.SetCamera(1.0f / proj.m[0][0], 1.0f / proj.m[1][1], camera.nearClip, camera.farClip, proj.m[3][3] == 0.0f);
+	};
 
 #ifdef USE_IMGUI
 	// 1. Render to EDIT VIEW (Scene Camera)
 	const uint32_t sceneViewScope = Profiler::GetInstance()->BeginGpu(cmdList, "Scene View");
 	{
 	RIZE_PROFILE_CPU("Record Scene View");
-	editSceneRT_.BeginRender();
 	editorCamera_.Update();
+	prepareView(editorCamera_, editSceneRT_);
+	editSceneRT_.BeginRender();
 	skybox_.Draw(cmdList, editorCamera_);
 	RenderScene3D(cmdList, editorCamera_, true);
 	if (showGrid_) {
@@ -373,9 +528,13 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 	const uint32_t gameViewScope = Profiler::GetInstance()->BeginGpu(cmdList, "Game View");
 	{
 	RIZE_PROFILE_CPU("Record Game View");
-	gameSceneRT_.BeginRender();
 	if (gameCamera_) {
 		gameCamera_->Update();
+		prepareView(*gameCamera_, gameSceneRT_);
+		setPostCamera(*gameCamera_);
+	}
+	gameSceneRT_.BeginRender();
+	if (gameCamera_) {
 		skybox_.Draw(cmdList, *gameCamera_);
 		RenderScene3D(cmdList, *gameCamera_, false);
 		if (activeParticles) {
@@ -412,7 +571,7 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 
 		if (previewLights_) {
 			previewLights_->SetCameraPosition(previewCamera_.translation);
-			previewLights_->Update();
+			previewLights_->SetView(previewCamera_, previewSceneRT_.GetWidth(), previewSceneRT_.GetHeight());
 			Object3d::StaticSetLightGroup(previewLights_.get());
 		}
 
@@ -452,10 +611,14 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 		dxCommon_->SignalAndWaitFence(); // the scene descriptors are rewritten in place
 		InitializeGameSceneTarget(dxCommon_->GetClientWidth(), dxCommon_->GetClientHeight());
 	}
+	if (gameCamera_) {
+		gameCamera_->Update();
+		prepareView(*gameCamera_, gameSceneRT_);
+		setPostCamera(*gameCamera_);
+	}
 	RIZE_PROFILE_GPU(cmdList, "Game View");
 	gameSceneRT_.BeginRender();
 	if (gameCamera_) {
-		gameCamera_->Update();
 		skybox_.Draw(cmdList, *gameCamera_);
 		RenderScene3D(cmdList, *gameCamera_, true);
 		if (activeParticles) {

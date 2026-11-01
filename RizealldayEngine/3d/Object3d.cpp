@@ -4,6 +4,7 @@
 #include "3d/ShadowMap.h"
 #include "base/DirectXCommon.h"
 #include "base/GraphicPipeline.h"
+#include "base/TextureManager.h"
 #include "3d/Model.h"
 #include <algorithm>
 #include <cmath>
@@ -13,6 +14,7 @@ DirectXCommon* Object3d::sDxCommon_ = nullptr;
 GraphicPipeline* Object3d::sPipeline_ = nullptr;
 LightGroup* Object3d::sLightGroup_ = nullptr;
 ShadowMap* Object3d::sShadowMap_ = nullptr;
+D3D12_GPU_DESCRIPTOR_HANDLE Object3d::sEnvironment_{};
 
 void Object3d::StaticInitialize(DirectXCommon* dxCommon) {
     sDxCommon_ = dxCommon;
@@ -28,6 +30,26 @@ void Object3d::StaticSetLightGroup(LightGroup* lights) {
 
 void Object3d::StaticSetShadowMap(ShadowMap* shadowMap) {
     sShadowMap_ = shadowMap;
+}
+
+void Object3d::StaticSetEnvironment(D3D12_GPU_DESCRIPTOR_HANDLE cube) {
+    sEnvironment_ = cube;
+}
+
+void Object3d::BindSceneData(ID3D12GraphicsCommandList* cmdList, Camera* camera) {
+    if (sLightGroup_) {
+        sLightGroup_->Draw(cmdList, 3);
+    }
+    D3D12_GPU_VIRTUAL_ADDRESS camAddr = camera ? camera->GetGPUVirtualAddress() : Camera::GetDefaultGPUVirtualAddress();
+    if (camAddr != 0) {
+        cmdList->SetGraphicsRootConstantBufferView(5, camAddr);
+    }
+    if (sShadowMap_) {
+        cmdList->SetGraphicsRootDescriptorTable(6, sShadowMap_->GetSrvGPUHandle());
+    }
+    TextureManager* textures = TextureManager::GetInstance();
+    const D3D12_GPU_DESCRIPTOR_HANDLE environment = sEnvironment_.ptr != 0 ? sEnvironment_ : textures->GetGPUHandle(textures->GetDefaultCubemapTexture());
+    cmdList->SetGraphicsRootDescriptorTable(10, environment);
 }
 
 Object3d::~Object3d() = default;
@@ -170,27 +192,15 @@ void Object3d::Draw(ID3D12GraphicsCommandList* cmdList) {
     cmdList->SetGraphicsRootConstantBufferView(0, materialAddr);
     cmdList->SetGraphicsRootConstantBufferView(1, transformAddr);
 
-    if (sLightGroup_) {
-        sLightGroup_->Draw(cmdList, 3);
-    }
-
     cmdList->SetGraphicsRootConstantBufferView(4, boneAddr);
-
-    D3D12_GPU_VIRTUAL_ADDRESS camAddr = camera_ ? camera_->GetGPUVirtualAddress() : Camera::GetDefaultGPUVirtualAddress();
-    if (camAddr != 0) {
-        cmdList->SetGraphicsRootConstantBufferView(5, camAddr);
-    }
-
-    if (sShadowMap_) {
-        cmdList->SetGraphicsRootDescriptorTable(6, sShadowMap_->GetSrvGPUHandle());
-    }
+    BindSceneData(cmdList, camera_);
 
     if (model_) {
-        model_->Draw(cmdList, textureHandle_);
+        model_->Draw(cmdList, textureHandle_, &materialMaps_);
         // Toon outline: the same mesh again, pushed out along its normals, back faces only
         if (material_.outlineWidth > 0.0f && sPipeline_ && sPipeline_->HasOutline()) {
             sPipeline_->BindOutline(cmdList);
-            model_->Draw(cmdList, textureHandle_);
+            model_->Draw(cmdList, textureHandle_, &materialMaps_);
         }
     }
 }

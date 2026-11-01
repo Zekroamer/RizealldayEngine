@@ -22,6 +22,9 @@ public:
 	static void StaticSetPipeline(GraphicPipeline* p);
 	static void StaticSetLightGroup(LightGroup* lights);
 	static void StaticSetShadowMap(ShadowMap* shadowMap);
+	static void StaticSetEnvironment(D3D12_GPU_DESCRIPTOR_HANDLE cube);
+	// Lights, camera, shadow map and environment: what every object of a view shares
+	static void BindSceneData(ID3D12GraphicsCommandList* cmdList, Camera* camera);
 
 	void Initialize();
 	void Update(float deltaTime = 1.0f / 60.0f);
@@ -71,6 +74,8 @@ public:
 	GeometryShaderMode GetGeometryShaderMode() const { return geometryShaderMode; }
 
 	void SetTextureHandle(uint32_t handle) { textureHandle_ = handle; }
+	void SetMaterialMaps(const MaterialMaps& maps) { materialMaps_ = maps; }
+	const MaterialMaps& GetMaterialMaps() const { return materialMaps_; }
 	uint32_t GetTextureHandle() const { return textureHandle_; }
 
 	/// Access material to modify color/alpha
@@ -83,6 +88,8 @@ private:
 	static DirectXCommon* sDxCommon_;
 	static GraphicPipeline* sPipeline_;
 	static LightGroup* sLightGroup_;
+	static D3D12_GPU_DESCRIPTOR_HANDLE sEnvironment_;
+	MaterialMaps materialMaps_;
 	static ShadowMap* sShadowMap_;
 
 	Model* model_ = nullptr;

@@ -12,6 +12,7 @@ Skybox::~Skybox()
 {
 	if (dxCommon_) {
 		if (pso_) dxCommon_->DeferRelease(pso_);
+		if (psoNoDepth_) dxCommon_->DeferRelease(psoNoDepth_);
 		if (rootSignature_) dxCommon_->DeferRelease(rootSignature_);
 	}
 	pso_.Reset();
@@ -124,6 +125,10 @@ void Skybox::CreatePSO(DXCManager* dxc)
 
 	HRESULT hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pso_));
 	assert(SUCCEEDED(hr));
+	psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+	psoDesc.DepthStencilState.DepthEnable = FALSE;
+	hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&psoNoDepth_));
+	assert(SUCCEEDED(hr));
 }
 
 bool Skybox::LoadCubemap(const std::string& filePath)
@@ -140,6 +145,24 @@ bool Skybox::LoadCubemap(const std::string& filePath)
 	}
 }
 
+SkyboxConstants Skybox::BuildConstants(const Matrix4x4& invViewProj) const
+{
+	SkyboxConstants constants{};
+	constants.invViewProj = invViewProj;
+	constants.topColor = topColor_;
+	constants.horizonColor = horizonColor_;
+	constants.bottomColor = bottomColor_;
+	constants.solidColor = solidColor_;
+	constants.rotation = rotation_;
+	constants.exposure = exposure_;
+	SkyboxMode activeMode = mode_;
+	if (activeMode == SkyboxMode::Cubemap && !hasValidCubemap_) {
+		activeMode = SkyboxMode::Gradient;
+	}
+	constants.mode = static_cast<int32_t>(activeMode);
+	return constants;
+}
+
 void Skybox::Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera)
 {
 	if (!pso_ || !rootSignature_ || !dxCommon_ || dxCommon_->IsDeviceLost()) return;
@@ -148,30 +171,21 @@ void Skybox::Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera)
 	Matrix4x4 cameraWorldRotOnly = Mathematics::MakeAffineMatrix({ 1.0f, 1.0f, 1.0f }, camera.rotation, { 0.0f, 0.0f, 0.0f });
 	Matrix4x4 viewRotOnly = Mathematics::Inverse(cameraWorldRotOnly);
 	Matrix4x4 viewProjNoTranslation = Mathematics::Multiply(viewRotOnly, camera.GetProjectionMatrix());
-	Matrix4x4 invViewProj = Mathematics::Inverse(viewProjNoTranslation);
+	DrawWith(cmdList, pso_.Get(), Mathematics::Inverse(viewProjNoTranslation));
+}
 
-	SkyboxConstants constantsData{};
-	SkyboxConstants* constants = &constantsData;
+void Skybox::DrawToTarget(ID3D12GraphicsCommandList* cmdList, const Matrix4x4& invViewProj)
+{
+	if (psoNoDepth_ && rootSignature_ && dxCommon_ && !dxCommon_->IsDeviceLost()) DrawWith(cmdList, psoNoDepth_.Get(), invViewProj);
+}
 
-	constants->invViewProj = invViewProj;
-	constants->topColor = topColor_;
-	constants->horizonColor = horizonColor_;
-	constants->bottomColor = bottomColor_;
-	constants->solidColor = solidColor_;
-	constants->rotation = rotation_;
-	constants->exposure = exposure_;
-
-	SkyboxMode activeMode = mode_;
-	if (activeMode == SkyboxMode::Cubemap && !hasValidCubemap_) {
-		activeMode = SkyboxMode::Gradient;
-	}
-	constants->mode = static_cast<int32_t>(activeMode);
-	constants->pad = 0.0f;
+void Skybox::DrawWith(ID3D12GraphicsCommandList* cmdList, ID3D12PipelineState* pso, const Matrix4x4& invViewProj)
+{
+	const SkyboxConstants constantsData = BuildConstants(invViewProj);
 
 	// Bind root signature and PSO
 	cmdList->SetGraphicsRootSignature(rootSignature_.Get());
-	cmdList->SetPipelineState(pso_.Get());
-
+	cmdList->SetPipelineState(pso);
 	// Ensure SRV descriptor heap is set
 	TextureManager::GetInstance()->SetDescriptorHeaps(cmdList);
 

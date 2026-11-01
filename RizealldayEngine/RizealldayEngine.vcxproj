@@ -111,6 +111,8 @@
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="render\LightClusters.cpp" />
+    <ClCompile Include="render\EnvironmentProbe.cpp" />
     <!-- physics/ -->
     <ClCompile Include="physics\PhysicsWorld.cpp">
       <AdditionalIncludeDirectories>$(ProjectDir)..\externals\JoltPhysics;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -214,6 +216,8 @@
     <ClInclude Include="render\PostProcess.h" />
     <ClInclude Include="3d\Skybox.h" />
     <ClInclude Include="physics\PhysicsWorld.h" />
+    <ClInclude Include="render\LightClusters.h" />
+    <ClInclude Include="render\EnvironmentProbe.h" />
     <ClInclude Include="2d\Sprite.h" />
     <ClInclude Include="input\Input.h" />
     <ClInclude Include="audio\Audio.h" />
