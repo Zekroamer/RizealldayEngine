@@ -302,6 +302,11 @@ void EditorSuite::DrawTopPlayBar()
 		return ImGui::CalcTextSize(label, nullptr, true).x + buttonPadding.x * 2.0f;
 	};
 
+	const bool isPlayBar = (sceneState_ == EditorSceneState::Play);
+	const bool isPauseBar = (sceneState_ == EditorSceneState::Pause);
+	if (isPlayBar) ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f, 0.24f, 0.14f, 1.0f));
+	else if (isPauseBar) ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.26f, 0.19f, 0.09f, 1.0f));
+
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 6.0f));
 	if (ImGui::Begin("##TopPlayBar", nullptr, flags)) {
 		const float rowH = ImGui::GetFrameHeight();
@@ -411,6 +416,7 @@ void EditorSuite::DrawTopPlayBar()
 	}
 	ImGui::End();
 	ImGui::PopStyleVar();
+	if (isPlayBar || isPauseBar) ImGui::PopStyleColor();
 #endif
 }
 
@@ -561,13 +567,22 @@ void EditorSuite::DrawHierarchyPanel()
 					if (!kids) nodeFlags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
 					if (IsSelected(obj.id)) nodeFlags |= ImGuiTreeNodeFlags_Selected;
 
-					if (!obj.isActive) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+					const bool isPrefabLinked = !obj.prefabSource.empty();
+					if (!obj.isActive) {
+						ImGui::PushStyleColor(ImGuiCol_Text, isPrefabLinked ? ImVec4(0.35f, 0.52f, 0.68f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+					} else if (isPrefabLinked) {
+						ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.52f, 0.80f, 1.0f, 1.0f));
+					}
 					ImGui::SetNextItemAllowOverlap();
 					const bool nodeIsOpen = ImGui::TreeNodeEx("##Row", nodeFlags, "%s", obj.name.c_str());
-					if (!obj.isActive) ImGui::PopStyleColor();
+					if (!obj.isActive || isPrefabLinked) ImGui::PopStyleColor();
 
 					if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
-						SelectObject(static_cast<int>(i), ImGui::GetIO().KeyCtrl);
+						if (ImGui::GetIO().KeyShift) {
+							SelectObjectRange(static_cast<int>(i));
+						} else {
+							SelectObject(static_cast<int>(i), ImGui::GetIO().KeyCtrl);
+						}
 					}
 
 					// Drag & drop reparenting: drag a row onto another row to make it a child
@@ -584,6 +599,9 @@ void EditorSuite::DrawHierarchyPanel()
 
 					if (ImGui::BeginPopupContextItem()) {
 						if (!IsSelected(obj.id)) SelectObject(static_cast<int>(i), false);
+						if (ImGui::MenuItem(TrId("Focus in Scene"), "F")) {
+							FocusSelectedObject();
+						}
 						if (ImGui::MenuItem(TrId("Delete GameObject"), "Del")) {
 							QueueDeleteGameObject(static_cast<int>(i));
 						}
@@ -596,6 +614,14 @@ void EditorSuite::DrawHierarchyPanel()
 							pendingReparentParentId = -1;
 						}
 						ImGui::Separator();
+						if (isPrefabLinked && ImGui::MenuItem(TrId("Open Prefab"))) {
+							const std::string prefabToOpen = obj.prefabSource;
+							ImGui::EndPopup();
+							if (kids && nodeIsOpen) ImGui::TreePop();
+							ImGui::PopID();
+							OpenPrefabMode(prefabToOpen);
+							return;
+						}
 						if (ImGui::MenuItem(TrId("Save as Prefab"))) {
 							SavePrefab(obj.id, obj.name);
 						}
@@ -918,6 +944,15 @@ void EditorSuite::DrawViewportsPanel()
 			}
 
 			ImGui::EndTabBar();
+		}
+		if (sceneState_ == EditorSceneState::Play || sceneState_ == EditorSceneState::Pause) {
+			const ImVec2 wPos = ImGui::GetWindowPos();
+			const ImVec2 wSize = ImGui::GetWindowSize();
+			const ImU32 borderCol = (sceneState_ == EditorSceneState::Play)
+				? IM_COL32(55, 205, 95, 210)
+				: IM_COL32(235, 175, 50, 210);
+			ImGui::GetForegroundDrawList()->AddRect(
+				wPos, ImVec2(wPos.x + wSize.x, wPos.y + wSize.y), borderCol, 0.0f, 0, 2.5f);
 		}
 	}
 	ImGui::End();

@@ -16,7 +16,8 @@ struct TimelineKey {
 };
 
 struct TimelineTrack {
-	std::string target; // object name
+	std::string target; // object name (fallback when targetId == 0 or not found)
+	uint32_t targetId = 0; // optional stable GameObject ID
 	TimelineProperty property = TimelineProperty::Position;
 	std::vector<TimelineKey> keys; // sorted by time
 
@@ -37,7 +38,7 @@ struct Timeline {
 	std::vector<TimelineTrack> tracks;
 	std::vector<TimelineEvent> events;
 
-	TimelineTrack& FindOrAddTrack(const std::string& target, TimelineProperty property);
+	TimelineTrack& FindOrAddTrack(const std::string& target, TimelineProperty property, uint32_t targetId = 0);
 	/// Events with from < time <= to; a loop that wraps (to < from) also collects the start of the next pass
 	std::vector<const TimelineEvent*> EventsBetween(float from, float to) const;
 	std::string ToJson() const;

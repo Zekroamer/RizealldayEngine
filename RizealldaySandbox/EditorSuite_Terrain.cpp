@@ -313,6 +313,14 @@ void EditorSuite::UpdateTerrainSculptInput(const ImVec2& imagePos, const ImVec2&
 		return;
 	}
 	const ImGuiIO& io = ImGui::GetIO();
+	if (!io.WantTextInput) {
+		if (ImGui::IsKeyPressed(ImGuiKey_LeftBracket)) {
+			sculpt.radius = (std::max)(0.02f, sculpt.radius * 0.8f);
+		}
+		if (ImGui::IsKeyPressed(ImGuiKey_RightBracket)) {
+			sculpt.radius = (std::min)(0.4f, sculpt.radius * 1.25f);
+		}
+	}
 	if (!hovered || !(imageSize.x > 0.0f) || !(imageSize.y > 0.0f)) {
 		if (sculpt.changed && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) FinishTerrainSculpt();
 		return;
@@ -347,9 +355,17 @@ void EditorSuite::UpdateTerrainSculptInput(const ImVec2& imagePos, const ImVec2&
 		}
 	}
 	if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+		const TerrainBrush savedBrush = sculpt.brush;
+		if (io.KeyShift) {
+			sculpt.brush = TerrainBrush::Smooth;
+		} else if (io.KeyCtrl) {
+			if (sculpt.brush == TerrainBrush::Raise) sculpt.brush = TerrainBrush::Lower;
+			else if (sculpt.brush == TerrainBrush::Lower) sculpt.brush = TerrainBrush::Raise;
+		}
 		const Vector3 nearPoint = unprojectAt(0.0f);
 		const Vector3 farPoint = unprojectAt(1.0f);
 		SculptTerrainAt(sculpt.objectId, nearPoint, farPoint - nearPoint);
+		sculpt.brush = savedBrush;
 		// Show the shape while dragging, a few times a second (each bake writes a mesh file)
 		const double now = ImGui::GetTime();
 		if (sculpt.changed && now - sculpt.lastBake > 0.15) {

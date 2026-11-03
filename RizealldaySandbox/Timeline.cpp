@@ -41,12 +41,23 @@ size_t TimelineTrack::SetKey(const TimelineKey& key)
 	return static_cast<size_t>(keys.insert(position, key) - keys.begin());
 }
 
-TimelineTrack& Timeline::FindOrAddTrack(const std::string& target, TimelineProperty property)
+TimelineTrack& Timeline::FindOrAddTrack(const std::string& target, TimelineProperty property, uint32_t targetId)
 {
-	for (TimelineTrack& track : tracks) {
-		if (track.target == target && track.property == property) return track;
+	if (targetId != 0) {
+		for (TimelineTrack& track : tracks) {
+			if (track.targetId == targetId && track.property == property) {
+				if (!target.empty()) track.target = target;
+				return track;
+			}
+		}
 	}
-	tracks.push_back({ target, property, {} });
+	for (TimelineTrack& track : tracks) {
+		if (track.target == target && track.property == property) {
+			if (targetId != 0 && track.targetId == 0) track.targetId = targetId;
+			return track;
+		}
+	}
+	tracks.push_back({ target, targetId, property, {} });
 	return tracks.back();
 }
 
@@ -77,6 +88,7 @@ std::string Timeline::ToJson() const
 		}
 		Json t = Json::object();
 		t["target"] = track.target;
+		if (track.targetId != 0) t["targetId"] = track.targetId;
 		t["property"] = static_cast<int>(track.property);
 		t["keys"] = keyList;
 		trackList.push_back(t);
@@ -104,6 +116,7 @@ bool Timeline::FromJson(const std::string& text, Timeline& out)
 			if (!t.is_object()) continue;
 			TimelineTrack track;
 			SceneJson::Read(t, "target", track.target);
+			SceneJson::Read(t, "targetId", track.targetId);
 			int property = 0;
 			SceneJson::Read(t, "property", property);
 			track.property = static_cast<TimelineProperty>(std::clamp(property, 0, 2));

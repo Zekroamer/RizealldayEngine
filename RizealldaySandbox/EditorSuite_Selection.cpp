@@ -34,6 +34,23 @@ void EditorSuite::SelectObject(int index, bool additive)
 	}
 }
 
+void EditorSuite::SelectObjectRange(int toIndex)
+{
+	const int count = static_cast<int>(gameObjects_.size());
+	if (toIndex < 0 || toIndex >= count) return;
+	if (selectedObjectIndex_ < 0 || selectedObjectIndex_ >= count) {
+		SelectObject(toIndex, false);
+		return;
+	}
+	const int lo = (std::min)(selectedObjectIndex_, toIndex);
+	const int hi = (std::max)(selectedObjectIndex_, toIndex);
+	extraSelection_.clear();
+	for (int i = lo; i <= hi; ++i) {
+		if (i == selectedObjectIndex_) continue;
+		extraSelection_.push_back(gameObjects_[i].id);
+	}
+}
+
 std::vector<uint32_t> EditorSuite::SelectedIds() const
 {
 	std::vector<uint32_t> ids;

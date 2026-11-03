@@ -246,6 +246,47 @@ bool EditorSuite::RevertPrefabOverride(uint32_t objectId, const std::string& key
 	return RebuildPrefabInstance(root->id, true);
 }
 
+bool EditorSuite::HasPrefabOverride(const GameObject& obj, std::string_view keyOrPrefix) const
+{
+	if (obj.prefabSource.empty() || keyOrPrefix.empty()) return false;
+	for (const std::string& ov : obj.prefabOverrides) {
+		if (ov == keyOrPrefix) return true;
+		if (ov.size() > keyOrPrefix.size() &&
+			std::string_view(ov).substr(0, keyOrPrefix.size()) == keyOrPrefix &&
+			ov[keyOrPrefix.size()] == '/') {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool EditorSuite::RevertPrefabOverridesByPrefix(uint32_t objectId, std::string_view keyOrPrefix)
+{
+	GameObject* obj = FindGameObjectById(objectId, false);
+	if (!obj || obj->prefabSource.empty() || keyOrPrefix.empty()) return false;
+	const size_t before = obj->prefabOverrides.size();
+	obj->prefabOverrides.erase(
+		std::remove_if(obj->prefabOverrides.begin(), obj->prefabOverrides.end(), [&](const std::string& ov) {
+			if (ov == keyOrPrefix) return true;
+			if (ov.size() > keyOrPrefix.size() &&
+				std::string_view(ov).substr(0, keyOrPrefix.size()) == keyOrPrefix &&
+				ov[keyOrPrefix.size()] == '/') {
+				return true;
+			}
+			return false;
+		}),
+		obj->prefabOverrides.end());
+	if (obj->prefabOverrides.size() == before) return false;
+
+	const GameObject* root = obj;
+	while (root->prefabNodeIndex != 0 && root->parentId >= 0) {
+		const GameObject* parent = FindGameObjectById(static_cast<uint32_t>(root->parentId), false);
+		if (!parent || parent->prefabSource != obj->prefabSource) break;
+		root = parent;
+	}
+	return RebuildPrefabInstance(root->id, true);
+}
+
 bool EditorSuite::ApplyPrefabInstance(uint32_t rootId)
 {
 	const GameObject* root = FindGameObjectById(rootId, false);

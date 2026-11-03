@@ -1,4 +1,93 @@
 ﻿#include "EditorSuiteInternal.h"
+#include "PhysicsComponents.h"
+
+float EditorSuite::SnapValue(float value, float step)
+{
+	if (!(step > 1e-6f)) return value;
+	return std::round(value / step) * step;
+}
+
+float EditorSuite::ProjectGizmoDrag(const ImVec2& mouseDelta, const ImVec2& screenAxisFromOrigin, float probeMeters)
+{
+	const float lenSq = screenAxisFromOrigin.x * screenAxisFromOrigin.x + screenAxisFromOrigin.y * screenAxisFromOrigin.y;
+	if (lenSq < 1e-3f || !(probeMeters > 1e-6f)) {
+		return (mouseDelta.x - mouseDelta.y) * 0.03f;
+	}
+	// Pixels along the axis / pixels per probe. An axis pointing at the camera is only a few pixels long:
+	// count it as at least 20 px, or each pixel of mouse movement would be metres.
+	const float length = std::sqrt(lenSq);
+	const float along = (mouseDelta.x * screenAxisFromOrigin.x + mouseDelta.y * screenAxisFromOrigin.y) / length;
+	return along / (std::max)(length, 20.0f) * probeMeters;
+}
+
+void EditorSuite::GetGizmoAxes(const GameObject& obj, Vector3& outAxisX, Vector3& outAxisY, Vector3& outAxisZ) const
+{
+	if (!gizmoLocalSpace_ && currentGizmo_ != GizmoType::Scale && currentGizmo_ != GizmoType::Bounds) {
+		outAxisX = { 1.0f, 0.0f, 0.0f };
+		outAxisY = { 0.0f, 1.0f, 0.0f };
+		outAxisZ = { 0.0f, 0.0f, 1.0f };
+		return;
+	}
+	auto normOr = [](Vector3 v, const Vector3& fallback) {
+		const float len = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+		return len > 1e-4f ? Vector3{ v.x / len, v.y / len, v.z / len } : fallback;
+	};
+	outAxisX = normOr(TransformUtil::TransformDirection({ 1.0f, 0.0f, 0.0f }, obj.worldMatrix), { 1.0f, 0.0f, 0.0f });
+	outAxisY = normOr(TransformUtil::TransformDirection({ 0.0f, 1.0f, 0.0f }, obj.worldMatrix), { 0.0f, 1.0f, 0.0f });
+	outAxisZ = normOr(TransformUtil::TransformDirection({ 0.0f, 0.0f, 1.0f }, obj.worldMatrix), { 0.0f, 0.0f, 1.0f });
+}
+
+bool EditorSuite::FocusSelectedObject()
+{
+	const std::vector<uint32_t> ids = SelectedIds();
+	if (ids.empty()) return false;
+
+	UpdateWorldMatrices();
+	Vector3 minB{ 1e30f, 1e30f, 1e30f };
+	Vector3 maxB{ -1e30f, -1e30f, -1e30f };
+	int count = 0;
+
+	for (uint32_t id : ids) {
+		const GameObject* obj = FindGameObjectById(id, false);
+		if (!obj) continue;
+		Vector3 wPos{};
+		Quaternion wRot = Quaternion::Identity();
+		Vector3 wScale{};
+		GetWorldTRS(*obj, wPos, wRot, wScale);
+		const Vector3 half = {
+			(std::max)(std::abs(wScale.x) * 0.5f, 0.5f),
+			(std::max)(std::abs(wScale.y) * 0.5f, 0.5f),
+			(std::max)(std::abs(wScale.z) * 0.5f, 0.5f)
+		};
+		minB.x = (std::min)(minB.x, wPos.x - half.x);
+		minB.y = (std::min)(minB.y, wPos.y - half.y);
+		minB.z = (std::min)(minB.z, wPos.z - half.z);
+		maxB.x = (std::max)(maxB.x, wPos.x + half.x);
+		maxB.y = (std::max)(maxB.y, wPos.y + half.y);
+		maxB.z = (std::max)(maxB.z, wPos.z + half.z);
+		++count;
+	}
+	if (count == 0) return false;
+
+	const Vector3 center = {
+		(minB.x + maxB.x) * 0.5f,
+		(minB.y + maxB.y) * 0.5f,
+		(minB.z + maxB.z) * 0.5f
+	};
+	const Vector3 ext = {
+		(maxB.x - minB.x) * 0.5f,
+		(maxB.y - minB.y) * 0.5f,
+		(maxB.z - minB.z) * 0.5f
+	};
+	const float radius = (std::max)(std::sqrt(ext.x * ext.x + ext.y * ext.y + ext.z * ext.z), 1.0f);
+	const float distance = (std::clamp)(radius * 2.6f, 3.0f, 250.0f);
+
+	const Matrix4x4 camWorld = Mathematics::MakeAffineMatrix({ 1.0f, 1.0f, 1.0f }, editorCamera_.rotation, { 0.0f, 0.0f, 0.0f });
+	const Vector3 forward = { camWorld.m[2][0], camWorld.m[2][1], camWorld.m[2][2] };
+	editorCamera_.translation = center - forward * distance;
+	editorCamera_.Update();
+	return true;
+}
 
 bool EditorSuite::WorldToScreen(const Vector3& worldPos, const Camera& cam, const ImVec2& vpPos, const ImVec2& vpSize, ImVec2& outScreenPos, float& outDepth)
 {
@@ -28,7 +117,7 @@ void EditorSuite::DrawSceneViewOverlays(const ImVec2& vpPos, const ImVec2& vpSiz
 {
 #ifdef USE_IMGUI
 	// The ground grid is rendered in 3D with depth testing (see RenderViewports), not as an overlay
-	if (showWireframe_ || isEditingColliderBounds_) DrawColliderWireframes(vpPos, vpSize);
+	if (showWireframe_ || isEditingColliderBounds_ || (showGizmos_ && selectedObjectIndex_ >= 0)) DrawColliderWireframes(vpPos, vpSize);
 	if (showSkeletonOverlay_) DrawSkeletonOverlay(vpPos, vpSize);
 
 	if (selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size())) {
@@ -136,6 +225,12 @@ void EditorSuite::DrawFloatingBottomBar(const ImVec2& vpPos, const ImVec2& vpSiz
 	ImGui::Checkbox(TrId("Gizmos"), &showGizmos_);
 	ImGui::SetItemTooltip(Tr("Toggle 3D transform gizmos"));
 	ImGui::SameLine();
+	ImGui::Checkbox(TrId("Local"), &gizmoLocalSpace_);
+	ImGui::SetItemTooltip(Tr("Toggle Local vs World gizmo orientation"));
+	ImGui::SameLine();
+	ImGui::Checkbox(TrId("Snap"), &gizmoSnapEnabled_);
+	ImGui::SetItemTooltip(Tr("Snap Move/Rotate/Scale increments (or hold Ctrl while dragging)"));
+	ImGui::SameLine();
 	ImGui::Checkbox(TrId("Wire"), &showWireframe_);
 	ImGui::SetItemTooltip(Tr("Toggle collider wireframe rendering"));
 	ImGui::SameLine();
@@ -195,18 +290,25 @@ void EditorSuite::DrawTransformGizmo(const ImVec2& vpPos, const ImVec2& vpSize)
 	ImDrawList* drawList = ImGui::GetWindowDrawList();
 	float axisLength = 55.0f;
 
-	Vector3 xTarget = selWorldPos + Vector3{ 1.0f, 0.0f, 0.0f };
-	Vector3 yTarget = selWorldPos + Vector3{ 0.0f, 1.0f, 0.0f };
-	Vector3 zTarget = selWorldPos + Vector3{ 0.0f, 0.0f, 1.0f };
+	Vector3 axisX{}, axisY{}, axisZ{};
+	GetGizmoAxes(sel, axisX, axisY, axisZ);
+
+	Vector3 xTarget = selWorldPos + axisX;
+	Vector3 yTarget = selWorldPos + axisY;
+	Vector3 zTarget = selWorldPos + axisZ;
 
 	ImVec2 xScreen, yScreen, zScreen; float xd, yd, zd;
 	if (!WorldToScreen(xTarget, editorCamera_, vpPos, vpSize, xScreen, xd)) return;
 	if (!WorldToScreen(yTarget, editorCamera_, vpPos, vpSize, yScreen, yd)) return;
 	if (!WorldToScreen(zTarget, editorCamera_, vpPos, vpSize, zScreen, zd)) return;
 
-	ImVec2 dirX = ImVec2(xScreen.x - originScreen.x, xScreen.y - originScreen.y);
-	ImVec2 dirY = ImVec2(yScreen.x - originScreen.x, yScreen.y - originScreen.y);
-	ImVec2 dirZ = ImVec2(zScreen.x - originScreen.x, zScreen.y - originScreen.y);
+	const ImVec2 rawDirX = ImVec2(xScreen.x - originScreen.x, xScreen.y - originScreen.y);
+	const ImVec2 rawDirY = ImVec2(yScreen.x - originScreen.x, yScreen.y - originScreen.y);
+	const ImVec2 rawDirZ = ImVec2(zScreen.x - originScreen.x, zScreen.y - originScreen.y);
+
+	ImVec2 dirX = rawDirX;
+	ImVec2 dirY = rawDirY;
+	ImVec2 dirZ = rawDirZ;
 
 	float lenX = std::sqrt(dirX.x * dirX.x + dirX.y * dirX.y);
 	float lenY = std::sqrt(dirY.x * dirY.x + dirY.y * dirY.y);
@@ -240,6 +342,8 @@ void EditorSuite::DrawTransformGizmo(const ImVec2& vpPos, const ImVec2& vpSize)
 		if (activeGizmoAxis_ != GizmoAxis::None && io.MouseClicked[0]) {
 			isDraggingGizmo_ = true;
 			gizmoDragStartMouse_ = mousePos;
+			// Fixed for the whole drag: measured again as the object moves, a shrinking axis would make it run away
+			gizmoDragStartAxis_ = (activeGizmoAxis_ == GizmoAxis::X) ? rawDirX : (activeGizmoAxis_ == GizmoAxis::Y) ? rawDirY : rawDirZ;
 			gizmoStartTranslation_ = sel.translation;
 			gizmoStartRotation_ = sel.rotation;
 			gizmoStartScale_ = sel.scale;
@@ -247,10 +351,17 @@ void EditorSuite::DrawTransformGizmo(const ImVec2& vpPos, const ImVec2& vpSize)
 		}
 	} else {
 		if (io.MouseDown[0]) {
-			float dx = (mousePos.x - gizmoDragStartMouse_.x) * 0.03f;
-			float dy = -(mousePos.y - gizmoDragStartMouse_.y) * 0.03f;
+			const ImVec2 mouseDelta = ImVec2(mousePos.x - gizmoDragStartMouse_.x, mousePos.y - gizmoDragStartMouse_.y);
+			const ImVec2 activeRawDir = gizmoDragStartAxis_;
+			const Vector3 activeWorldAxis = (activeGizmoAxis_ == GizmoAxis::X) ? axisX
+				: (activeGizmoAxis_ == GizmoAxis::Y) ? axisY : axisZ;
+			const bool snap = gizmoSnapEnabled_ || io.KeyCtrl;
 
 			if (currentGizmo_ == GizmoType::Move) {
+				float moveMeters = ProjectGizmoDrag(mouseDelta, activeRawDir, 1.0f);
+				if (snap) moveMeters = SnapValue(moveMeters, gizmoMoveSnap_);
+				const Vector3 worldDelta = activeWorldAxis * moveMeters;
+
 				if (sel.hasParticleSystem && sel.attachedParentId != -1) {
 					int pIdx = -1;
 					for (size_t p = 0; p < gameObjects_.size(); ++p) {
@@ -260,28 +371,16 @@ void EditorSuite::DrawTransformGizmo(const ImVec2& vpPos, const ImVec2& vpSize)
 						}
 					}
 					if (pIdx >= 0) {
-						if (activeGizmoAxis_ == GizmoAxis::X) sel.localOffset.x = gizmoStartLocalOffset_.x + dx;
-						else if (activeGizmoAxis_ == GizmoAxis::Y) sel.localOffset.y = gizmoStartLocalOffset_.y + dy;
-						else if (activeGizmoAxis_ == GizmoAxis::Z) sel.localOffset.z = gizmoStartLocalOffset_.z + dx;
+						sel.localOffset = gizmoStartLocalOffset_ + worldDelta;
 						sel.translation = gameObjects_[pIdx].translation + sel.localOffset;
 					} else {
 						sel.attachedParentId = -1;
 						sel.localOffset = { 0.0f, 0.0f, 0.0f };
-						if (activeGizmoAxis_ == GizmoAxis::X) sel.translation.x = gizmoStartTranslation_.x + dx;
-						else if (activeGizmoAxis_ == GizmoAxis::Y) sel.translation.y = gizmoStartTranslation_.y + dy;
-						else if (activeGizmoAxis_ == GizmoAxis::Z) sel.translation.z = gizmoStartTranslation_.z + dx;
+						sel.translation = gizmoStartTranslation_ + worldDelta;
 					}
 				} else if (sel.parentId == -1) {
-					if (activeGizmoAxis_ == GizmoAxis::X) sel.translation.x = gizmoStartTranslation_.x + dx;
-					else if (activeGizmoAxis_ == GizmoAxis::Y) sel.translation.y = gizmoStartTranslation_.y + dy;
-					else if (activeGizmoAxis_ == GizmoAxis::Z) sel.translation.z = gizmoStartTranslation_.z + dx;
+					sel.translation = gizmoStartTranslation_ + worldDelta;
 				} else {
-					// The drag is a world-space delta; convert it to the parent's local space before applying
-					Vector3 worldDelta = { 0.0f, 0.0f, 0.0f };
-					if (activeGizmoAxis_ == GizmoAxis::X) worldDelta.x = dx;
-					else if (activeGizmoAxis_ == GizmoAxis::Y) worldDelta.y = dy;
-					else if (activeGizmoAxis_ == GizmoAxis::Z) worldDelta.z = dx;
-
 					Matrix4x4 parentWorld = Mathematics::MakeIdentity4x4();
 					if (const GameObject* parentObj = FindGameObjectById(static_cast<uint32_t>(sel.parentId), false)) {
 						parentWorld = parentObj->worldMatrix;
@@ -290,12 +389,17 @@ void EditorSuite::DrawTransformGizmo(const ImVec2& vpPos, const ImVec2& vpSize)
 					sel.translation = gizmoStartTranslation_ + localDelta;
 				}
 			} else if (currentGizmo_ == GizmoType::Rotate) {
-				if (activeGizmoAxis_ == GizmoAxis::X) sel.rotation.x = gizmoStartRotation_.x + dy;
-				else if (activeGizmoAxis_ == GizmoAxis::Y) sel.rotation.y = gizmoStartRotation_.y + dx;
-				else if (activeGizmoAxis_ == GizmoAxis::Z) sel.rotation.z = gizmoStartRotation_.z + dx;
+				float angleRad = ((activeGizmoAxis_ == GizmoAxis::X) ? -mouseDelta.y : mouseDelta.x) * 0.015f;
+				if (snap) {
+					angleRad = SnapValue(angleRad, gizmoRotateSnapDeg_ * (3.1415926535f / 180.0f));
+				}
+				if (activeGizmoAxis_ == GizmoAxis::X) sel.rotation.x = gizmoStartRotation_.x + angleRad;
+				else if (activeGizmoAxis_ == GizmoAxis::Y) sel.rotation.y = gizmoStartRotation_.y + angleRad;
+				else if (activeGizmoAxis_ == GizmoAxis::Z) sel.rotation.z = gizmoStartRotation_.z + angleRad;
 				sel.rotationQuat = Quaternion::FromEuler(sel.rotation);
 			} else if (currentGizmo_ == GizmoType::Scale || currentGizmo_ == GizmoType::Bounds) {
-				float delta = dx + dy;
+				float delta = ProjectGizmoDrag(mouseDelta, activeRawDir, 1.0f);
+				if (snap) delta = SnapValue(delta, gizmoScaleSnap_);
 				if (activeGizmoAxis_ == GizmoAxis::X) sel.scale.x = (std::max)(0.01f, gizmoStartScale_.x + delta);
 				else if (activeGizmoAxis_ == GizmoAxis::Y) sel.scale.y = (std::max)(0.01f, gizmoStartScale_.y + delta);
 				else if (activeGizmoAxis_ == GizmoAxis::Z) sel.scale.z = (std::max)(0.01f, gizmoStartScale_.z + delta);
@@ -328,41 +432,100 @@ void EditorSuite::DrawColliderWireframes(const ImVec2& vpPos, const ImVec2& vpSi
 {
 #ifdef USE_IMGUI
 	ImDrawList* drawList = ImGui::GetWindowDrawList();
+	const bool drawAll = showWireframe_ || isEditingColliderBounds_;
+
+	auto drawCircle3D = [&](const Vector3& center, const Vector3& uAxis, const Vector3& vAxis, float radius, ImU32 col, int segments = 24, float startAngle = 0.0f, float endAngle = 6.2831853f) {
+		ImVec2 prev{};
+		bool hasPrev = false;
+		for (int i = 0; i <= segments; ++i) {
+			const float a = startAngle + (endAngle - startAngle) * (static_cast<float>(i) / static_cast<float>(segments));
+			const float c = std::cos(a) * radius;
+			const float s = std::sin(a) * radius;
+			const Vector3 pt = {
+				center.x + uAxis.x * c + vAxis.x * s,
+				center.y + uAxis.y * c + vAxis.y * s,
+				center.z + uAxis.z * c + vAxis.z * s
+			};
+			ImVec2 sc{};
+			float depth = 0.0f;
+			if (WorldToScreen(pt, editorCamera_, vpPos, vpSize, sc, depth)) {
+				if (hasPrev) drawList->AddLine(prev, sc, col, 1.2f);
+				prev = sc;
+				hasPrev = true;
+			} else {
+				hasPrev = false;
+			}
+		}
+	};
 
 	for (const auto& obj : gameObjects_) {
-		if (!obj.isActive || !obj.hasBoxCollider || !obj.boxColliderEnabled) continue;
+		if (!obj.isActive) continue;
+		if (!drawAll && !IsSelected(obj.id)) continue;
 
-		Vector3 wPos{};
-		Quaternion wRot = Quaternion::Identity();
-		Vector3 wScale{};
-		GetWorldTRS(obj, wPos, wRot, wScale);
-		// Same world-space AABB as the physics pass (roots: translation + center; children: through the world matrix)
-		const Vector3 boxWorldCenter = (obj.parentId == -1) ? (wPos + obj.boxCenter) : TransformUtil::TransformPoint(obj.boxCenter, obj.worldMatrix);
-		Vector3 halfSize = { obj.boxSize.x * wScale.x * 0.5f, obj.boxSize.y * wScale.y * 0.5f, obj.boxSize.z * wScale.z * 0.5f };
-		Vector3 minP = boxWorldCenter - halfSize;
-		Vector3 maxP = boxWorldCenter + halfSize;
+		const ImU32 col = obj.isColliding ? IM_COL32(255, 50, 50, 220) : IM_COL32(50, 255, 100, 180);
 
-		Vector3 corners[8] = {
-			{ minP.x, minP.y, minP.z }, { maxP.x, minP.y, minP.z },
-			{ maxP.x, maxP.y, minP.z }, { minP.x, maxP.y, minP.z },
-			{ minP.x, minP.y, maxP.z }, { maxP.x, minP.y, maxP.z },
-			{ maxP.x, maxP.y, maxP.z }, { minP.x, maxP.y, maxP.z }
-		};
+		// 1. Box Collider wireframe
+		if (obj.hasBoxCollider && obj.boxColliderEnabled) {
+			Vector3 minP{}, maxP{};
+			ComputeBoxColliderBounds(obj, true, minP, maxP);
 
-		ImVec2 sc[8]; float sd[8]; bool allOk = true;
-		for (int i = 0; i < 8; ++i) {
-			if (!WorldToScreen(corners[i], editorCamera_, vpPos, vpSize, sc[i], sd[i])) { allOk = false; break; }
+			Vector3 corners[8] = {
+				{ minP.x, minP.y, minP.z }, { maxP.x, minP.y, minP.z },
+				{ maxP.x, maxP.y, minP.z }, { minP.x, maxP.y, minP.z },
+				{ minP.x, minP.y, maxP.z }, { maxP.x, minP.y, maxP.z },
+				{ maxP.x, maxP.y, maxP.z }, { minP.x, maxP.y, maxP.z }
+			};
+
+			ImVec2 sc[8]; float sd[8]; bool allOk = true;
+			for (int i = 0; i < 8; ++i) {
+				if (!WorldToScreen(corners[i], editorCamera_, vpPos, vpSize, sc[i], sd[i])) { allOk = false; break; }
+			}
+
+			if (allOk) {
+				int edges[12][2] = {
+					{0,1},{1,2},{2,3},{3,0},
+					{4,5},{5,6},{6,7},{7,4},
+					{0,4},{1,5},{2,6},{3,7}
+				};
+				for (int e = 0; e < 12; ++e) {
+					drawList->AddLine(sc[edges[e][0]], sc[edges[e][1]], col, 1.2f);
+				}
+			}
 		}
 
-		if (allOk) {
-			ImU32 col = obj.isColliding ? IM_COL32(255, 50, 50, 220) : IM_COL32(50, 255, 100, 180);
-			int edges[12][2] = {
-				{0,1},{1,2},{2,3},{3,0},
-				{4,5},{5,6},{6,7},{7,4},
-				{0,4},{1,5},{2,6},{3,7}
-			};
-			for (int e = 0; e < 12; ++e) {
-				drawList->AddLine(sc[edges[e][0]], sc[edges[e][1]], col, 1.2f);
+		// 2. Sphere Collider wireframe (3 orthogonal circles)
+		if (obj.hasSphereCollider && obj.sphereColliderEnabled) {
+			Vector3 center{};
+			float radius = 0.0f;
+			ComputeSphereColliderWorld(obj, center, radius);
+			if (radius > 0.001f) {
+				drawCircle3D(center, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, radius, col);
+				drawCircle3D(center, { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, radius, col);
+				drawCircle3D(center, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f, 0.0f }, radius, col);
+			}
+		}
+
+		// 3. Jolt Capsule Collider wireframe (top & bottom rings, 4 vertical side lines, 2 hemispherical arcs)
+		Vector3 capCenter{};
+		float capRadius = 0.0f;
+		float capHalfHeight = 0.0f;
+		if (ComputeCapsuleColliderWorld(obj, capCenter, capRadius, capHalfHeight) && capRadius > 0.001f) {
+			const Vector3 topCenter = { capCenter.x, capCenter.y + capHalfHeight, capCenter.z };
+			const Vector3 botCenter = { capCenter.x, capCenter.y - capHalfHeight, capCenter.z };
+			drawCircle3D(topCenter, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, capRadius, col);
+			drawCircle3D(botCenter, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, capRadius, col);
+			drawCircle3D(topCenter, { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, capRadius, col, 12, 0.0f, 3.14159265f);
+			drawCircle3D(topCenter, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f, 0.0f }, capRadius, col, 12, 0.0f, 3.14159265f);
+			drawCircle3D(botCenter, { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, capRadius, col, 12, 3.14159265f, 6.2831853f);
+			drawCircle3D(botCenter, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f, 0.0f }, capRadius, col, 12, 3.14159265f, 6.2831853f);
+			const Vector3 dirs[4] = { { 1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, -1.0f } };
+			for (const Vector3& d : dirs) {
+				ImVec2 a{}, b{};
+				float da = 0.0f, db = 0.0f;
+				if (WorldToScreen(topCenter + d * capRadius, editorCamera_, vpPos, vpSize, a, da) &&
+					WorldToScreen(botCenter + d * capRadius, editorCamera_, vpPos, vpSize, b, db)) {
+					drawList->AddLine(a, b, col, 1.2f);
+				}
 			}
 		}
 	}

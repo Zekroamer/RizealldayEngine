@@ -90,7 +90,8 @@ void EditorSuite::ApplyTimeline(const Timeline& timeline, float time)
 {
 	for (const TimelineTrack& track : timeline.tracks) {
 		if (track.keys.empty()) continue;
-		GameObject* obj = FindGameObjectByName(track.target, false);
+		GameObject* obj = (track.targetId != 0) ? FindGameObjectById(track.targetId, false) : nullptr;
+		if (!obj) obj = FindGameObjectByName(track.target, false);
 		if (!obj) continue;
 		const Vector3 value = track.Sample(time);
 		switch (track.property) {
@@ -147,6 +148,19 @@ void EditorSuite::DrawTimelineWindow()
 		}
 		timelineRestore_.clear();
 		timelinePreview_ = false;
+		timelinePreviewPlaying_ = false;
+	};
+	const auto beginPreviewIfNeeded = [&](const Timeline& tl) {
+		if (timelinePreview_) return;
+		timelinePreview_ = true;
+		timelineRestore_.clear();
+		for (const TimelineTrack& track : tl.tracks) {
+			const GameObject* obj = (track.targetId != 0) ? FindGameObjectById(track.targetId, false) : nullptr;
+			if (!obj) obj = FindGameObjectByName(track.target, false);
+			if (obj) {
+				timelineRestore_.push_back({ obj->id, obj->translation, obj->rotation, obj->scale });
+			}
+		}
 	};
 
 	if (!ImGui::Begin(TrId("Timeline"), &showTimelineWindow_)) {
@@ -169,20 +183,37 @@ void EditorSuite::DrawTimelineWindow()
 
 	if (ImGui::Checkbox(TrId("Preview"), &timelinePreview_)) {
 		if (timelinePreview_) {
-			timelineRestore_.clear();
-			for (const TimelineTrack& track : timeline->tracks) {
-				if (const GameObject* obj = FindGameObjectByName(track.target, false)) {
-					timelineRestore_.push_back({ obj->id, obj->translation, obj->rotation, obj->scale });
-				}
-			}
+			timelinePreview_ = false;
+			beginPreviewIfNeeded(*timeline);
 		} else {
 			stopPreview();
 		}
 	}
 	ImGui::SetItemTooltip("%s", Tr("Shows the time on the slider in the scene. Turning it off puts the objects back."));
 	ImGui::SameLine();
+	if (ImGui::Button("|<")) {
+		timelineCursor_ = 0.0f;
+	}
+	ImGui::SetItemTooltip("%s", Tr("Rewind timeline cursor to 0.00 s"));
+	ImGui::SameLine();
+	if (ImGui::Button(TrId(timelinePreviewPlaying_ ? "Pause##TlPlay" : "Play##TlPlay"))) {
+		timelinePreviewPlaying_ = !timelinePreviewPlaying_;
+		if (timelinePreviewPlaying_) {
+			beginPreviewIfNeeded(*timeline);
+			if (timelineCursor_ >= timeline->duration) timelineCursor_ = 0.0f;
+		}
+	}
+	ImGui::SameLine();
+	ImGui::Checkbox(TrId("Loop##TlLoop"), &timelinePreviewLoop_);
+	ImGui::SameLine();
 	ImGui::SetNextItemWidth(100.0f);
 	changed |= ImGui::DragFloat(TrId("Duration"), &timeline->duration, 0.05f, 0.01f, 3600.0f, "%.2f s", ImGuiSliderFlags_AlwaysClamp);
+
+	if (timelinePreviewPlaying_) {
+		bool finished = false;
+		timelineCursor_ = TimelineAdvance(timelineCursor_, ImGui::GetIO().DeltaTime, timeline->duration, timelinePreviewLoop_, finished);
+		if (finished) timelinePreviewPlaying_ = false;
+	}
 	ImGui::SliderFloat(TrId("Time"), &timelineCursor_, 0.0f, timeline->duration, "%.2f s");
 	if (timelinePreview_) ApplyTimeline(*timeline, timelineCursor_);
 
@@ -200,7 +231,7 @@ void EditorSuite::DrawTimelineWindow()
 		}
 		GameObject& target = gameObjects_[targetIndex];
 		const auto addKey = [&](TimelineProperty property, const Vector3& value) {
-			timeline->FindOrAddTrack(target.name, property).SetKey({ timelineCursor_, value, true });
+			timeline->FindOrAddTrack(target.name, property, target.id).SetKey({ timelineCursor_, value, true });
 			changed = true;
 		};
 		if (timelinePreview_) ImGui::BeginDisabled(); // the transform on screen is the preview's, not the object's
@@ -256,6 +287,22 @@ void EditorSuite::DrawTimelineWindow()
 		if (timelineSelectedKey_ >= 0 && timelineSelectedKey_ < static_cast<int>(track.keys.size())) {
 			TimelineKey& key = track.keys[timelineSelectedKey_];
 			ImGui::Text(Tr("%s %.2f s"), Tr("Key at"), key.time);
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(210.0f);
+			if (track.property == TimelineProperty::Rotation) {
+				constexpr float kRadToDeg = 180.0f / 3.1415926535f;
+				float deg[3] = { key.value.x * kRadToDeg, key.value.y * kRadToDeg, key.value.z * kRadToDeg };
+				if (ImGui::DragFloat3("##KeyValDeg", deg, 1.0f, 0.0f, 0.0f, "%.1f deg")) {
+					key.value = { deg[0] / kRadToDeg, deg[1] / kRadToDeg, deg[2] / kRadToDeg };
+					changed = true;
+				}
+			} else {
+				float val[3] = { key.value.x, key.value.y, key.value.z };
+				if (ImGui::DragFloat3("##KeyVal", val, 0.05f, 0.0f, 0.0f, "%.2f")) {
+					key.value = { val[0], val[1], val[2] };
+					changed = true;
+				}
+			}
 			ImGui::SameLine();
 			changed |= ImGui::Checkbox(TrId("Smooth"), &key.smooth);
 			ImGui::SameLine();

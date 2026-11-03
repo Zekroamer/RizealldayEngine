@@ -745,25 +745,26 @@ void EditorSuite::Update(float deltaTime, Input* input)
 			TriggerScriptBuild();
 		}
 
-		// Undo / Redo (Disabled in Play mode)
-		if (sceneState_ != EditorSceneState::Play && !IsStandaloneMode()) {
-			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z)) Undo();
+		// Undo / Redo (Disabled in Play mode). While a field is being typed in, these keys belong to the field.
+		if (sceneState_ != EditorSceneState::Play && !IsStandaloneMode() && !io.WantTextInput) {
+			if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z)) Undo();
 			if (io.KeyCtrl && (ImGui::IsKeyPressed(ImGuiKey_Y) || (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z)))) Redo();
 		}
 
 		if (!IsStandaloneMode()) {
 			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) SaveScene(currentScenePath_);
-			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N)) NewScene();
-			if (ImGui::IsKeyPressed(ImGuiKey_Delete)) DeleteSelectedGameObject();
+			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N) && !io.WantTextInput) NewScene();
+			if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !io.WantTextInput) DeleteSelectedGameObject();
 			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D) && !io.WantTextInput) pendingDuplicateIndex_ = selectedObjectIndex_;
 
-			if (!isFlightNavigating_) {
+			if (!isFlightNavigating_ && !io.WantTextInput) {
 				if (ImGui::IsKeyPressed(ImGuiKey_Q)) currentGizmo_ = GizmoType::Hand;
 				if (ImGui::IsKeyPressed(ImGuiKey_W)) currentGizmo_ = GizmoType::Move;
 				if (ImGui::IsKeyPressed(ImGuiKey_E)) currentGizmo_ = GizmoType::Rotate;
 				if (ImGui::IsKeyPressed(ImGuiKey_R)) currentGizmo_ = GizmoType::Scale;
 				if (ImGui::IsKeyPressed(ImGuiKey_T)) currentGizmo_ = GizmoType::Bounds;
 				if (ImGui::IsKeyPressed(ImGuiKey_C)) isEditingColliderBounds_ = !isEditingColliderBounds_;
+				if (ImGui::IsKeyPressed(ImGuiKey_F) && !io.KeyCtrl) FocusSelectedObject();
 			}
 		}
 	}

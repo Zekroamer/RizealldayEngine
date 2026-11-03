@@ -749,5 +749,18 @@
 	"Brush Strength": "ブラシの強さ",
 	"Flatten Height": "平らにする高さ",
 	"Clear Sculpt": "スカルプトを消去",
-	"Height Data": "高さデータ"
+	"Height Data": "高さデータ",
+	"Local": "ローカル",
+	"Toggle Local vs World gizmo orientation": "ギズモの向きをローカル／ワールドで切り替え",
+	"Snap": "スナップ",
+	"Snap Move/Rotate/Scale increments (or hold Ctrl while dragging)": "移動／回転／拡縮を一定刻みでスナップ（ドラッグ中にCtrlでも有効）",
+	"Euler rotation in degrees (X, Y, Z)": "オイラー角回転（度: X, Y, Z）",
+	"Revert Override": "オーバーライドを戻す",
+	"Copy Component": "コンポーネントをコピー",
+	"Paste Component Values": "コンポーネントの値を貼り付け",
+	"Search components...": "コンポーネントを検索...",
+	"Paste Copied Component": "コピーしたコンポーネントを貼り付け",
+	"Focus in Scene": "シーンでフォーカス",
+	"Open Prefab": "プレハブを開く",
+	"Rewind timeline cursor to 0.00 s": "タイムライン位置を 0.00 秒に戻す"
 }

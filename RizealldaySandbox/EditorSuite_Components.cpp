@@ -155,6 +155,14 @@ void EditorSuite::DrawDataComponentInspector(GameObject& obj, const ComponentInf
 	const bool open = ImGui::CollapsingHeader(TrId(info.name.c_str()), &keep, ImGuiTreeNodeFlags_DefaultOpen);
 	ImGui::SetItemTooltip("%s", Tr("Right-click or press x to remove this component"));
 	if (ImGui::BeginPopupContextItem()) {
+		if (ImGui::MenuItem(TrId("Copy Component"))) {
+			CopyComponent(obj, info.name);
+		}
+		if (ImGui::MenuItem(TrId("Paste Component Values"), nullptr, false, HasCopiedComponent(info.name))) {
+			PasteComponent(obj, info.name);
+			data = obj.components.Find(info.name);
+		}
+		ImGui::Separator();
 		if (ImGui::MenuItem(TrId("Remove Component"))) keep = false;
 		if (ImGui::MenuItem(TrId("Reset Values")) && info.create) {
 			obj.components.Add(info.name, info.create());
@@ -170,6 +178,7 @@ void EditorSuite::DrawDataComponentInspector(GameObject& obj, const ComponentInf
 		auto* base = static_cast<unsigned char*>(data->Data());
 		for (const ComponentField& field : info.fields) {
 			void* ptr = base + field.offset;
+			const std::string overrideKey = std::string("components/") + info.name + "/" + field.name;
 			// "emitRate" -> "Emit Rate", translated; the field name stays the ImGui ID
 			const std::string labelText = std::string(Tr(HumanizeFieldName(field.name).c_str())) + "###" + field.name;
 			const char* label = labelText.c_str();
@@ -192,7 +201,7 @@ void EditorSuite::DrawDataComponentInspector(GameObject& obj, const ComponentInf
 				commitNow = changed;
 				break;
 			case ComponentFieldType::Vector3:
-				changed = DrawVec3Control(label, *static_cast<Vector3*>(ptr), 0.0f);
+				changed = DrawVec3Control(label, *static_cast<Vector3*>(ptr), 0.0f, 85.0f, 1.0f, overrideKey.c_str());
 				commitNow = changed; // merged into one undo step while dragging
 				break;
 			case ComponentFieldType::Color:
@@ -217,6 +226,9 @@ void EditorSuite::DrawDataComponentInspector(GameObject& obj, const ComponentInf
 				break;
 			}
 			if (field.tooltip) ImGui::SetItemTooltip("%s", Tr(field.tooltip));
+			if (field.type != ComponentFieldType::Vector3) {
+				DrawPrefabOverrideSideline(obj, overrideKey.c_str());
+			}
 			if (changed) isSceneDirty_ = true;
 			if (commitNow || (field.type != ComponentFieldType::Vector3 && ImGui::IsItemDeactivatedAfterEdit())) {
 				PushUndoSnapshot();
@@ -234,36 +246,72 @@ void EditorSuite::DrawDataComponentInspector(GameObject& obj, const ComponentInf
 void EditorSuite::DrawAddComponentMenuItems(GameObject& obj)
 {
 #ifdef USE_IMGUI
-	const auto& all = ComponentRegistry::Get().All();
-	// Category submenus in first-registration order; uncategorised entries at the top level
-	std::vector<std::string> categories;
-	for (const ComponentInfo& info : all) {
-		if (info.showInAddMenu && !info.category.empty() &&
-			std::find(categories.begin(), categories.end(), info.category) == categories.end()) {
-			categories.push_back(info.category);
+	ImGui::SetNextItemWidth(220.0f);
+	ImGui::InputTextWithHint("##CompSearch", Tr("Search components..."), addComponentSearchBuf_, sizeof(addComponentSearchBuf_));
+	if (HasCopiedComponent()) {
+		if (ImGui::MenuItem(TrId("Paste Copied Component"))) {
+			PasteComponent(obj, copiedComponentName_);
 		}
 	}
+	ImGui::Separator();
 
+	auto containsIgnoreCase = [](std::string_view hay, std::string_view needle) {
+		if (needle.empty()) return true;
+		auto it = std::search(hay.begin(), hay.end(), needle.begin(), needle.end(),
+			[](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); });
+		return it != hay.end();
+	};
+	const std::string_view filter(addComponentSearchBuf_);
+
+	const auto& all = ComponentRegistry::Get().All();
 	std::string requested;
 	std::function<void(EditorSuite&, GameObject&)> requestedVariant;
-	auto items = [&](const std::string& category) {
+
+	if (!filter.empty()) {
 		for (const ComponentInfo& info : all) {
-			if (!info.showInAddMenu || info.category != category) continue;
+			if (!info.showInAddMenu) continue;
 			const bool present = HasComponentByName(obj, info.name);
-			if (ImGui::MenuItem(TrId(info.name.c_str()), nullptr, false, !present)) requested = info.name;
+			if (containsIgnoreCase(info.name, filter) || containsIgnoreCase(Tr(info.name.c_str()), filter)) {
+				if (ImGui::MenuItem(TrId(info.name.c_str()), nullptr, false, !present)) requested = info.name;
+			}
 			for (const auto& [label, fn] : info.addVariants) {
-				if (ImGui::MenuItem(TrId(label.c_str()), nullptr, false, !present)) {
-					requested = info.name;
-					requestedVariant = fn;
+				if (containsIgnoreCase(label, filter) || containsIgnoreCase(Tr(label.c_str()), filter)) {
+					if (ImGui::MenuItem(TrId(label.c_str()), nullptr, false, !present)) {
+						requested = info.name;
+						requestedVariant = fn;
+					}
 				}
 			}
 		}
-	};
-	items("");
-	for (const std::string& category : categories) {
-		if (ImGui::BeginMenu(TrId(category.c_str()))) {
-			items(category);
-			ImGui::EndMenu();
+	} else {
+		// Category submenus in first-registration order; uncategorised entries at the top level
+		std::vector<std::string> categories;
+		for (const ComponentInfo& info : all) {
+			if (info.showInAddMenu && !info.category.empty() &&
+				std::find(categories.begin(), categories.end(), info.category) == categories.end()) {
+				categories.push_back(info.category);
+			}
+		}
+
+		auto items = [&](const std::string& category) {
+			for (const ComponentInfo& info : all) {
+				if (!info.showInAddMenu || info.category != category) continue;
+				const bool present = HasComponentByName(obj, info.name);
+				if (ImGui::MenuItem(TrId(info.name.c_str()), nullptr, false, !present)) requested = info.name;
+				for (const auto& [label, fn] : info.addVariants) {
+					if (ImGui::MenuItem(TrId(label.c_str()), nullptr, false, !present)) {
+						requested = info.name;
+						requestedVariant = fn;
+					}
+				}
+			}
+		};
+		items("");
+		for (const std::string& category : categories) {
+			if (ImGui::BeginMenu(TrId(category.c_str()))) {
+				items(category);
+				ImGui::EndMenu();
+			}
 		}
 	}
 
@@ -279,6 +327,135 @@ void EditorSuite::DrawAddComponentMenuItems(GameObject& obj)
 #else
 	(void)obj;
 #endif
+}
+
+bool EditorSuite::HasCopiedComponent(const std::string& name) const
+{
+	if (copiedComponentName_.empty() || copiedComponentJson_.empty()) return false;
+	return name.empty() || copiedComponentName_ == name;
+}
+
+bool EditorSuite::CopyComponent(const GameObject& obj, const std::string& name)
+{
+	using SceneJson::Json;
+	if (!HasComponentByName(obj, name)) return false;
+	const ComponentInfo* info = ComponentRegistry::Get().Find(name);
+	if (!info) return false;
+
+	if (info->IsDataComponent()) {
+		Json holder = Json::object();
+		WriteDataComponentsJson(obj, &holder);
+		const Json* comps = SceneJson::Find(holder, "components");
+		const Json* comp = (comps && comps->is_object()) ? SceneJson::Find(*comps, name.c_str()) : nullptr;
+		if (!comp) return false;
+		copiedComponentName_ = name;
+		copiedComponentJson_ = SceneJson::DumpCompact(*comp);
+		return true;
+	}
+
+	Json full = Json::object();
+	WriteGameObjectJson(obj, &full);
+	copiedComponentName_ = name;
+	copiedComponentJson_ = SceneJson::DumpCompact(full);
+	return true;
+}
+
+bool EditorSuite::PasteComponent(GameObject& obj, const std::string& name)
+{
+	using SceneJson::Json;
+	const std::string targetName = name.empty() ? copiedComponentName_ : name;
+	if (!HasCopiedComponent(targetName)) return false;
+	const ComponentInfo* info = ComponentRegistry::Get().Find(targetName);
+	if (!info) return false;
+
+	auto parsed = SceneJson::Parse(copiedComponentJson_);
+	if (!parsed || !parsed->is_object()) return false;
+
+	if (info->IsDataComponent()) {
+		if (!info->create) return false;
+		ComponentData* data = obj.components.Find(targetName);
+		if (!data) data = obj.components.Add(targetName, info->create());
+		auto* base = static_cast<unsigned char*>(data->Data());
+		const Json& value = *parsed;
+		for (const ComponentField& field : info->fields) {
+			void* ptr = base + field.offset;
+			switch (field.type) {
+			case ComponentFieldType::Float: SceneJson::Read(value, field.name, *static_cast<float*>(ptr)); break;
+			case ComponentFieldType::Int: SceneJson::Read(value, field.name, *static_cast<int*>(ptr)); break;
+			case ComponentFieldType::Bool: SceneJson::Read(value, field.name, *static_cast<bool*>(ptr)); break;
+			case ComponentFieldType::Vector3: SceneJson::Read(value, field.name, *static_cast<Vector3*>(ptr)); break;
+			case ComponentFieldType::Color:
+				if (field.size >= sizeof(float) * 4) SceneJson::Read(value, field.name, *static_cast<Vector4*>(ptr));
+				else SceneJson::Read(value, field.name, *static_cast<Vector3*>(ptr));
+				break;
+			case ComponentFieldType::Text:
+			case ComponentFieldType::Asset: {
+				std::string text;
+				if (SceneJson::Read(value, field.name, text) && field.size > 0) {
+					strncpy_s(static_cast<char*>(ptr), field.size, text.c_str(), _TRUNCATE);
+				}
+				break;
+			}
+			}
+		}
+		isSceneDirty_ = true;
+		PushUndoSnapshot();
+		return true;
+	}
+
+	GameObject scratch;
+	ReadGameObjectJson(&(*parsed), scratch);
+	if (!HasComponentByName(obj, targetName) && info->add) {
+		info->add(*this, obj);
+	}
+	if (targetName == "Box Collider") {
+		obj.hasBoxCollider = true;
+		obj.boxColliderEnabled = scratch.boxColliderEnabled;
+		obj.boxCenter = scratch.boxCenter;
+		obj.boxSize = scratch.boxSize;
+		obj.isTrigger = scratch.isTrigger;
+	} else if (targetName == "Sphere Collider") {
+		obj.hasSphereCollider = true;
+		obj.sphereColliderEnabled = scratch.sphereColliderEnabled;
+		obj.sphereCenter = scratch.sphereCenter;
+		obj.sphereRadius = scratch.sphereRadius;
+		obj.isTrigger = scratch.isTrigger;
+	} else if (targetName == "Rigidbody") {
+		obj.hasRigidbody = true;
+		obj.rbEnabled = scratch.rbEnabled;
+		obj.mass = scratch.mass;
+		obj.drag = scratch.drag;
+		obj.bounciness = scratch.bounciness;
+		obj.friction = scratch.friction;
+		obj.gravityScale = scratch.gravityScale;
+		obj.useGravity = scratch.useGravity;
+		obj.isKinematic = scratch.isKinematic;
+		obj.freezeRotation = scratch.freezeRotation;
+		obj.continuousCollision = scratch.continuousCollision;
+	} else if (targetName == "Camera") {
+		obj.hasCamera = true;
+		obj.fov = scratch.fov;
+		obj.nearClip = scratch.nearClip;
+		obj.farClip = scratch.farClip;
+	} else if (targetName == "Light") {
+		obj.hasLight = true;
+		obj.lightColor = scratch.lightColor;
+		obj.lightIntensity = scratch.lightIntensity;
+		obj.lightRange = scratch.lightRange;
+		obj.lightSpotAngle = scratch.lightSpotAngle;
+	} else if (targetName == "Audio Source") {
+		obj.hasAudioSource = true;
+		obj.audioClipName = scratch.audioClipName;
+		obj.audioVolume = scratch.audioVolume;
+		obj.audioLoop = scratch.audioLoop;
+		obj.audioPlayOnAwake = scratch.audioPlayOnAwake;
+		obj.audioSpatial = scratch.audioSpatial;
+		obj.audioMinDistance = scratch.audioMinDistance;
+		obj.audioMaxDistance = scratch.audioMaxDistance;
+	}
+	isSceneDirty_ = true;
+	PushUndoSnapshot();
+	return true;
 }
 
 // ---------------------------------------------------------------------------

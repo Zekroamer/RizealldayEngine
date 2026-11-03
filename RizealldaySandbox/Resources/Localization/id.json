@@ -749,5 +749,18 @@
 	"Brush Strength": "Kekuatan Kuas",
 	"Flatten Height": "Tinggi Perataan",
 	"Clear Sculpt": "Hapus Pahatan",
-	"Height Data": "Data Tinggi"
+	"Height Data": "Data Tinggi",
+	"Local": "Lokal",
+	"Toggle Local vs World gizmo orientation": "Ubah orientasi gizmo antara Lokal dan World",
+	"Snap": "Snap",
+	"Snap Move/Rotate/Scale increments (or hold Ctrl while dragging)": "Snap langkah Geser/Putar/Skala (atau tahan Ctrl saat menyeret)",
+	"Euler rotation in degrees (X, Y, Z)": "Rotasi Euler dalam derajat (X, Y, Z)",
+	"Revert Override": "Kembalikan Override",
+	"Copy Component": "Salin Komponen",
+	"Paste Component Values": "Tempel Nilai Komponen",
+	"Search components...": "Cari komponen...",
+	"Paste Copied Component": "Tempel Komponen Tersalin",
+	"Focus in Scene": "Fokus di Scene",
+	"Open Prefab": "Buka Prefab",
+	"Rewind timeline cursor to 0.00 s": "Putar ulang kursor timeline ke 0.00 dtk"
 }

@@ -517,7 +517,13 @@ public:
 	// World-space collider shapes shared by physics and script queries
 	void ComputeBoxColliderBounds(const GameObject& obj, bool useAbsSize, Vector3& outMin, Vector3& outMax) const;
 	void ComputeSphereColliderWorld(const GameObject& obj, Vector3& outCenter, float& outRadius) const;
+	bool ComputeCapsuleColliderWorld(const GameObject& obj, Vector3& outCenter, float& outRadius, float& outHalfHeight) const;
 	Vector3 GetWorldPositionOf(const GameObject& obj) const;
+	// Gizmo math, snapping, local/world axes, and camera framing (EditorSuite_Gizmos.cpp)
+	static float SnapValue(float value, float step);
+	static float ProjectGizmoDrag(const ImVec2& mouseDelta, const ImVec2& screenAxisFromOrigin, float probeMeters = 1.0f);
+	void GetGizmoAxes(const GameObject& obj, Vector3& outAxisX, Vector3& outAxisY, Vector3& outAxisZ) const;
+	bool FocusSelectedObject();
 	bool AcceptQueryHit(uint32_t id, uint32_t layerMask, uint32_t ignoreId, const std::unordered_set<uint32_t>& excluded) const;
 	bool ScriptRaycast(const Vector3& origin, const Vector3& direction, float maxDistance, uint32_t layerMask, uint32_t ignoreId, ScriptRaycastHit& outHit);
 	bool ScriptPlayAnimationLayer(uint32_t id, int layer, const char* clipName, const char* maskBone, bool loop, float speed, float fadeSeconds);
@@ -571,6 +577,8 @@ public:
 	std::string CreatePrefabVariant(uint32_t rootId);
 	/// additive = Ctrl+click: toggles the object; otherwise it becomes the only selection. index -1 clears.
 	void SelectObject(int index, bool additive);
+	/// Shift+click range selection between the current primary selection and toIndex (inclusive).
+	void SelectObjectRange(int toIndex);
 	std::vector<uint32_t> SelectedIds() const; // primary first
 	bool IsSelected(uint32_t id) const;
 	/// The gizmo moved the primary by delta (local units): the other selected objects follow, except children of selected objects
@@ -594,6 +602,10 @@ public:
 	void MergePrefabRebuild(int nodeKey, void* json) const;
 	/// Drops one override of one object and rebuilds its instance. False when it had no such override.
 	bool RevertPrefabOverride(uint32_t objectId, const std::string& key);
+	/// True when the linked prefab object has an exact override `keyOrPrefix` or any override starting with `keyOrPrefix + "/"`.
+	bool HasPrefabOverride(const GameObject& obj, std::string_view keyOrPrefix) const;
+	/// Reverts all overrides on `objectId` matching `keyOrPrefix` (exact or `keyOrPrefix + "/"` prefix) and rebuilds its instance.
+	bool RevertPrefabOverridesByPrefix(uint32_t objectId, std::string_view keyOrPrefix);
 	/// Marks what an edit changed on linked objects as overrides (called by PushUndoSnapshot)
 	void RecordPrefabOverrides(uint32_t objectId, const std::string& beforeJson, const std::string& afterJson);
 	bool ApplyPrefabInstance(uint32_t rootId);
@@ -865,6 +877,9 @@ public:
 	bool HasComponentByName(const GameObject& obj, const std::string& name) const;
 	bool AddComponentByName(GameObject& obj, const std::string& name);
 	bool RemoveComponentByName(GameObject& obj, const std::string& name);
+	bool CopyComponent(const GameObject& obj, const std::string& name);
+	bool PasteComponent(GameObject& obj, const std::string& name);
+	bool HasCopiedComponent(const std::string& name = "") const;
 	// "components" object of a scene entry (Json* kept opaque like WriteGameObjectJson)
 	void WriteDataComponentsJson(const GameObject& obj, void* outObjectJson) const;
 	void ReadDataComponentsJson(const void* objectJson, GameObject& obj) const;
@@ -898,7 +913,8 @@ private:
 	bool WorldToScreen(const Vector3& worldPos, const Camera& cam, const ImVec2& vpPos, const ImVec2& vpSize, ImVec2& outScreenPos, float& outDepth);
 
 	// Hazel-style Vec3 UI control with Reset buttons for X, Y, Z
-	bool DrawVec3Control(const std::string& label, Vector3& values, float resetValue = 0.0f, float columnWidth = 85.0f);
+	bool DrawVec3Control(const std::string& label, Vector3& values, float resetValue = 0.0f, float columnWidth = 85.0f, float displayScale = 1.0f, const char* overrideKey = nullptr);
+	void DrawPrefabOverrideSideline(GameObject& obj, const char* overrideKey);
 
 	// Hierarchy Popup Menu
 	void DrawHierarchyCreationMenu();
@@ -1234,6 +1250,7 @@ private:
 	GizmoAxis activeGizmoAxis_ = GizmoAxis::None;
 	bool isDraggingGizmo_ = false;
 	ImVec2 gizmoDragStartMouse_{};
+	ImVec2 gizmoDragStartAxis_{}; // screen direction of the dragged axis when the drag began
 	Vector3 gizmoStartTranslation_{};
 	Vector3 gizmoStartRotation_{};
 	Vector3 gizmoStartScale_{};
@@ -1376,10 +1393,21 @@ private:
 	int timelineEventsFired_ = 0;
 	float timelineCursor_ = 0.0f;
 	bool timelinePreview_ = false;
+	bool timelinePreviewPlaying_ = false;
+	bool timelinePreviewLoop_ = true;
 	int timelineSelectedTrack_ = -1;
 	int timelineSelectedKey_ = -1;
 	struct TimelineRestore { uint32_t id; Vector3 translation; Vector3 rotation; Vector3 scale; };
 	std::vector<TimelineRestore> timelineRestore_;
+	// Gizmo space & snapping + Inspector component search/clipboard
+	bool gizmoLocalSpace_ = false;
+	bool gizmoSnapEnabled_ = false;
+	float gizmoMoveSnap_ = 0.5f;
+	float gizmoRotateSnapDeg_ = 15.0f;
+	float gizmoScaleSnap_ = 0.1f;
+	char addComponentSearchBuf_[128] = "";
+	std::string copiedComponentName_;
+	std::string copiedComponentJson_;
 	bool showSkeletonOverlay_ = false;
 	uint32_t animatorPreviewObject_ = 0; // Edit mode: object whose Animator previews animatorPreviewState_
 	uint32_t animatorPreviewState_ = 0;

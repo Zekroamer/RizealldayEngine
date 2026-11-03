@@ -39,6 +39,26 @@ void EditorSuite::ComputeSphereColliderWorld(const GameObject& o, Vector3& outCe
 	outRadius = o.sphereRadius * maxScale;
 }
 
+bool EditorSuite::ComputeCapsuleColliderWorld(const GameObject& o, Vector3& outCenter, float& outRadius, float& outHalfHeight) const
+{
+	if (o.components.Empty()) return false;
+	auto& store = const_cast<ComponentStore&>(o.components);
+	const CapsuleColliderComponent* capsule = store.Get<CapsuleColliderComponent>(kCapsuleColliderComponent);
+	if (!capsule || !capsule->enabled) return false;
+
+	Vector3 wPos{};
+	Quaternion wRot = Quaternion::Identity();
+	Vector3 wScale{};
+	GetWorldTRS(o, wPos, wRot, wScale);
+	const float radiusScale = (std::max)(std::abs(wScale.x), std::abs(wScale.z));
+	outCenter = (o.parentId == -1)
+		? Vector3{ wPos.x + capsule->center.x, wPos.y + capsule->center.y, wPos.z + capsule->center.z }
+		: TransformUtil::TransformPoint(capsule->center, o.worldMatrix);
+	outRadius = capsule->radius * radiusScale;
+	outHalfHeight = (std::max)(capsule->height * std::abs(wScale.y) * 0.5f - outRadius, 0.0f);
+	return true;
+}
+
 bool EditorSuite::BuildPhysicsBody(const GameObject& obj, Physics::BodyDesc& desc)
 {
 	const bool box = obj.hasBoxCollider && obj.boxColliderEnabled;

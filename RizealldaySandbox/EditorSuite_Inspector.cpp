@@ -118,15 +118,16 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 
 				// 1. TRANSFORM COMPONENT (Always Present)
 				if (ImGui::CollapsingHeader(TrId("Transform"), ImGuiTreeNodeFlags_DefaultOpen)) {
-					DrawVec3Control(TrId("Position"), obj.translation, 0.0f);
+					DrawVec3Control(TrId("Position"), obj.translation, 0.0f, 85.0f, 1.0f, "translation");
 					ImGui::SetItemTooltip("%s", Tr("World position (X, Y, Z)"));
 
-					if (DrawVec3Control(TrId("Rotation"), obj.rotation, 0.0f)) {
+					constexpr float kRadToDeg = 180.0f / 3.1415926535f;
+					if (DrawVec3Control(TrId("Rotation"), obj.rotation, 0.0f, 85.0f, kRadToDeg, "rotation")) {
 						obj.rotationQuat = Quaternion::FromEuler(obj.rotation);
 					}
-					ImGui::SetItemTooltip("%s", Tr("Euler rotation in radians (X, Y, Z)"));
+					ImGui::SetItemTooltip("%s", Tr("Euler rotation in degrees (X, Y, Z)"));
 
-					DrawVec3Control(TrId("Scale"), obj.scale, 1.0f);
+					DrawVec3Control(TrId("Scale"), obj.scale, 1.0f, 85.0f, 1.0f, "scale");
 					ImGui::SetItemTooltip("%s", Tr("Local scale vector (X, Y, Z)"));
 
 					// Debug-only readouts stay out of the way unless expanded
@@ -517,10 +518,45 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 #endif
 }
 
-bool EditorSuite::DrawVec3Control(const std::string& label, Vector3& values, float resetValue, float columnWidth)
+void EditorSuite::DrawPrefabOverrideSideline(GameObject& obj, const char* overrideKey)
+{
+#ifdef USE_IMGUI
+	if (!overrideKey || overrideKey[0] == '\0' || !HasPrefabOverride(obj, overrideKey)) return;
+	const ImVec2 rMin = ImGui::GetItemRectMin();
+	const ImVec2 rMax = ImGui::GetItemRectMax();
+	ImGui::GetWindowDrawList()->AddRectFilled(
+		ImVec2(rMin.x - 6.0f, rMin.y + 1.0f),
+		ImVec2(rMin.x - 3.0f, rMax.y - 1.0f),
+		IM_COL32(60, 155, 255, 255), 1.5f);
+	if (ImGui::BeginPopupContextItem(overrideKey)) {
+		if (ImGui::MenuItem(TrId("Revert Override"))) {
+			const uint32_t objId = obj.id;
+			const std::string keyCopy = overrideKey;
+			ImGui::EndPopup();
+			RevertPrefabOverridesByPrefix(objId, keyCopy);
+			return;
+		}
+		ImGui::EndPopup();
+	}
+#else
+	(void)obj;
+	(void)overrideKey;
+#endif
+}
+
+bool EditorSuite::DrawVec3Control(const std::string& label, Vector3& values, float resetValue, float columnWidth, float displayScale, const char* overrideKey)
 {
 	bool modified = false;
 #ifdef USE_IMGUI
+	const float safeScale = (std::abs(displayScale) > 1e-6f) ? displayScale : 1.0f;
+	const float dragSpeed = (safeScale > 10.0f) ? 1.0f : 0.1f;
+	const bool isRotation = (overrideKey != nullptr && std::string_view(overrideKey) == "rotation");
+	auto syncRotQuatIfNeeded = [&]() {
+		if (isRotation && selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size())) {
+			gameObjects_[selectedObjectIndex_].rotationQuat = Quaternion::FromEuler(values);
+		}
+	};
+
 	ImGui::PushID(label.c_str());
 
 	if (ImGui::BeginTable("Vec3ControlTable", 2, ImGuiTableFlags_SizingStretchProp)) {
@@ -530,7 +566,17 @@ bool EditorSuite::DrawVec3Control(const std::string& label, Vector3& values, flo
 
 		ImGui::TableNextColumn();
 		const std::string_view shown = Localization::VisibleLabel(label); // the whole label stays the ID
+		const bool hasOverride = (overrideKey != nullptr && selectedObjectIndex_ >= 0 &&
+			selectedObjectIndex_ < static_cast<int>(gameObjects_.size()) &&
+			HasPrefabOverride(gameObjects_[selectedObjectIndex_], overrideKey));
+		if (hasOverride) {
+			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.78f, 1.0f, 1.0f));
+		}
 		ImGui::TextUnformatted(shown.data(), shown.data() + shown.size());
+		if (hasOverride) {
+			ImGui::PopStyleColor();
+			DrawPrefabOverrideSideline(gameObjects_[selectedObjectIndex_], overrideKey);
+		}
 
 		ImGui::TableNextColumn();
 		float availWidth = ImGui::GetContentRegionAvail().x;
@@ -540,7 +586,8 @@ bool EditorSuite::DrawVec3Control(const std::string& label, Vector3& values, flo
 		// X Axis (Red)
 		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.75f, 0.15f, 0.15f, 1.0f));
 		if (ImGui::Button(TrId("X"), buttonSize)) {
-			values.x = resetValue;
+			values.x = resetValue / safeScale;
+			syncRotQuatIfNeeded();
 			modified = true;
 			isSceneDirty_ = true;
 			PushUndoSnapshot();
@@ -548,7 +595,10 @@ bool EditorSuite::DrawVec3Control(const std::string& label, Vector3& values, flo
 		ImGui::PopStyleColor();
 		ImGui::SameLine(0.0f, 2.0f);
 		ImGui::SetNextItemWidth(itemWidth);
-		if (ImGui::DragFloat("##X", &values.x, 0.1f, 0.0f, 0.0f, "%.2f")) {
+		float vx = values.x * safeScale;
+		if (ImGui::DragFloat("##X", &vx, dragSpeed, 0.0f, 0.0f, "%.2f")) {
+			values.x = vx / safeScale;
+			syncRotQuatIfNeeded();
 			modified = true;
 			isSceneDirty_ = true;
 		}
@@ -560,7 +610,8 @@ bool EditorSuite::DrawVec3Control(const std::string& label, Vector3& values, flo
 		// Y Axis (Green)
 		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.65f, 0.20f, 1.0f));
 		if (ImGui::Button(TrId("Y"), buttonSize)) {
-			values.y = resetValue;
+			values.y = resetValue / safeScale;
+			syncRotQuatIfNeeded();
 			modified = true;
 			isSceneDirty_ = true;
 			PushUndoSnapshot();
@@ -568,7 +619,10 @@ bool EditorSuite::DrawVec3Control(const std::string& label, Vector3& values, flo
 		ImGui::PopStyleColor();
 		ImGui::SameLine(0.0f, 2.0f);
 		ImGui::SetNextItemWidth(itemWidth);
-		if (ImGui::DragFloat("##Y", &values.y, 0.1f, 0.0f, 0.0f, "%.2f")) {
+		float vy = values.y * safeScale;
+		if (ImGui::DragFloat("##Y", &vy, dragSpeed, 0.0f, 0.0f, "%.2f")) {
+			values.y = vy / safeScale;
+			syncRotQuatIfNeeded();
 			modified = true;
 			isSceneDirty_ = true;
 		}
@@ -580,7 +634,8 @@ bool EditorSuite::DrawVec3Control(const std::string& label, Vector3& values, flo
 		// Z Axis (Blue)
 		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.35f, 0.78f, 1.0f));
 		if (ImGui::Button(TrId("Z"), buttonSize)) {
-			values.z = resetValue;
+			values.z = resetValue / safeScale;
+			syncRotQuatIfNeeded();
 			modified = true;
 			isSceneDirty_ = true;
 			PushUndoSnapshot();
@@ -588,7 +643,10 @@ bool EditorSuite::DrawVec3Control(const std::string& label, Vector3& values, flo
 		ImGui::PopStyleColor();
 		ImGui::SameLine(0.0f, 2.0f);
 		ImGui::SetNextItemWidth(itemWidth);
-		if (ImGui::DragFloat("##Z", &values.z, 0.1f, 0.0f, 0.0f, "%.2f")) {
+		float vz = values.z * safeScale;
+		if (ImGui::DragFloat("##Z", &vz, dragSpeed, 0.0f, 0.0f, "%.2f")) {
+			values.z = vz / safeScale;
+			syncRotQuatIfNeeded();
 			modified = true;
 			isSceneDirty_ = true;
 		}
@@ -613,6 +671,16 @@ bool EditorSuite::DrawComponentHeader(const char* label, ComponentKind kind)
 	const bool open = ImGui::CollapsingHeader(TrId(label), &keep, ImGuiTreeNodeFlags_DefaultOpen);
 	ImGui::SetItemTooltip("%s", Tr("Right-click or press x to remove this component"));
 	if (ImGui::BeginPopupContextItem()) {
+		if (selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size())) {
+			GameObject& obj = gameObjects_[selectedObjectIndex_];
+			if (ImGui::MenuItem(TrId("Copy Component"))) {
+				CopyComponent(obj, label);
+			}
+			if (ImGui::MenuItem(TrId("Paste Component Values"), nullptr, false, HasCopiedComponent(label))) {
+				PasteComponent(obj, label);
+			}
+			ImGui::Separator();
+		}
 		if (ImGui::MenuItem(TrId("Remove Component"))) {
 			keep = false;
 		}

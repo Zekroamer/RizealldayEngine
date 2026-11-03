@@ -72,7 +72,9 @@ struct EditorSuiteTestAccess {
 	static const std::string& PendingRestore(const EditorSuite& s) { return s.pendingAutoSaveRestore_; }
 	static bool Restore(EditorSuite& s) { return s.RestoreAutoSave(); }
 	static void RunTimelines(EditorSuite& s, float dt) { s.UpdateTimelines(dt); }
+	static void ApplyTimelineAt(EditorSuite& s, const Timeline& t, float time) { s.ApplyTimeline(t, time); }
 	static bool SaveTimelineAsset(EditorSuite& s, const std::string& path, const Timeline& t) { return s.SaveTimeline(path, t); }
+	static bool& GizmoLocalSpace(EditorSuite& s) { return s.gizmoLocalSpace_; }
 	static void AimCamera(EditorSuite& s, const Vector3& position, const Vector3& rotation)
 	{
 		s.gameCamera_->translation = position;
@@ -119,6 +121,9 @@ struct EditorSuiteTestAccess {
 	static void PrepareForTest(EditorSuite& s)
 	{
 		s.sceneState_ = EditorSceneState::Edit; // a failed test must not leave Play mode behind
+		s.autoSaveEnabled_ = true;
+		s.lastAutoSaveTime_ = 0.0;
+		s.autoSaveInTests_ = false;
 		s.NewScene();
 		s.ResetUndoHistory();
 	}
@@ -5800,6 +5805,51 @@ TEST_CASE(Vfx, DecalsDoNotPaintMovingObjects)
 	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
 }
 
+TEST_CASE(Vfx, MovedObjectsAreDrawnWhereTheyAreWithDecalsInTheScene)
+{
+	// A Rigidbody crate in a scene with a decal (it is drawn after the decals), moved along Z like the Inspector does
+	A::AimCamera(s, { 0.0f, 12.0f, 0.0f }, { 1.5707f, 0.0f, 0.0f });
+	GameObject& mark = s.CreateGameObject("Mark", GameObjectType::Empty);
+	mark.translation = { 6.0f, 0.0f, 3.0f };
+	REQUIRE(s.AddComponentByName(mark, kDecalComponent));
+	GameObject& crate = s.CreateCube("Crate", { -3.0f, 0.5f, -2.0f });
+	crate.scale = { 2.0f, 1.0f, 2.0f };
+	crate.materialColor = { 1.0f, 0.0f, 0.0f, 1.0f };
+	crate.hasRigidbody = true;
+	const uint32_t id = crate.id;
+	s.UpdateWorldMatrices();
+	const std::vector<float> before = CaptureGameViewSignature(s);
+	REQUIRE(!before.empty());
+
+	GameObject* moved = s.FindGameObjectById(id, false);
+	moved->translation.z = 2.0f; // 4 m along Z
+	s.PushUndoSnapshot();
+	s.UpdateWorldMatrices();
+	const std::vector<float> after = CaptureGameViewSignature(s);
+	REQUIRE(after.size() == before.size());
+
+	// Red where the crate is now, none left where it was: rows run along Z (16 x 9 cells of RGB)
+	const auto rowRed = [](const std::vector<float>& sig, int row) {
+		float red = 0.0f;
+		for (int column = 0; column < 16; ++column) {
+			const size_t cell = (static_cast<size_t>(row) * 16 + column) * 3;
+			red = (std::max)(red, sig[cell] - sig[cell + 1]);
+		}
+		return red;
+	};
+	int beforeRow = 0;
+	int afterRow = 0;
+	for (int row = 0; row < 9; ++row) {
+		if (rowRed(before, row) > rowRed(before, beforeRow)) beforeRow = row;
+		if (rowRed(after, row) > rowRed(after, afterRow)) afterRow = row;
+	}
+	CHECK_MSG(std::abs(afterRow - beforeRow) >= 2, std::format("red row {} -> {}", beforeRow, afterRow));
+	CHECK_MSG(rowRed(after, beforeRow) < rowRed(before, beforeRow) * 0.5f, std::format("old place still red {:.1f} (was {:.1f})", rowRed(after, beforeRow), rowRed(before, beforeRow)));
+	int crates = 0;
+	for (const auto& o : A::Objects(s)) crates += (o.name == "Crate") ? 1 : 0;
+	CHECK(crates == 1);
+}
+
 TEST_CASE(Vfx, DecalPaintsTheFloorInsideItsBox)
 {
 	// Looking straight down at the Ground Plane
@@ -7430,6 +7480,178 @@ TEST_CASE(Audio, WallsMuffleSoundsAndMovingSoundsShiftPitch)
 	audio->StopAllAudio();
 }
 
+// ===========================================================================
+// Editor UX Refinements (Gizmo projection/snapping/focus, Prefab overrides,
+// Hierarchy range selection, Component copy/paste, Timeline targetId)
+// ===========================================================================
+
+TEST_CASE(EditorUX, GizmoProjectionSnappingLocalAxesAndFocus)
+{
+	// 1. Snapping helper
+	CHECK(std::abs(EditorSuite::SnapValue(0.37f, 0.25f) - 0.25f) < 1e-4f);
+	CHECK(std::abs(EditorSuite::SnapValue(0.38f, 0.25f) - 0.50f) < 1e-4f);
+	CHECK(std::abs(EditorSuite::SnapValue(-0.38f, 0.25f) - (-0.50f)) < 1e-4f);
+	CHECK(std::abs(EditorSuite::SnapValue(1.23f, 0.0f) - 1.23f) < 1e-4f);
+
+	// 2. Perspective-accurate screen-space gizmo projection
+	// If 1 meter in world space projects to (+50, 0) pixels on screen, dragging (+100, +30) pixels moves +2.0 meters.
+	CHECK(std::abs(EditorSuite::ProjectGizmoDrag(ImVec2(100.0f, 30.0f), ImVec2(50.0f, 0.0f), 1.0f) - 2.0f) < 1e-4f);
+	// If the camera faces the opposite side so +X projects to (-40, 0) pixels, dragging (+80, 0) moves -2.0 meters (never inverted!).
+	CHECK(std::abs(EditorSuite::ProjectGizmoDrag(ImVec2(80.0f, 0.0f), ImVec2(-40.0f, 0.0f), 1.0f) - (-2.0f)) < 1e-4f);
+	// An axis that points almost at the camera is a few pixels long: a 100 px drag must not throw the object tens of metres
+	CHECK(std::abs(EditorSuite::ProjectGizmoDrag(ImVec2(-100.0f, -75.0f), ImVec2(-4.0f, -3.0f), 1.0f)) <= 6.5f);
+	CHECK(EditorSuite::ProjectGizmoDrag(ImVec2(-100.0f, -75.0f), ImVec2(-4.0f, -3.0f), 1.0f) > 0.0f); // still the dragged way
+
+	// 3. World vs Local gizmo axes + Capsule Collider world helper
+	GameObject& cube = s.CreateCube("RotatedCube", { 10.0f, 4.0f, -6.0f });
+	const uint32_t cubeId = cube.id;
+	cube.rotation = { 0.0f, 3.1415926535f * 0.5f, 0.0f }; // +90 deg Y
+	cube.rotationQuat = Quaternion::FromEuler(cube.rotation);
+	cube.scale = { 2.0f, 3.0f, 2.0f };
+	s.AddComponentByName(cube, "Capsule Collider");
+	s.UpdateWorldMatrices();
+
+	Vector3 ax{}, ay{}, az{};
+	A::GizmoLocalSpace(s) = false;
+	s.GetGizmoAxes(cube, ax, ay, az);
+	CHECK(std::abs(ax.x - 1.0f) < 1e-3f && std::abs(ax.z) < 1e-3f);
+
+	A::GizmoLocalSpace(s) = true;
+	s.GetGizmoAxes(cube, ax, ay, az);
+	CHECK(std::abs(ax.x) < 1e-2f && std::abs(std::abs(ax.z) - 1.0f) < 1e-2f);
+	A::GizmoLocalSpace(s) = false;
+
+	Vector3 capCenter{};
+	float capRadius = 0.0f;
+	float capHalfHeight = 0.0f;
+	CHECK(s.ComputeCapsuleColliderWorld(cube, capCenter, capRadius, capHalfHeight));
+	CHECK(capRadius > 0.9f);
+	CHECK(capHalfHeight > 1.4f);
+
+	// 4. FocusSelectedObject ('F' key) frames the selected object in the center of the editor camera view
+	s.SelectObject(A::IndexOf(s, cubeId), false);
+	Camera& cam = A::EditorCam(s);
+	cam.translation = { -50.0f, 20.0f, -50.0f };
+	cam.rotation = { 0.35f, -0.6f, 0.0f };
+	cam.Update();
+	REQUIRE(s.FocusSelectedObject());
+
+	// Project the focused object's position into the editor camera's clip space: X and Y must be centered (near 0), w > 0
+	const GameObject* focused = s.FindGameObjectById(cubeId, false);
+	REQUIRE(focused != nullptr);
+	const Matrix4x4& vp = cam.GetViewProjectionMatrix();
+	const Vector3 p = focused->translation;
+	const float clipX = p.x * vp.m[0][0] + p.y * vp.m[1][0] + p.z * vp.m[2][0] + vp.m[3][0];
+	const float clipY = p.x * vp.m[0][1] + p.y * vp.m[1][1] + p.z * vp.m[2][1] + vp.m[3][1];
+	const float clipW = p.x * vp.m[0][3] + p.y * vp.m[1][3] + p.z * vp.m[2][3] + vp.m[3][3];
+	REQUIRE(clipW > 0.5f);
+	CHECK(std::abs(clipX / clipW) < 1e-2f);
+	CHECK(std::abs(clipY / clipW) < 1e-2f);
+}
+
+TEST_CASE(EditorUX, RangeSelectPrefabOverrideQueryAndComponentClipboard)
+{
+	// 1. Shift+Click range selection in Hierarchy
+	const uint32_t id0 = s.CreateCube("Range0", {}).id;
+	const uint32_t id1 = s.CreateCube("Range1", {}).id;
+	const uint32_t id2 = s.CreateCube("Range2", {}).id;
+	const uint32_t id3 = s.CreateCube("Range3", {}).id;
+	const int idx1 = A::IndexOf(s, id1);
+	const int idx3 = A::IndexOf(s, id3);
+	REQUIRE(idx1 >= 0 && idx3 > idx1);
+
+	s.SelectObject(idx1, false);
+	s.SelectObjectRange(idx3);
+	CHECK(!s.IsSelected(id0));
+	CHECK(s.IsSelected(id1));
+	CHECK(s.IsSelected(id2));
+	CHECK(s.IsSelected(id3));
+
+	// 2. CopyComponent & PasteComponent (both data component and built-in component)
+	GameObject* src = s.FindGameObjectById(id0, false);
+	GameObject* dst = s.FindGameObjectById(id1, false);
+	REQUIRE(src != nullptr && dst != nullptr);
+	REQUIRE(s.AddComponentByName(*src, "Capsule Collider"));
+	if (auto* cap = src->components.Get<CapsuleColliderComponent>("Capsule Collider")) {
+		cap->radius = 1.75f;
+		cap->height = 5.0f;
+		cap->center = { 0.0f, 0.5f, 0.0f };
+	}
+	CHECK(s.CopyComponent(*src, "Capsule Collider"));
+	CHECK(s.HasCopiedComponent("Capsule Collider"));
+	// Paste onto an object that does not even have CapsuleCollider yet: adds & populates it with undo support
+	CHECK(s.PasteComponent(*dst, "Capsule Collider"));
+	const auto* pastedCap = dst->components.Get<CapsuleColliderComponent>("Capsule Collider");
+	REQUIRE(pastedCap != nullptr);
+	CHECK(std::abs(pastedCap->radius - 1.75f) < 1e-4f);
+	CHECK(std::abs(pastedCap->height - 5.0f) < 1e-4f);
+	CHECK(std::abs(pastedCap->center.y - 0.5f) < 1e-4f);
+
+	// 3. Inline Prefab Override query & prefix revert
+	A::ProjectRoot(s) = A::TempRoot() / "UXPrefabProj";
+	std::filesystem::create_directories(s.GetPrefabDirectory());
+	src->translation = { 1.0f, 2.0f, 3.0f };
+	REQUIRE(s.SavePrefab(id0, "UXCrate"));
+	const uint32_t instId = s.InstantiatePrefabNow("UXCrate", { 1.0f, 2.0f, 3.0f });
+	REQUIRE(instId != 0u);
+	s.ResetUndoHistory();
+
+	GameObject* inst = s.FindGameObjectById(instId, false);
+	REQUIRE(inst != nullptr);
+	CHECK(!s.HasPrefabOverride(*inst, "scale"));
+	CHECK(!s.HasPrefabOverride(*inst, "components/Capsule Collider/radius"));
+
+	inst->scale.x = 4.0f;
+	if (auto* cap = inst->components.Get<CapsuleColliderComponent>("Capsule Collider")) {
+		cap->radius = 4.25f;
+	}
+	s.PushUndoSnapshot();
+
+	inst = s.FindGameObjectById(instId, false);
+	REQUIRE(inst != nullptr);
+	CHECK(s.HasPrefabOverride(*inst, "scale"));
+	CHECK(s.HasPrefabOverride(*inst, "scale/0"));
+	CHECK(s.HasPrefabOverride(*inst, "components/Capsule Collider/radius"));
+	CHECK(s.HasPrefabOverride(*inst, "components/Capsule Collider"));
+
+	// Revert only the Capsule Collider radius override via prefix/exact helper
+	CHECK(s.RevertPrefabOverridesByPrefix(instId, "components/Capsule Collider/radius"));
+	inst = s.FindGameObjectById(instId, false);
+	REQUIRE(inst != nullptr);
+	CHECK(!s.HasPrefabOverride(*inst, "components/Capsule Collider/radius"));
+	CHECK(s.HasPrefabOverride(*inst, "scale"));
+	REQUIRE(inst->components.Get<CapsuleColliderComponent>("Capsule Collider") != nullptr);
+	CHECK(std::abs(inst->components.Get<CapsuleColliderComponent>("Capsule Collider")->radius - 1.75f) < 1e-4f);
+	CHECK(std::abs(inst->scale.x - 4.0f) < 1e-4f);
+}
+
+TEST_CASE(EditorUX, TimelineTargetSurvivesRenameById)
+{
+	GameObject& actor = s.CreateCube("CutsceneHero", { 0.0f, 0.0f, 0.0f });
+	const uint32_t actorId = actor.id;
+
+	Timeline tl;
+	tl.duration = 2.0f;
+	TimelineTrack& track = tl.FindOrAddTrack(actor.name, TimelineProperty::Position, actorId);
+	CHECK(track.targetId == actorId);
+	track.SetKey({ 0.0f, { 0.0f, 0.0f, 0.0f }, false });
+	track.SetKey({ 2.0f, { 10.0f, 4.0f, -2.0f }, false });
+
+	// Round-trip through JSON preserves targetId
+	const std::string json = tl.ToJson();
+	Timeline loaded;
+	REQUIRE(Timeline::FromJson(json, loaded));
+	REQUIRE(loaded.tracks.size() == 1);
+	CHECK(loaded.tracks[0].targetId == actorId);
+
+	// Rename the GameObject: the track still drives it by targetId!
+	actor.name = "RenamedHero";
+	A::ApplyTimelineAt(s, loaded, 1.0f);
+	CHECK(std::abs(actor.translation.x - 5.0f) < 1e-3f);
+	CHECK(std::abs(actor.translation.y - 2.0f) < 1e-3f);
+	CHECK(std::abs(actor.translation.z - (-1.0f)) < 1e-3f);
+}
+
 
 // ===========================================================================
 // Runner
@@ -7448,6 +7670,7 @@ int EditorSuite::RunSelfTests(const std::string& filter)
 	const fs::path savedProjectRoot = currentProjectRoot_;
 	const fs::path savedDirectory = currentDirectory_;
 	const fs::path savedSessionRoot = sSessionProjectRoot_; // CreateNewProject() changes it; OpenProject() would add it to the recent list
+	const bool savedAutoSave = autoSaveEnabled_;
 	isRunningTests_ = true;
 
 	std::string report;
@@ -7518,6 +7741,7 @@ int EditorSuite::RunSelfTests(const std::string& filter)
 	currentProjectRoot_ = savedProjectRoot;
 	currentDirectory_ = savedDirectory;
 	sSessionProjectRoot_ = savedSessionRoot;
+	autoSaveEnabled_ = savedAutoSave;
 	SyncScriptModuleWithProject(); // back to the scripts of the project that was open before the tests
 	NewScene();
 	isRunningTests_ = false;
