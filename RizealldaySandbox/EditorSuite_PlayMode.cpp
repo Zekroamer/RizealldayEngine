@@ -2,6 +2,10 @@
 
 void EditorSuite::StartPlayMode()
 {
+	if (prefabMode_.active) {
+		LogMessage("[Prefab] Go back to the scene to Play.", 1);
+		return;
+	}
 	if (sceneState_ != EditorSceneState::Edit) {
 		sceneState_ = EditorSceneState::Play;
 		return;

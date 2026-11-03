@@ -363,7 +363,7 @@ void EditorSuite::DrawTetrisHUD(const ImVec2& vpPos, const ImVec2& vpSize)
 		drawList->AddText(ImVec2(center.x - 50.0f, center.y - 30.0f), IM_COL32(255, 255, 255, 255), "GAME OVER");
 
 		ImGui::SetCursorScreenPos(ImVec2(center.x - 60.0f, center.y + 2.0f));
-		if (ImGui::Button("Restart Tetris", ImVec2(120.0f, 26.0f))) {
+		if (ImGui::Button(TrId("Restart Tetris"), ImVec2(120.0f, 26.0f))) {
 			RestartTetrisGame();
 		}
 	}

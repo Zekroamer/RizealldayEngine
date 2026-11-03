@@ -6,19 +6,19 @@ using EditorSuiteDetail::IsSceneFile;
 void EditorSuite::DrawSaveSceneAsModal()
 {
 #ifdef USE_IMGUI
-	ImGui::OpenPopup("Save Scene As...");
-	if (ImGui::BeginPopupModal("Save Scene As...", &showSaveSceneAsModal_, ImGuiWindowFlags_AlwaysAutoResize)) {
-		ImGui::Text("Scene name or file path:");
+	ImGui::OpenPopup(TrId("Save Scene As..."));
+	if (ImGui::BeginPopupModal(TrId("Save Scene As..."), &showSaveSceneAsModal_, ImGuiWindowFlags_AlwaysAutoResize)) {
+		ImGui::Text(Tr("Scene name or file path:"));
 		ImGui::SetNextItemWidth(420.0f);
 		ImGui::InputText("##SaveScenePath", saveSceneAsPathBuf_, sizeof(saveSceneAsPathBuf_));
 
 		// Show where the file will actually be written (bare names go to the project's Assets/Scenes)
 		const std::string targetPath = NormalizeScenePath(saveSceneAsPathBuf_);
-		ImGui::TextDisabled("Saves to: %s", targetPath.empty() ? "-" : targetPath.c_str());
+		ImGui::TextDisabled(Tr("Saves to: %s"), targetPath.empty() ? "-" : targetPath.c_str());
 
 		ImGui::Separator();
 		ImGui::BeginDisabled(targetPath.empty());
-		if (ImGui::Button("Save", ImVec2(100.0f, 0.0f))) {
+		if (ImGui::Button(TrId("Save"), ImVec2(100.0f, 0.0f))) {
 			if (SaveScene(targetPath)) {
 				strncpy_s(saveSceneAsPathBuf_, targetPath.c_str(), sizeof(saveSceneAsPathBuf_) - 1);
 				strncpy_s(openScenePathBuf_, targetPath.c_str(), sizeof(openScenePathBuf_) - 1);
@@ -27,7 +27,7 @@ void EditorSuite::DrawSaveSceneAsModal()
 		}
 		ImGui::EndDisabled();
 		ImGui::SameLine();
-		if (ImGui::Button("Cancel", ImVec2(90.0f, 0.0f))) {
+		if (ImGui::Button(TrId("Cancel"), ImVec2(90.0f, 0.0f))) {
 			showSaveSceneAsModal_ = false;
 		}
 		ImGui::EndPopup();
@@ -38,9 +38,9 @@ void EditorSuite::DrawSaveSceneAsModal()
 void EditorSuite::DrawOpenSceneModal()
 {
 #ifdef USE_IMGUI
-	ImGui::OpenPopup("Open Scene...");
-	if (ImGui::BeginPopupModal("Open Scene...", &showOpenSceneModal_, ImGuiWindowFlags_AlwaysAutoResize)) {
-		ImGui::Text("Select a scene (double-click to open):");
+	ImGui::OpenPopup(TrId("Open Scene..."));
+	if (ImGui::BeginPopupModal(TrId("Open Scene..."), &showOpenSceneModal_, ImGuiWindowFlags_AlwaysAutoResize)) {
+		ImGui::Text(Tr("Select a scene (double-click to open):"));
 
 		// Only scenes that belong to the open project (its Assets/ folder, recursively) are listed
 		std::vector<std::filesystem::path> sceneFiles;
@@ -57,12 +57,12 @@ void EditorSuite::DrawOpenSceneModal()
 			std::sort(sceneFiles.begin(), sceneFiles.end());
 		}
 
-		ImGui::TextDisabled("Project: %s", currentProjectRoot_.empty() ? "(none)" : currentProjectRoot_.filename().string().c_str());
+		ImGui::TextDisabled(Tr("Project: %s"), currentProjectRoot_.empty() ? "(none)" : currentProjectRoot_.filename().string().c_str());
 		ImGui::BeginChild("SceneListArea", ImVec2(460.0f, 200.0f), ImGuiChildFlags_Borders);
 		if (currentProjectRoot_.empty()) {
-			ImGui::TextDisabled("No project is open. Create or open a project first.");
+			ImGui::TextDisabled(Tr("No project is open. Create or open a project first."));
 		} else if (sceneFiles.empty()) {
-			ImGui::TextDisabled("No scenes found in this project's Assets/.");
+			ImGui::TextDisabled(Tr("No scenes found in this project's Assets/."));
 		}
 		for (const auto& scenePath : sceneFiles) {
 			const std::string pathStr = scenePath.string();
@@ -90,16 +90,16 @@ void EditorSuite::DrawOpenSceneModal()
 		const bool insideProject = pathExists && IsPathInsideProject(openScenePathBuf_);
 		const bool canOpen = pathExists && insideProject;
 		if (pathExists && !insideProject) {
-			ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f), "This scene is outside the current project.");
+			ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f), Tr("This scene is outside the current project."));
 		}
 		ImGui::BeginDisabled(!canOpen);
-		if (ImGui::Button("Open", ImVec2(100.0f, 0.0f))) {
+		if (ImGui::Button(TrId("Open"), ImVec2(100.0f, 0.0f))) {
 			LoadScene(openScenePathBuf_);
 			showOpenSceneModal_ = false;
 		}
 		ImGui::EndDisabled();
 		ImGui::SameLine();
-		if (ImGui::Button("Cancel", ImVec2(90.0f, 0.0f))) {
+		if (ImGui::Button(TrId("Cancel"), ImVec2(90.0f, 0.0f))) {
 			showOpenSceneModal_ = false;
 		}
 		ImGui::EndPopup();
@@ -110,25 +110,25 @@ void EditorSuite::DrawOpenSceneModal()
 void EditorSuite::DrawNewProjectModal()
 {
 #ifdef USE_IMGUI
-	ImGui::OpenPopup("New Project");
-	if (ImGui::BeginPopupModal("New Project", &showNewProjectModal_, ImGuiWindowFlags_AlwaysAutoResize)) {
-		ImGui::Text("Create a new, empty game project.");
+	ImGui::OpenPopup(TrId("New Project"));
+	if (ImGui::BeginPopupModal(TrId("New Project"), &showNewProjectModal_, ImGuiWindowFlags_AlwaysAutoResize)) {
+		ImGui::Text(Tr("Create a new, empty game project."));
 		ImGui::Separator();
 
 		ImGui::SetNextItemWidth(320.0f);
-		ImGui::InputText("Project Name", projectNameBuf_, sizeof(projectNameBuf_));
+		ImGui::InputText(TrId("Project Name"), projectNameBuf_, sizeof(projectNameBuf_));
 		ImGui::SetNextItemWidth(320.0f);
-		ImGui::InputText("Location", projectFolderBuf_, sizeof(projectFolderBuf_));
+		ImGui::InputText(TrId("Location"), projectFolderBuf_, sizeof(projectFolderBuf_));
 		ImGui::SameLine();
-		if (ImGui::Button("Browse...")) {
+		if (ImGui::Button(TrId("Browse..."))) {
 			std::string chosen = OpenNativeFolderDialog();
 			if (!chosen.empty()) strncpy_s(projectFolderBuf_, chosen.c_str(), sizeof(projectFolderBuf_) - 1);
 		}
 
 		const std::filesystem::path previewPath = std::filesystem::path(projectFolderBuf_) / projectNameBuf_;
-		ImGui::TextDisabled("Project folder: %s", previewPath.string().c_str());
-		ImGui::TextDisabled("Creates Assets/, GameScripts/ (C++ scripts), ProjectSettings/project.json");
-		ImGui::TextDisabled("and a default scene, then switches the editor to the new project.");
+		ImGui::TextDisabled(Tr("Project folder: %s"), previewPath.string().c_str());
+		ImGui::TextDisabled(Tr("Creates Assets/, GameScripts/ (C++ scripts), ProjectSettings/project.json"));
+		ImGui::TextDisabled(Tr("and a default scene, then switches the editor to the new project."));
 		ImGui::Checkbox(TrId("Initialize Git repository"), &newProjectInitGit_);
 
 		if (!projectModalError_.empty()) {
@@ -136,13 +136,13 @@ void EditorSuite::DrawNewProjectModal()
 		}
 
 		ImGui::Separator();
-		if (ImGui::Button("Create Project", ImVec2(130.0f, 0.0f))) {
+		if (ImGui::Button(TrId("Create Project"), ImVec2(130.0f, 0.0f))) {
 			if (CreateNewProject(projectFolderBuf_, projectNameBuf_)) {
 				showNewProjectModal_ = false;
 			}
 		}
 		ImGui::SameLine();
-		if (ImGui::Button("Cancel", ImVec2(90.0f, 0.0f))) {
+		if (ImGui::Button(TrId("Cancel"), ImVec2(90.0f, 0.0f))) {
 			projectModalError_.clear();
 			showNewProjectModal_ = false;
 		}
@@ -154,10 +154,10 @@ void EditorSuite::DrawNewProjectModal()
 void EditorSuite::DrawOpenProjectModal()
 {
 #ifdef USE_IMGUI
-	ImGui::OpenPopup("Open Project");
+	ImGui::OpenPopup(TrId("Open Project"));
 	ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 	ImGui::SetNextWindowSize(ImVec2(640.0f, 0.0f), ImGuiCond_Always);
-	if (ImGui::BeginPopupModal("Open Project", &showOpenProjectModal_, ImGuiWindowFlags_NoResize)) {
+	if (ImGui::BeginPopupModal(TrId("Open Project"), &showOpenProjectModal_, ImGuiWindowFlags_NoResize)) {
 		// Recent projects: double-click (or select + Open Selected) to open
 		ImGui::SeparatorText(Tr("Recent Projects"));
 		if (DrawRecentProjectsList(200.0f)) {
@@ -180,23 +180,23 @@ void EditorSuite::DrawOpenProjectModal()
 		ImGui::EndDisabled();
 
 		ImGui::SeparatorText(Tr("Other Folder"));
-		ImGui::Text("Select a Project Folder (containing ProjectSettings/project.json):");
+		ImGui::Text(Tr("Select a Project Folder (containing ProjectSettings/project.json):"));
 
-		ImGui::InputText("Project Folder", openProjectFolderBuf_, sizeof(openProjectFolderBuf_));
+		ImGui::InputText(TrId("Project Folder"), openProjectFolderBuf_, sizeof(openProjectFolderBuf_));
 		ImGui::SameLine();
-		if (ImGui::Button("[ Browse Folder... ]")) {
+		if (ImGui::Button(TrId("[ Browse Folder... ]"))) {
 			std::string chosen = OpenNativeFolderDialog();
 			if (!chosen.empty()) strncpy_s(openProjectFolderBuf_, chosen.c_str(), sizeof(openProjectFolderBuf_) - 1);
 		}
 
 		ImGui::Separator();
-		if (ImGui::Button("Open Project", ImVec2(130.0f, 26.0f))) {
+		if (ImGui::Button(TrId("Open Project"), ImVec2(130.0f, 26.0f))) {
 			if (OpenProject(openProjectFolderBuf_)) {
 				showOpenProjectModal_ = false;
 			}
 		}
 		ImGui::SameLine();
-		if (ImGui::Button("Cancel", ImVec2(90.0f, 26.0f))) {
+		if (ImGui::Button(TrId("Cancel"), ImVec2(90.0f, 26.0f))) {
 			showOpenProjectModal_ = false;
 		}
 		ImGui::EndPopup();
@@ -207,34 +207,34 @@ void EditorSuite::DrawOpenProjectModal()
 void EditorSuite::DrawBuildSettingsModal()
 {
 #ifdef USE_IMGUI
-	ImGui::OpenPopup("Build Settings & Standalone Game Exporter");
-	if (ImGui::BeginPopupModal("Build Settings & Standalone Game Exporter", &showBuildSettingsModal_, ImGuiWindowFlags_AlwaysAutoResize)) {
-		ImGui::Text("Export Standalone DirectX 12 Game Build");
+	ImGui::OpenPopup(TrId("Build Settings & Standalone Game Exporter"));
+	if (ImGui::BeginPopupModal(TrId("Build Settings & Standalone Game Exporter"), &showBuildSettingsModal_, ImGuiWindowFlags_AlwaysAutoResize)) {
+		ImGui::Text(Tr("Export Standalone DirectX 12 Game Build"));
 		ImGui::Separator();
 
-		ImGui::InputText("Target Output Folder", buildOutputDirBuf_, sizeof(buildOutputDirBuf_));
+		ImGui::InputText(TrId("Target Output Folder"), buildOutputDirBuf_, sizeof(buildOutputDirBuf_));
 		ImGui::SameLine();
-		if (ImGui::Button("[ Browse Folder... ]")) {
+		if (ImGui::Button(TrId("[ Browse Folder... ]"))) {
 			std::string chosen = OpenNativeFolderDialog();
 			if (!chosen.empty()) strncpy_s(buildOutputDirBuf_, chosen.c_str(), sizeof(buildOutputDirBuf_) - 1);
 		}
 
-		ImGui::InputText("Game Title", buildGameTitleBuf_, sizeof(buildGameTitleBuf_));
+		ImGui::InputText(TrId("Game Title"), buildGameTitleBuf_, sizeof(buildGameTitleBuf_));
 
 		const char* resolutions[] = { "1920 x 1080 (FHD)", "1280 x 720 (HD)", "2560 x 1440 (2K QHD)" };
-		ImGui::Combo("Window Resolution", &buildResolutionIndex_, resolutions, 3);
-		ImGui::Checkbox("Start in Fullscreen", &buildFullscreen_);
+		ImGui::Combo(TrId("Window Resolution"), &buildResolutionIndex_, resolutions, 3);
+		ImGui::Checkbox(TrId("Start in Fullscreen"), &buildFullscreen_);
 
-		ImGui::InputText("Startup Scene", buildStartupSceneBuf_, sizeof(buildStartupSceneBuf_));
+		ImGui::InputText(TrId("Startup Scene"), buildStartupSceneBuf_, sizeof(buildStartupSceneBuf_));
 
 		ImGui::Separator();
-		if (ImGui::Button("[ Export Standalone Game ]", ImVec2(200.0f, 28.0f))) {
+		if (ImGui::Button(TrId("[ Export Standalone Game ]"), ImVec2(200.0f, 28.0f))) {
 			if (ExportStandaloneGame()) {
 				showBuildSettingsModal_ = false;
 			}
 		}
 		ImGui::SameLine();
-		if (ImGui::Button("[ Open Output Folder ]", ImVec2(160.0f, 28.0f))) {
+		if (ImGui::Button(TrId("[ Open Output Folder ]"), ImVec2(160.0f, 28.0f))) {
 			std::filesystem::path outDir(buildOutputDirBuf_);
 			std::error_code ec;
 			std::filesystem::create_directories(outDir, ec);
@@ -242,7 +242,7 @@ void EditorSuite::DrawBuildSettingsModal()
 			ShellExecuteW(NULL, L"open", absOut.wstring().c_str(), NULL, NULL, SW_SHOWNORMAL);
 		}
 		ImGui::SameLine();
-		if (ImGui::Button("Cancel", ImVec2(90.0f, 28.0f))) {
+		if (ImGui::Button(TrId("Cancel"), ImVec2(90.0f, 28.0f))) {
 			showBuildSettingsModal_ = false;
 		}
 		ImGui::EndPopup();
@@ -274,10 +274,10 @@ void EditorSuite::DrawUnsavedChangesModal()
 		return;
 	}
 
-	ImGui::Text("The scene \"%s\" has unsaved changes.", currentSceneName_.c_str());
-	ImGui::TextDisabled("Do you want to save them before closing?");
+	ImGui::Text(Tr("The scene \"%s\" has unsaved changes."), currentSceneName_.c_str());
+	ImGui::TextDisabled(Tr("Do you want to save them before closing?"));
 	if (sceneState_ != EditorSceneState::Edit) {
-		ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f), "Play mode is running: it will be stopped first (Play-mode changes are not saved).");
+		ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f), Tr("Play mode is running: it will be stopped first (Play-mode changes are not saved)."));
 	}
 	if (!unsavedCloseError_.empty()) {
 		ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f), "%s", unsavedCloseError_.c_str());
@@ -291,7 +291,7 @@ void EditorSuite::DrawUnsavedChangesModal()
 	};
 
 	const ImVec2 buttonSize(110.0f, 0.0f);
-	if (ImGui::Button("Save", buttonSize)) {
+	if (ImGui::Button(TrId("Save"), buttonSize)) {
 		if (sceneState_ != EditorSceneState::Edit) {
 			StopPlayMode();
 		}
@@ -301,15 +301,15 @@ void EditorSuite::DrawUnsavedChangesModal()
 			unsavedCloseError_ = "Could not save the scene. Use File > Save Scene As..., then close again.";
 		}
 	}
-	ImGui::SetItemTooltip("Save to %s and close", currentScenePath_.c_str());
+	ImGui::SetItemTooltip(Tr("Save to %s and close"), currentScenePath_.c_str());
 
 	ImGui::SameLine();
-	if (ImGui::Button("Don't Save", buttonSize)) {
+	if (ImGui::Button(TrId("Don't Save"), buttonSize)) {
 		closeApplication();
 	}
 
 	ImGui::SameLine();
-	if (ImGui::Button("Cancel", buttonSize) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+	if (ImGui::Button(TrId("Cancel"), buttonSize) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
 		showUnsavedCloseModal_ = false;
 		ImGui::CloseCurrentPopup();
 	}

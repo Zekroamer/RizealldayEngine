@@ -72,7 +72,7 @@ void EditorSuite::DrawEngineUpdateModal()
 	ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
 	if (!ImGui::BeginPopupModal(popupId, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) return;
 
-	ImGui::Text("%s: %s  ->  %s", Tr("Version"), kEngineVersion, pendingUpdateVersion_.c_str());
+	ImGui::Text(Tr("%s: %s  ->  %s"), Tr("Version"), kEngineVersion, pendingUpdateVersion_.c_str());
 	if (CompareEngineVersions(pendingUpdateVersion_, kEngineVersion) <= 0) {
 		ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f), "%s", Tr("This package is not newer than the installed engine."));
 	}
@@ -118,11 +118,11 @@ void EditorSuite::DrawAboutModal()
 	ImGui::OpenPopup(popupId);
 	ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
 	if (!ImGui::BeginPopupModal(popupId, &showAboutModal_, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) return;
-	ImGui::Text("Rizeallday Engine %s", kEngineVersion);
-	ImGui::TextDisabled("%s: %u", Tr("Script API"), kScriptApiVersion);
+	ImGui::Text(Tr("Rizeallday Engine %s"), kEngineVersion);
+	ImGui::TextDisabled(Tr("%s: %u"), Tr("Script API"), kScriptApiVersion);
 	const fs::path installRoot = EngineUpdate::FindInstallRoot(GetExecutableDirectory());
-	ImGui::TextDisabled("%s: %s", Tr("Installed at"), installRoot.empty() ? Tr("source workspace") : installRoot.string().c_str());
-	ImGui::TextDisabled("%s: %s", Tr("Engine SDK"), ResolveEngineSdkDir().string().c_str());
+	ImGui::TextDisabled(Tr("%s: %s"), Tr("Installed at"), installRoot.empty() ? Tr("source workspace") : installRoot.string().c_str());
+	ImGui::TextDisabled(Tr("%s: %s"), Tr("Engine SDK"), ResolveEngineSdkDir().string().c_str());
 	ImGui::Spacing();
 	if (ImGui::Button(TrId("Close"))) {
 		showAboutModal_ = false;

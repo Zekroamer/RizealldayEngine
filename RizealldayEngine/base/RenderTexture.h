@@ -27,6 +27,10 @@ public:
 	/// Depth becomes readable through GetDepthSrvGPUHandle until the next BeginRender
 	void BeginDepthRead(ID3D12GraphicsCommandList* cmdList);
 	D3D12_GPU_DESCRIPTOR_HANDLE GetDepthSrvGPUHandle() const { return depthSrvGpuHandle_; }
+	bool IsDepthReadable() const { return depthReadable_; }
+	/// Inside a pass: read the depth while drawing to color only (decals), then go back to color + depth
+	void BeginColorOnlyWithDepthRead(ID3D12GraphicsCommandList* cmdList);
+	void EndColorOnlyWithDepthRead(ID3D12GraphicsCommandList* cmdList);
 
 	/// Records a copy of the color target into a new readback buffer (call after EndRender, map it after the frame's fence).
 	/// The buffer holds tightly addressed RGBA8 rows of outRowPitch bytes.

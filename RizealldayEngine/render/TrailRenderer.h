@@ -1,4 +1,5 @@
 ﻿#pragma once
+#include "math/Vector2.h"
 #include "math/Vector3.h"
 #include "math/Vector4.h"
 #include <d3d12.h>
@@ -12,6 +13,7 @@ class Camera;
 struct TrailVertex {
 	Vector4 position;
 	Vector4 color;
+	Vector2 uv; // u: head 0 -> tail 1 (by age), v: one side 0 -> other side 1
 };
 
 struct TrailStyle {
@@ -21,6 +23,7 @@ struct TrailStyle {
 	float widthEnd = 0.0f;     // at the tail
 	Vector4 colorStart{ 1.0f, 1.0f, 1.0f, 1.0f };
 	Vector4 colorEnd{ 1.0f, 1.0f, 1.0f, 0.0f };
+	bool softEdges = true; // false with a texture: its alpha gives the shape across the ribbon
 };
 
 /// History of one moving point, and the ribbon that shows it. No GPU work: the renderer draws what BuildMesh returns.
@@ -30,7 +33,7 @@ public:
 
 	/// Call once per frame with game time. emitting = false: the head stops and the rest ages away.
 	void Update(const Vector3& head, double now, const TrailStyle& style, bool emitting);
-	/// Appends triangles facing cameraPosition; soft across the width (centre = full alpha, edges = 0)
+	/// Appends triangles facing cameraPosition; with softEdges the centre has full alpha and the edges 0
 	void BuildMesh(const Vector3& cameraPosition, double now, const TrailStyle& style, std::vector<TrailVertex>& out) const;
 	void Clear() { points_.clear(); wasEmitting_ = false; }
 	size_t PointCount() const { return points_.size(); }
@@ -51,7 +54,8 @@ public:
 	static TrailRenderer* GetInstance();
 	void Initialize(DirectXCommon* dxCommon, DXCManager* dxc);
 	void Finalize();
-	void Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera, const std::vector<TrailVertex>& vertices, bool additive);
+	/// textureHandle 0 = plain white
+	void Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera, const std::vector<TrailVertex>& vertices, bool additive, uint32_t textureHandle = 0);
 
 private:
 	DirectXCommon* dxCommon_ = nullptr;

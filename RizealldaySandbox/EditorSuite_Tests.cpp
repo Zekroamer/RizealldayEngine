@@ -8,6 +8,7 @@
 #include "PhysicsComponents.h"
 #include "render/LightClusters.h"
 #include "render/GpuParticles.h"
+#include "render/DecalRenderer.h"
 #include "base/TextureManager.h"
 #include "SceneJson.h"
 #include "Tests/TestFramework.h"
@@ -18,6 +19,7 @@
 #include "NavGrid.h"
 #include "base/EngineVersion.h"
 #include "audio/Audio.h"
+#include "AutoSave.h"
 #include <random>
 #include <set>
 
@@ -57,6 +59,26 @@ struct EditorSuiteTestAccess {
 	static void RestorePoses(EditorSuite& s) { s.RestoreSimulatedPoses(); }
 	static EditorSuite::CollisionEventCounts CollisionEvents(const EditorSuite& s) { return s.lastCollisionEvents_; }
 	static uint32_t MusicVoice(const EditorSuite& s) { return s.musicVoice_; }
+	static int TimelineEvents(const EditorSuite& s) { return s.timelineEventsFired_; }
+	static Camera& EditorCam(EditorSuite& s) { return s.editorCamera_; }
+	static int CulledObjects(const EditorSuite& s) { return s.lastCulledObjects_; }
+	static int IndexOf(EditorSuite& s, uint32_t id) { return s.FindGameObjectIndexById(id); }
+	static int Primary(const EditorSuite& s) { return s.selectedObjectIndex_; }
+	static std::vector<uint32_t>& Extra(EditorSuite& s) { return s.extraSelection_; }
+	static bool& AutoSaveInTests(EditorSuite& s) { return s.autoSaveInTests_; }
+	static void RunAutoSave(EditorSuite& s, double now) { s.UpdateAutoSave(now); }
+	static double LastAutoSave(const EditorSuite& s) { return s.lastAutoSaveTime_; }
+	static bool& Dirty(EditorSuite& s) { return s.isSceneDirty_; }
+	static const std::string& PendingRestore(const EditorSuite& s) { return s.pendingAutoSaveRestore_; }
+	static bool Restore(EditorSuite& s) { return s.RestoreAutoSave(); }
+	static void RunTimelines(EditorSuite& s, float dt) { s.UpdateTimelines(dt); }
+	static bool SaveTimelineAsset(EditorSuite& s, const std::string& path, const Timeline& t) { return s.SaveTimeline(path, t); }
+	static void AimCamera(EditorSuite& s, const Vector3& position, const Vector3& rotation)
+	{
+		s.gameCamera_->translation = position;
+		s.gameCamera_->rotation = rotation;
+		s.gameCamera_->Update();
+	}
 	static void AimAudioListener(EditorSuite& s, const Vector3& position, float yaw)
 	{
 		s.gameCamera_->translation = position;
@@ -66,6 +88,7 @@ struct EditorSuiteTestAccess {
 		s.UpdateAudio();
 	}
 	static RenderTexture& GameViewRT(EditorSuite& s) { return s.gameViewRT_; }
+	static void RunAudio(EditorSuite& s, float dt) { s.UpdateWorldMatrices(); s.UpdateAudio(dt); }
 	static int ScriptFaults(const EditorSuite& s) { return s.scriptFaultCount_; }
 	static bool FaultPending(const EditorSuite& s) { return s.scriptFaultPending_; }
 	static bool CursorHidden(const EditorSuite& s) { return s.cursorHidden_; }
@@ -5435,6 +5458,69 @@ TEST_CASE(Vfx, TrailMeshFacesTheCameraAndTapers)
 	bad.Update({ 2.0f, 1.0f, 1.0f }, 0.2, style, true);
 	bad.BuildMesh({ 0.0f, 0.0f, -5.0f }, 0.2, style, mesh);
 	for (const TrailVertex& v : mesh) CHECK(std::isfinite(v.position.x) && std::isfinite(v.position.y) && std::isfinite(v.position.z) && std::isfinite(v.color.w));
+
+	// With a texture the edges stay opaque (the texture gives the shape); u runs head 0 -> tail 1, v side to side
+	style.softEdges = false;
+	mesh.clear();
+	ribbon.BuildMesh({ 5.0f, 0.0f, -20.0f }, 1.0, style, mesh);
+	REQUIRE(!mesh.empty());
+	bool sawLeft = false;
+	bool sawRight = false;
+	for (const TrailVertex& v : mesh) {
+		if (v.position.x > 9.0f) CHECK(v.color.w > 0.9f && v.uv.x < 0.01f);
+		if (v.position.x < 1.0f) CHECK(v.uv.x > 0.99f);
+		sawLeft = sawLeft || v.uv.y == 0.0f;
+		sawRight = sawRight || v.uv.y == 1.0f;
+		if (v.position.y == 0.0f && v.position.x > 1.0f) CHECK_NEAR(v.uv.y, 0.5f, 1e-5f); // the tail has no width: its edges are at y 0 too
+	}
+	CHECK(sawLeft && sawRight);
+}
+
+TEST_CASE(Vfx, TrailTextureIsSampled)
+{
+	// A black texture on an additive trail adds nothing; without it the same trail lights the picture
+	const std::filesystem::path folder = A::TempRoot() / "TrailTexture";
+	std::filesystem::create_directories(folder);
+	const std::filesystem::path black = folder / "black.bmp";
+	{
+		const unsigned char header[54] = { 'B', 'M', 70, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0, 40, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 1, 0, 24, 0,
+			0, 0, 0, 0, 16, 0, 0, 0, 0x13, 0x0B, 0, 0, 0x13, 0x0B, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+		const unsigned char pixels[16] = {}; // 2 x 2 black, rows padded to 8 bytes
+		std::ofstream file(black, std::ios::binary);
+		file.write(reinterpret_cast<const char*>(header), sizeof(header));
+		file.write(reinterpret_cast<const char*>(pixels), sizeof(pixels));
+	}
+	A::AimAudioListener(s, { 0.0f, 2.0f, -10.0f }, 0.0f);
+	A::State(s) = EditorSceneState::Play;
+	const std::vector<float> empty = CaptureGameViewSignature(s);
+	const auto brightest = [&](const char* texture) {
+		GameObject& obj = s.CreateGameObject("Comet", GameObjectType::Empty);
+		const uint32_t id = obj.id;
+		if (!s.AddComponentByName(obj, kTrailComponent)) return -1.0f;
+		auto* trail = obj.components.Get<TrailComponent>(kTrailComponent);
+		trail->widthStart = trail->widthEnd = 3.0f;
+		trail->lifetime = 2.0f;
+		trail->intensity = 4.0f;
+		trail->colorEnd = trail->colorStart;
+		strcpy_s(trail->texture, texture);
+		for (int i = 0; i <= 8; ++i) {
+			s.FindGameObjectById(id, false)->translation = { -4.0f + i, 2.0f, 0.0f };
+			A::GameTime(s) = i * 0.02;
+			s.UpdateWorldMatrices();
+			s.UpdateTrails();
+		}
+		const std::vector<float> after = CaptureGameViewSignature(s);
+		s.QueueDeleteGameObjectById(id);
+		s.ProcessPendingDeletes();
+		float most = 0.0f;
+		for (size_t i = 0; i < after.size() && i < empty.size(); ++i) most = (std::max)(most, after[i] - empty[i]);
+		return most;
+	};
+	const float plain = brightest("");
+	const float textured = brightest(black.string().c_str());
+	A::State(s) = EditorSceneState::Edit;
+	CHECK_MSG(plain > 5.0f && textured < 1.0f, std::format("plain {:.2f}, black texture {:.2f}", plain, textured));
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
 }
 
 TEST_CASE(Vfx, TrailComponentSavesAndDrawsInPlay)
@@ -5591,6 +5677,71 @@ TEST_CASE(Vfx, GpuParticlesAreSimulatedAndDrawn)
 	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
 }
 
+TEST_CASE(Vfx, GpuParticleGradientAndDrawOrder)
+{
+	// Two keys: a straight blend. Three keys: start -> middle at middleTime -> end.
+	CHECK(std::abs(GpuParticleKey(0.25f, 0.0f, 9.0f, 1.0f, 0.5f, false) - 0.25f) < 1.0e-5f);
+	CHECK(std::abs(GpuParticleKey(0.0f, 2.0f, 5.0f, 1.0f, 0.3f, true) - 2.0f) < 1.0e-5f);
+	CHECK(std::abs(GpuParticleKey(0.3f, 2.0f, 5.0f, 1.0f, 0.3f, true) - 5.0f) < 1.0e-5f);
+	CHECK(std::abs(GpuParticleKey(0.65f, 2.0f, 5.0f, 1.0f, 0.3f, true) - 3.0f) < 1.0e-5f);
+	CHECK(std::abs(GpuParticleKey(1.0f, 2.0f, 5.0f, 1.0f, 0.3f, true) - 1.0f) < 1.0e-5f);
+	CHECK(std::isfinite(GpuParticleKey(0.5f, 0.0f, 1.0f, 2.0f, 0.0f, true))); // middle key at an edge
+	CHECK(std::isfinite(GpuParticleKey(0.5f, 0.0f, 1.0f, 2.0f, 1.0f, true)));
+
+	// Far emitters first, so near smoke covers far smoke
+	const std::vector<Vector3> origins{ { 0.0f, 0.0f, 5.0f }, { 0.0f, 0.0f, 20.0f }, { 0.0f, 0.0f, 10.0f } };
+	CHECK(GpuParticleDrawOrder(origins, { 0.0f, 0.0f, 0.0f }) == (std::vector<size_t>{ 1, 2, 0 }));
+	CHECK(GpuParticleDrawOrder(origins, { 0.0f, 0.0f, 30.0f }) == (std::vector<size_t>{ 0, 2, 1 }));
+	CHECK(GpuParticleDrawOrder({}, { 0.0f, 0.0f, 0.0f }).empty());
+}
+
+TEST_CASE(Vfx, GpuParticlesStopAtTheFloor)
+{
+	A::AimAudioListener(s, { 0.0f, 0.0f, -20.0f }, 0.0f);
+	s.UpdateWorldMatrices();
+	A::State(s) = EditorSceneState::Play;
+	CaptureGameViewSignature(s);
+	const std::vector<float> emptyRows = gCapturedRowMeans;
+
+	// The same falling burst twice: without a floor, then with one 1 m under the emitter
+	const auto fall = [&](bool floor) {
+		A::GameTime(s) = 0.0;
+		GameObject& obj = s.CreateGameObject("Rain", GameObjectType::Empty);
+		obj.translation = { 0.0f, 5.0f, 0.0f };
+		const uint32_t id = obj.id;
+		auto* p = s.AddComponentByName(obj, kGpuParticlesComponent) ? obj.components.Get<GpuParticlesComponent>(kGpuParticlesComponent) : nullptr;
+		if (!p) return -1.0f;
+		p->emitting = false;
+		p->burst = 2000;
+		p->lifeMin = p->lifeMax = 3.0f;
+		p->speedMin = 0.0f;
+		p->speedMax = 0.3f;
+		p->spreadDegrees = 180.0f;
+		p->gravity = { 0.0f, -20.0f, 0.0f };
+		p->sizeStart = p->sizeEnd = 1.0f;
+		p->colorStart = p->colorEnd = { 1.0f, 0.5f, 0.2f, 1.0f };
+		p->intensity = 2.0f;
+		p->collideWithFloor = floor;
+		p->floorHeight = 4.0f;
+		p->bounce = 0.0f;
+		s.UpdateWorldMatrices();
+		for (int i = 0; i <= 5; ++i) { // 0.5 s: about 2.5 m down, still in the picture
+			A::GameTime(s) = i * 0.1;
+			CaptureGameViewSignature(s);
+		}
+		const float row = BrightestRowGain(gCapturedRowMeans, emptyRows);
+		s.QueueDeleteGameObjectById(id);
+		s.ProcessPendingDeletes();
+		CaptureGameViewSignature(s);
+		return row;
+	};
+	const float freeRow = fall(false);
+	const float floorRow = fall(true);
+	CHECK_MSG(floorRow >= 0.0f && floorRow + 20.0f < freeRow, std::format("floor row {:.1f}, free row {:.1f}", floorRow, freeRow));
+	A::State(s) = EditorSceneState::Edit;
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
 TEST_CASE(Vfx, GpuParticleSettingsAreSavedAndReachableFromScripts)
 {
 	GameObject& obj = s.CreateGameObject("Fx", GameObjectType::Empty);
@@ -5609,6 +5760,1674 @@ TEST_CASE(Vfx, GpuParticleSettingsAreSavedAndReachableFromScripts)
 	value.integer = 50;
 	REQUIRE(api.setComponentField(&s, id, kGpuParticlesComponent, "burst", &value));
 	CHECK(s.FindGameObjectById(id, false)->components.Get<GpuParticlesComponent>(kGpuParticlesComponent)->burst == 50);
+}
+
+
+TEST_CASE(Vfx, DecalsDoNotPaintMovingObjects)
+{
+	A::AimCamera(s, { 0.0f, 12.0f, 0.0f }, { 1.5707f, 0.0f, 0.0f });
+	// A crate standing inside the decal box, seen from straight above
+	GameObject& crate = s.CreateCube("Crate", { 0.0f, 0.5f, 0.0f });
+	crate.scale = { 4.0f, 1.0f, 4.0f };
+	crate.materialColor = { 1.0f, 1.0f, 1.0f, 1.0f };
+	const uint32_t crateId = crate.id;
+	s.UpdateWorldMatrices();
+	const std::vector<float> plain = CaptureGameViewSignature(s);
+	REQUIRE(!plain.empty());
+
+	GameObject& mark = s.CreateGameObject("Mark", GameObjectType::Empty);
+	mark.translation = { 0.0f, 0.0f, 0.0f };
+	mark.scale = { 6.0f, 6.0f, 6.0f };
+	REQUIRE(s.AddComponentByName(mark, kDecalComponent));
+	mark.components.Get<DecalComponent>(kDecalComponent)->color = { 1.0f, 0.0f, 0.0f, 1.0f };
+	s.UpdateWorldMatrices();
+
+	// Red gain in the middle of the crate top, far from its edges (16 x 9 cells of RGB)
+	const auto crateRed = [&](const std::vector<float>& a) {
+		float most = -1000.0f;
+		for (int row = 4; row <= 4; ++row) {
+			for (int column = 7; column <= 8; ++column) {
+				const size_t cell = (static_cast<size_t>(row) * 16 + column) * 3;
+				most = (std::max)(most, (a[cell] - plain[cell]) - (a[cell + 1] - plain[cell + 1]));
+			}
+		}
+		return most;
+	};
+	const float staticCrate = crateRed(CaptureGameViewSignature(s));
+	s.FindGameObjectById(crateId, false)->hasRigidbody = true;
+	const float movingCrate = crateRed(CaptureGameViewSignature(s));
+	CHECK_MSG(staticCrate > 10.0f && movingCrate < 1.0f, std::format("static crate red {:.2f}, rigidbody crate red {:.2f}", staticCrate, movingCrate));
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+TEST_CASE(Vfx, DecalPaintsTheFloorInsideItsBox)
+{
+	// Looking straight down at the Ground Plane
+	A::AimCamera(s, { 0.0f, 12.0f, 0.0f }, { 1.5707f, 0.0f, 0.0f });
+	const std::vector<float> before = CaptureGameViewSignature(s);
+	REQUIRE(!before.empty());
+
+	GameObject& obj = s.CreateGameObject("Mark", GameObjectType::Empty);
+	obj.translation = { -4.0f, -0.5f, 0.0f };
+	obj.scale = { 4.0f, 2.0f, 4.0f };
+	const uint32_t id = obj.id;
+	REQUIRE(s.AddComponentByName(obj, kDecalComponent));
+	auto* decal = obj.components.Get<DecalComponent>(kDecalComponent);
+	decal->color = { 1.0f, 0.0f, 0.0f, 1.0f };
+	s.UpdateWorldMatrices();
+	std::vector<float> after = CaptureGameViewSignature(s);
+	REQUIRE(after.size() == before.size());
+
+	// Signature: 16 x 9 cells of RGB. Red on the left half (x = -4 from straight above), nothing on the right.
+	const auto change = [&](const std::vector<float>& a, int firstColumn, int lastColumn) {
+		float redGain = 0.0f;
+		float any = 0.0f;
+		for (int row = 0; row < 9; ++row) {
+			for (int column = firstColumn; column <= lastColumn; ++column) {
+				const size_t cell = (static_cast<size_t>(row) * 16 + column) * 3;
+				redGain = (std::max)(redGain, (a[cell] - before[cell]) - (a[cell + 1] - before[cell + 1]));
+				for (int c = 0; c < 3; ++c) any = (std::max)(any, std::abs(a[cell + c] - before[cell + c]));
+			}
+		}
+		return std::pair<float, float>(redGain, any);
+	};
+	CHECK_MSG(change(after, 0, 7).first > 10.0f, std::format("left red {:.2f}", change(after, 0, 7).first));
+	CHECK_MSG(change(after, 9, 15).second < 1.0f, std::format("right {:.2f}", change(after, 9, 15).second));
+
+	// A box that does not reach the floor paints nothing
+	s.FindGameObjectById(id, false)->translation.y = 5.0f;
+	s.UpdateWorldMatrices();
+	after = CaptureGameViewSignature(s);
+	CHECK_MSG(change(after, 0, 15).second < 1.0f, std::format("floating box {:.2f}", change(after, 0, 15).second));
+
+	// The camera inside the box still sees it, and nothing later in the frame lost its depth test
+	GameObject* moved = s.FindGameObjectById(id, false);
+	moved->translation = { 0.0f, 5.0f, 0.0f };
+	moved->scale = { 30.0f, 30.0f, 30.0f };
+	s.UpdateWorldMatrices();
+	after = CaptureGameViewSignature(s);
+	CHECK_MSG(change(after, 0, 15).first > 5.0f, std::format("inside {:.2f}", change(after, 0, 15).first));
+
+	REQUIRE(s.DeserializeSceneFromString(s.SerializeSceneToString()));
+	decal = s.FindGameObjectById(id, false)->components.Get<DecalComponent>(kDecalComponent);
+	REQUIRE(decal != nullptr);
+	CHECK_NEAR(decal->color.y, 0.0f, 1e-5f);
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+
+TEST_CASE(Timeline, KeysAreSampledInOrder)
+{
+	TimelineTrack track;
+	CHECK_NEAR(track.Sample(1.0f).x, 0.0f, 1e-6f); // no keys
+	track.SetKey({ 2.0f, { 10.0f, 0.0f, 0.0f }, false });
+	track.SetKey({ 0.0f, { 0.0f, 0.0f, 0.0f }, false });
+	REQUIRE(track.keys.size() == 2u);
+	CHECK(track.keys[0].time == 0.0f); // sorted however they were added
+	CHECK_NEAR(track.Sample(-1.0f).x, 0.0f, 1e-5f);
+	CHECK_NEAR(track.Sample(1.0f).x, 5.0f, 1e-5f);
+	CHECK_NEAR(track.Sample(9.0f).x, 10.0f, 1e-5f);
+	// The same time replaces
+	track.SetKey({ 2.0f, { 20.0f, 0.0f, 0.0f }, false });
+	CHECK(track.keys.size() == 2u);
+	CHECK_NEAR(track.Sample(2.0f).x, 20.0f, 1e-5f);
+	// Smooth: slower at the start than constant speed, same at the middle and the end
+	track.keys[0].smooth = true;
+	CHECK(track.Sample(0.2f).x < 2.0f);
+	CHECK_NEAR(track.Sample(1.0f).x, 10.0f, 1e-4f);
+	// Bad time stays safe
+	CHECK(std::isfinite(track.Sample(std::numeric_limits<float>::quiet_NaN()).x));
+}
+
+TEST_CASE(Timeline, PlaybackEndsOrLoopsAndFindsEvents)
+{
+	bool finished = false;
+	CHECK_NEAR(TimelineAdvance(1.0f, 0.5f, 4.0f, false, finished), 1.5f, 1e-5f);
+	CHECK(!finished);
+	CHECK_NEAR(TimelineAdvance(3.9f, 0.5f, 4.0f, false, finished), 4.0f, 1e-5f);
+	CHECK(finished);
+	CHECK_NEAR(TimelineAdvance(3.9f, 0.5f, 4.0f, true, finished), 0.4f, 1e-4f);
+	CHECK(!finished);
+	CHECK_NEAR(TimelineAdvance(1.0f, 0.5f, 0.0f, true, finished), 0.0f, 1e-5f); // empty timeline: no endless loop
+
+	Timeline timeline;
+	timeline.duration = 4.0f;
+	timeline.events = { { 1.0f, "a" }, { 2.0f, "b" }, { 0.2f, "c" } };
+	CHECK(timeline.EventsBetween(0.5f, 1.5f).size() == 1u);
+	CHECK(timeline.EventsBetween(1.0f, 1.5f).empty()); // already fired at 1.0
+	CHECK(timeline.EventsBetween(0.5f, 1.0f).size() == 1u);
+	CHECK(timeline.EventsBetween(3.5f, 0.5f).size() == 1u); // wrapped: only "c"
+	CHECK(timeline.EventsBetween(0.0f, 0.0f).empty());
+
+	// Same target and property: one track
+	TimelineTrack& first = timeline.FindOrAddTrack("Camera", TimelineProperty::Position);
+	first.SetKey({ 1.0f, { 1.0f, 2.0f, 3.0f }, true });
+	timeline.FindOrAddTrack("Camera", TimelineProperty::Position);
+	timeline.FindOrAddTrack("Camera", TimelineProperty::Rotation);
+	CHECK(timeline.tracks.size() == 2u);
+
+	Timeline loaded;
+	REQUIRE(Timeline::FromJson(timeline.ToJson(), loaded));
+	CHECK_NEAR(loaded.duration, 4.0f, 1e-5f);
+	REQUIRE(loaded.tracks.size() == 2u);
+	CHECK(loaded.tracks[0].target == "Camera");
+	CHECK(loaded.tracks[1].property == TimelineProperty::Rotation);
+	CHECK_NEAR(loaded.tracks[0].keys.at(0).value.z, 3.0f, 1e-5f);
+	CHECK(loaded.events.size() == 3u);
+	CHECK(!Timeline::FromJson("not json", loaded));
+	CHECK(!Timeline::FromJson("[1,2]", loaded));
+}
+
+TEST_CASE(Timeline, ComponentMovesObjectsDuringPlay)
+{
+	const std::filesystem::path root = A::TempRoot() / "TimelineProject";
+	std::filesystem::create_directories(root / "Assets" / "Timelines");
+	A::ProjectRoot(s) = root;
+
+	Timeline timeline;
+	timeline.duration = 2.0f;
+	timeline.FindOrAddTrack("Mover", TimelineProperty::Position).SetKey({ 0.0f, { 0.0f, 0.0f, 0.0f }, false });
+	timeline.FindOrAddTrack("Mover", TimelineProperty::Position).SetKey({ 2.0f, { 4.0f, 0.0f, 0.0f }, false });
+	timeline.FindOrAddTrack("Mover", TimelineProperty::Rotation).SetKey({ 0.0f, { 0.0f, 1.0f, 0.0f }, false });
+	timeline.FindOrAddTrack("No Such Object", TimelineProperty::Scale).SetKey({ 0.0f, { 2.0f, 2.0f, 2.0f }, false }); // ignored quietly
+	timeline.events = { { 1.0f, "halfway" } };
+	const std::string asset = "Assets/Timelines/Move.timeline.json";
+	REQUIRE(A::SaveTimelineAsset(s, asset, timeline));
+
+	const uint32_t mover = s.CreateGameObject("Mover", GameObjectType::Empty).id;
+	GameObject& director = s.CreateGameObject("Director", GameObjectType::Empty);
+	const uint32_t directorId = director.id;
+	REQUIRE(s.AddComponentByName(director, kTimelineComponent));
+	strncpy_s(director.components.Get<TimelineComponent>(kTimelineComponent)->timeline, asset.c_str(), _TRUNCATE);
+
+	A::State(s) = EditorSceneState::Play;
+	const int eventsBefore = A::TimelineEvents(s);
+	A::RunTimelines(s, 0.5f);
+	const GameObject* moved = s.FindGameObjectById(mover, false);
+	CHECK_NEAR(moved->translation.x, 1.0f, 1e-4f);
+	CHECK_NEAR(moved->rotation.y, 1.0f, 1e-4f);
+	CHECK(A::TimelineEvents(s) == eventsBefore);
+	A::RunTimelines(s, 0.6f); // passes 1.0
+	CHECK(A::TimelineEvents(s) == eventsBefore + 1);
+	A::RunTimelines(s, 5.0f); // the end: stays there and stops
+	CHECK_NEAR(s.FindGameObjectById(mover, false)->translation.x, 4.0f, 1e-4f);
+	CHECK(!s.FindGameObjectById(directorId, false)->components.Get<TimelineComponent>(kTimelineComponent)->playing);
+
+	// A script restarts it
+	EngineAPI& api = A::Api(s);
+	ScriptComponentValue value;
+	value.kind = ScriptComponentValue::Float;
+	value.number[0] = 0.0f;
+	REQUIRE(api.setComponentField(&s, directorId, kTimelineComponent, "time", &value));
+	value = {};
+	value.kind = ScriptComponentValue::Bool;
+	value.integer = 1;
+	REQUIRE(api.setComponentField(&s, directorId, kTimelineComponent, "playing", &value));
+	A::RunTimelines(s, 1.0f);
+	CHECK_NEAR(s.FindGameObjectById(mover, false)->translation.x, 2.0f, 1e-4f);
+
+	// A missing asset does nothing
+	strncpy_s(s.FindGameObjectById(directorId, false)->components.Get<TimelineComponent>(kTimelineComponent)->timeline, "Assets/none.timeline.json", _TRUNCATE);
+	A::RunTimelines(s, 0.1f);
+	A::State(s) = EditorSceneState::Edit;
+}
+
+
+TEST_CASE(Post, FogGrowsWithDistanceAndFadesWithHeight)
+{
+	PostProcessSettings& post = s.PostSettings();
+	post.enabled = true;
+	post.bloom = false;
+	post.fxaa = false;
+	post.ssao = false;
+	post.vignette = 0.0f;
+	// Looking along the floor: the bottom of the picture is near, the middle is far away
+	A::AimCamera(s, { 0.0f, 3.0f, -20.0f }, { 0.25f, 0.0f, 0.0f });
+	const std::vector<float> clear = CaptureGameViewSignature(s);
+	REQUIRE(!clear.empty());
+
+	post.fogEnabled = true;
+	post.fogColor = { 1.0f, 0.0f, 1.0f };
+	post.fogDensity = 0.03f;
+	post.fogHeightFalloff = 0.0f;
+	const std::vector<float> fogged = CaptureGameViewSignature(s);
+	REQUIRE(fogged.size() == clear.size());
+
+	const auto greenLoss = [&](const std::vector<float>& picture, int row) {
+		float total = 0.0f;
+		for (int column = 0; column < 16; ++column) total += clear[(row * 16 + column) * 3 + 1] - picture[(row * 16 + column) * 3 + 1];
+		return total / 16.0f;
+	};
+	CHECK_MSG(greenLoss(fogged, 5) > greenLoss(fogged, 8) + 2.0f, std::format("far {:.2f}, near {:.2f}", greenLoss(fogged, 5), greenLoss(fogged, 8)));
+	CHECK(greenLoss(fogged, 8) > 0.5f);
+
+	// Height: seen from far above, fog that lies low hides less than fog of the same density everywhere
+	post.fogDensity = 0.01f;
+	A::AimCamera(s, { 0.0f, 40.0f, -40.0f }, { 0.78f, 0.0f, 0.0f });
+	const std::vector<float> everywhere = CaptureGameViewSignature(s);
+	post.fogHeight = -0.5f;
+	post.fogHeightFalloff = 0.5f;
+	const std::vector<float> lowLying = CaptureGameViewSignature(s);
+	float everywhereGreen = 0.0f;
+	float lowLyingGreen = 0.0f;
+	for (int column = 0; column < 16; ++column) {
+		everywhereGreen += everywhere[(4 * 16 + column) * 3 + 1];
+		lowLyingGreen += lowLying[(4 * 16 + column) * 3 + 1];
+	}
+	CHECK_MSG(lowLyingGreen > everywhereGreen + 16.0f, std::format("low-lying {:.1f}, everywhere {:.1f}", lowLyingGreen, everywhereGreen));
+	post.fogEnabled = false;
+
+	// Off again: exactly the picture without fog; settings are saved
+	A::AimCamera(s, { 0.0f, 3.0f, -20.0f }, { 0.25f, 0.0f, 0.0f });
+	const std::vector<float> off = CaptureGameViewSignature(s);
+	for (size_t i = 0; i < off.size(); ++i) CHECK_NEAR(off[i], clear[i], 0.5f);
+	post.fogEnabled = true;
+	post.fogDensity = 0.123f;
+	REQUIRE(s.DeserializeSceneFromString(s.SerializeSceneToString()));
+	CHECK(s.PostSettings().fogEnabled);
+	CHECK_NEAR(s.PostSettings().fogDensity, 0.123f, 1e-5f);
+	CHECK_NEAR(s.PostSettings().fogColor.y, 0.0f, 1e-5f);
+
+	// Scripts: every other setting survives a Set
+	EngineAPI& api = A::Api(s);
+	s.PostSettings().ssaoRadius = 1.25f;
+	ScriptPostProcess value;
+	REQUIRE(api.getPostProcess(&s, &value));
+	CHECK(value.fogEnabled);
+	value.fogDensity = -5.0f; // clamped
+	REQUIRE(api.setPostProcess(&s, &value));
+	CHECK(s.PostSettings().fogDensity == 0.0f);
+	CHECK_NEAR(s.PostSettings().ssaoRadius, 1.25f, 1e-5f);
+	s.PostSettings().fogEnabled = false;
+}
+
+
+TEST_CASE(Terrain, HeightsAreRepeatableAndInRange)
+{
+	const TerrainHeights a = GenerateTerrainNoise(33, 7, 4.0f, 4);
+	REQUIRE(a.resolution == 33);
+	REQUIRE(a.values.size() == 33u * 33u);
+	const TerrainHeights same = GenerateTerrainNoise(33, 7, 4.0f, 4);
+	CHECK(a.values == same.values);
+	CHECK(a.values != GenerateTerrainNoise(33, 8, 4.0f, 4).values);
+	float lowest = 1.0f;
+	float highest = 0.0f;
+	float biggestStep = 0.0f;
+	for (int z = 0; z < 33; ++z) {
+		for (int x = 0; x < 33; ++x) {
+			lowest = (std::min)(lowest, a.At(x, z));
+			highest = (std::max)(highest, a.At(x, z));
+			if (x > 0) biggestStep = (std::max)(biggestStep, std::abs(a.At(x, z) - a.At(x - 1, z)));
+		}
+	}
+	CHECK(lowest >= 0.0f && highest <= 1.0f);
+	CHECK(highest - lowest > 0.2f); // really hills
+	CHECK(biggestStep < 0.35f);     // and not random spikes
+
+	// Bad settings give a valid grid
+	CHECK(GenerateTerrainNoise(0, 1, 4.0f, 4).resolution >= 2);
+	CHECK(GenerateTerrainNoise(100000, 1, 4.0f, 4).resolution <= 513);
+	const TerrainHeights flat = GenerateTerrainNoise(5, 1, std::numeric_limits<float>::quiet_NaN(), 0);
+	for (float v : flat.values) CHECK(std::isfinite(v));
+
+	// Image: 2 x 2, top row = far edge (+z)
+	const std::vector<uint8_t> pixels = { 255, 255, 0, 0 };
+	const TerrainHeights image = TerrainFromImage(pixels, 2, 2, 3);
+	REQUIRE(image.resolution == 3);
+	CHECK_NEAR(image.At(0, 2), 1.0f, 1e-4f); // far edge
+	CHECK_NEAR(image.At(2, 2), 1.0f, 1e-4f);
+	CHECK_NEAR(image.At(1, 0), 0.0f, 1e-4f); // near edge
+	CHECK_NEAR(image.At(1, 1), 0.5f, 1e-4f);
+	CHECK(TerrainFromImage({}, 0, 0, 3).values.size() == 9u); // nothing to read: flat
+}
+
+TEST_CASE(Terrain, BrushesRaycastAndHeightFiles)
+{
+	TerrainHeights flat;
+	flat.resolution = 33;
+	flat.values.assign(33 * 33, 0.5f);
+
+	// Raise: the middle goes up, the far corner does not, nothing leaves 0..1
+	TerrainHeights h = flat;
+	for (int i = 0; i < 200; ++i) SculptTerrain(h, 0.5f, 0.5f, 0.2f, 0.05f, TerrainBrush::Raise);
+	CHECK(h.At(16, 16) > 0.9f && h.At(16, 16) <= 1.0f);
+	CHECK_NEAR(h.At(0, 0), 0.5f, 1e-6f);
+	CHECK(h.At(20, 16) > 0.5f && h.At(20, 16) < h.At(16, 16) + 1e-6f); // softer towards the edge of the brush
+	for (int i = 0; i < 400; ++i) SculptTerrain(h, 0.5f, 0.5f, 0.2f, 0.05f, TerrainBrush::Lower);
+	CHECK(h.At(16, 16) >= 0.0f && h.At(16, 16) < 0.1f);
+
+	// Flatten pulls towards the target; Smooth takes the edge off a spike
+	h = flat;
+	for (int i = 0; i < 50; ++i) SculptTerrain(h, 0.25f, 0.75f, 0.1f, 0.5f, TerrainBrush::Flatten, 0.2f);
+	CHECK_NEAR(h.At(8, 24), 0.2f, 0.01f);
+	h = flat;
+	h.values[16 * 33 + 16] = 1.0f;
+	SculptTerrain(h, 0.5f, 0.5f, 0.1f, 1.0f, TerrainBrush::Smooth);
+	CHECK(h.At(16, 16) < 0.8f);
+	SculptTerrain(h, std::numeric_limits<float>::quiet_NaN(), 0.5f, 0.1f, 1.0f, TerrainBrush::Raise); // ignored
+	for (float value : h.values) CHECK(std::isfinite(value));
+
+	// A ray in the terrain's own space (centered, y = value * height) finds where it lands
+	float u = 0.0f;
+	float v = 0.0f;
+	REQUIRE(RaycastTerrain(flat, 40.0f, 10.0f, { 5.0f, 50.0f, -10.0f }, { 0.0f, -1.0f, 0.0f }, u, v));
+	CHECK_NEAR(u, 25.0f / 40.0f, 0.01f);
+	CHECK_NEAR(v, 10.0f / 40.0f, 0.01f);
+	REQUIRE(RaycastTerrain(flat, 40.0f, 10.0f, { -30.0f, 5.0f + 30.0f, 0.0f }, { 0.7071f, -0.7071f, 0.0f }, u, v)); // slanted, from outside
+	CHECK_NEAR(u, 0.5f, 0.02f);
+	CHECK(!RaycastTerrain(flat, 40.0f, 10.0f, { 100.0f, 50.0f, 0.0f }, { 0.0f, -1.0f, 0.0f }, u, v)); // beside it
+	CHECK(!RaycastTerrain(flat, 40.0f, 10.0f, { 0.0f, 50.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, u, v));    // away from it
+
+	// Height files round-trip and reject garbage
+	TerrainHeights loaded;
+	REQUIRE(DecodeTerrainHeights(EncodeTerrainHeights(h), loaded));
+	CHECK(loaded.resolution == 33 && loaded.values == h.values);
+	CHECK(!DecodeTerrainHeights({ 1, 2, 3 }, loaded));
+}
+
+TEST_CASE(Terrain, SculptedHeightsAreSavedAndUsed)
+{
+	const std::filesystem::path root = A::TempRoot() / "TerrainSculpt";
+	std::filesystem::create_directories(root / "Assets");
+	A::ProjectRoot(s) = root;
+	for (auto& o : A::Objects(s)) {
+		if (o.name == "Ground Plane") o.isActive = false;
+	}
+	GameObject& obj = s.CreateGameObject("Land", GameObjectType::Empty);
+	obj.translation = { 10.0f, 0.0f, 0.0f };
+	const uint32_t id = obj.id;
+	REQUIRE(s.AddComponentByName(obj, kTerrainComponent));
+	auto* terrain = obj.components.Get<TerrainComponent>(kTerrainComponent);
+	terrain->size = 40.0f;
+	terrain->height = 8.0f;
+	terrain->resolution = 33;
+	s.UpdateWorldMatrices();
+	REQUIRE(s.GenerateTerrain(obj));
+
+	const auto groundAt = [&](float x, float z) {
+		EngineAPI& api = A::Api(s);
+		A::State(s) = EditorSceneState::Play;
+		A::Physics(s, 1.0f / 60.0f);
+		ScriptRaycastHit hit{};
+		const bool found = api.raycast(&s, { x, 50.0f, z }, { 0.0f, -1.0f, 0.0f }, 100.0f, 0xFFFFFFFFu, 0, &hit);
+		A::State(s) = EditorSceneState::Edit;
+		return found ? hit.point.y : -1000.0f;
+	};
+	const float before = groundAt(15.0f, 5.0f);
+	const float farBefore = groundAt(-8.0f, -18.0f);
+
+	// A stroke straight down on world (15, 5): the terrain sits at x = 10, so that is local (5, 5)
+	s.terrainSculpt_.brush = TerrainBrush::Raise;
+	s.terrainSculpt_.radius = 0.15f;
+	s.terrainSculpt_.strength = 0.05f;
+	for (int i = 0; i < 20; ++i) CHECK(s.SculptTerrainAt(id, { 15.0f, 50.0f, 5.0f }, { 0.0f, -1.0f, 0.0f }));
+	CHECK(!s.SculptTerrainAt(id, { 200.0f, 50.0f, 5.0f }, { 0.0f, -1.0f, 0.0f })); // misses the terrain
+	REQUIRE(s.FinishTerrainSculpt());
+	terrain = s.FindGameObjectById(id, false)->components.Get<TerrainComponent>(kTerrainComponent);
+	REQUIRE(terrain != nullptr && terrain->heightData[0] != '\0');
+	CHECK(std::filesystem::exists(root / std::filesystem::path(terrain->heightData)));
+	const float raised = groundAt(15.0f, 5.0f);
+	CHECK_MSG(raised > before + 2.0f, std::format("{:.2f} -> {:.2f}", before, raised));
+	CHECK_NEAR(groundAt(-8.0f, -18.0f), farBefore, 0.05f); // outside the brush
+
+	// Every stroke is one undo step: undo the second, then the first, and redo both
+	s.terrainSculpt_.brush = TerrainBrush::Lower;
+	for (int i = 0; i < 10; ++i) CHECK(s.SculptTerrainAt(id, { 15.0f, 50.0f, 5.0f }, { 0.0f, -1.0f, 0.0f }));
+	REQUIRE(s.FinishTerrainSculpt());
+	const float lowered = groundAt(15.0f, 5.0f);
+	CHECK_MSG(lowered < raised - 1.0f, std::format("{:.2f} -> {:.2f}", raised, lowered));
+	s.Undo();
+	CHECK_NEAR(groundAt(15.0f, 5.0f), raised, 0.05f);
+	s.Undo();
+	CHECK_NEAR(groundAt(15.0f, 5.0f), before, 0.05f);
+	CHECK(s.FindGameObjectById(id, false)->components.Get<TerrainComponent>(kTerrainComponent)->heightData[0] == '\0');
+	s.Redo();
+	s.Redo();
+	CHECK_NEAR(groundAt(15.0f, 5.0f), lowered, 0.05f);
+	// A stroke after an undo starts from what is shown, not from the undone shape
+	s.Undo();
+	s.terrainSculpt_.brush = TerrainBrush::Raise;
+	CHECK(s.SculptTerrainAt(id, { 5.0f, 50.0f, -12.0f }, { 0.0f, -1.0f, 0.0f })); // local (-5, -12), away from (5, 5)
+	REQUIRE(s.FinishTerrainSculpt());
+	CHECK_NEAR(groundAt(15.0f, 5.0f), raised, 0.05f);
+	terrain = s.FindGameObjectById(id, false)->components.Get<TerrainComponent>(kTerrainComponent);
+
+	// Generate again keeps the sculpted shape (the noise settings do not win over it)
+	terrain->seed = 77;
+	REQUIRE(s.GenerateTerrain(*s.FindGameObjectById(id, false)));
+	CHECK_NEAR(groundAt(15.0f, 5.0f), raised, 0.05f);
+}
+
+TEST_CASE(Terrain, BrushOutlineLiesOnTheSurface)
+{
+	const std::filesystem::path root = A::TempRoot() / "TerrainBrushRing";
+	std::filesystem::create_directories(root / "Assets");
+	A::ProjectRoot(s) = root;
+	GameObject& obj = s.CreateGameObject("Land", GameObjectType::Empty);
+	obj.translation = { 10.0f, 1.0f, 0.0f };
+	const uint32_t id = obj.id;
+	REQUIRE(s.AddComponentByName(obj, kTerrainComponent));
+	auto* terrain = obj.components.Get<TerrainComponent>(kTerrainComponent);
+	terrain->size = 40.0f;
+	terrain->height = 8.0f;
+	terrain->resolution = 33;
+	s.UpdateWorldMatrices();
+	s.terrainSculpt_.radius = 0.1f; // 4 m on a 40 m terrain
+
+	std::vector<Vector3> ring;
+	REQUIRE(s.TerrainBrushOutline(id, { 15.0f, 50.0f, 5.0f }, { 0.0f, -1.0f, 0.0f }, ring));
+	REQUIRE(ring.size() >= 32u);
+	TerrainHeights heights;
+	REQUIRE(s.ComputeTerrainHeights(*terrain, heights));
+	for (const Vector3& p : ring) {
+		const float dx = p.x - 15.0f;
+		const float dz = p.z - 5.0f;
+		CHECK_NEAR(std::sqrt(dx * dx + dz * dz), 4.0f, 0.05f);
+		// On the surface (lifted 5 cm so the surface does not hide it), in world space: the object sits 1 m up
+		CHECK_NEAR(p.y, TerrainHeightAt(heights, (p.x - 10.0f + 20.0f) / 40.0f, (p.z + 20.0f) / 40.0f) * 8.0f + 1.0f + 0.05f, 0.01f);
+	}
+	CHECK(!s.TerrainBrushOutline(id, { 200.0f, 50.0f, 5.0f }, { 0.0f, -1.0f, 0.0f }, ring));
+}
+
+TEST_CASE(Terrain, ObjHasOneVertexPerGridPoint)
+{
+	const TerrainHeights heights = GenerateTerrainNoise(5, 1, 2.0f, 2);
+	const std::string obj = BuildTerrainObj(heights, 10.0f, 2.0f, 1.0f);
+	int vertices = 0;
+	int normals = 0;
+	int faces = 0;
+	float minX = 1e9f;
+	float maxX = -1e9f;
+	std::stringstream lines(obj);
+	for (std::string line; std::getline(lines, line);) {
+		if (line.rfind("v ", 0) == 0) {
+			++vertices;
+			float x = 0.0f, y = 0.0f, z = 0.0f;
+			std::stringstream(line.substr(2)) >> x >> y >> z;
+			minX = (std::min)(minX, x);
+			maxX = (std::max)(maxX, x);
+			CHECK(y >= 0.0f && y <= 2.0f);
+		}
+		if (line.rfind("vn ", 0) == 0) ++normals;
+		if (line.rfind("f ", 0) == 0) ++faces;
+	}
+	CHECK(vertices == 25);
+	CHECK(normals == 25);
+	CHECK(faces == 4 * 4 * 2);
+	CHECK_NEAR(minX, -5.0f, 1e-3f); // centred, and exactly as wide as asked
+	CHECK_NEAR(maxX, 5.0f, 1e-3f);
+	CHECK(BuildTerrainObj({}, 10.0f, 1.0f, 1.0f).find("f ") == std::string::npos);
+}
+
+TEST_CASE(Terrain, GeneratedTerrainIsSolidAndVisibleAndMatchesItsHeights)
+{
+	const std::filesystem::path root = A::TempRoot() / "TerrainProject";
+	std::filesystem::create_directories(root / "Assets");
+	A::ProjectRoot(s) = root;
+	for (auto& o : A::Objects(s)) {
+		if (o.name == "Ground Plane") o.isActive = false;
+	}
+
+	GameObject& obj = s.CreateGameObject("Land", GameObjectType::Empty);
+	const uint32_t id = obj.id;
+	REQUIRE(s.AddComponentByName(obj, kTerrainComponent));
+	auto* terrain = obj.components.Get<TerrainComponent>(kTerrainComponent);
+	terrain->size = 40.0f;
+	terrain->height = 8.0f;
+	terrain->resolution = 33;
+	terrain->seed = 3;
+	A::AimCamera(s, { 0.0f, 40.0f, 0.0f }, { 1.5707f, 0.0f, 0.0f });
+	const std::vector<float> before = CaptureGameViewSignature(s);
+	REQUIRE(s.GenerateTerrain(obj));
+	const std::string firstFile = s.FindGameObjectById(id, false)->modelPath;
+	CHECK(std::filesystem::exists(root / std::filesystem::path(firstFile)));
+	CHECK(s.FindGameObjectById(id, false)->components.Has("Mesh Collider"));
+	CHECK(s.FindGameObjectById(id, false)->isStatic);
+
+	// Seen from above it covers the view: the winding faces up
+	const std::vector<float> after = CaptureGameViewSignature(s);
+	REQUIRE(after.size() == before.size());
+	float change = 0.0f;
+	for (size_t i = 0; i < after.size(); ++i) change = (std::max)(change, std::abs(after[i] - before[i]));
+	CHECK_MSG(change > 5.0f, std::format("largest change {:.2f}", change));
+
+	// A ray down lands on the height the grid says, on the right side of the map (asymmetric points)
+	const TerrainHeights heights = GenerateTerrainNoise(33, 3, terrain->frequency, terrain->octaves);
+	EngineAPI& api = A::Api(s);
+	A::State(s) = EditorSceneState::Play;
+	A::Physics(s, 1.0f / 60.0f);
+	const int points[][2] = { { 4, 8 }, { 28, 8 }, { 8, 28 }, { 24, 20 } };
+	for (const auto& point : points) {
+		const float x = -20.0f + 40.0f * point[0] / 32.0f;
+		const float z = -20.0f + 40.0f * point[1] / 32.0f;
+		ScriptRaycastHit hit{};
+		REQUIRE(api.raycast(&s, { x, 50.0f, z }, { 0.0f, -1.0f, 0.0f }, 100.0f, 0xFFFFFFFFu, 0, &hit));
+		CHECK_NEAR(hit.point.y, heights.At(point[0], point[1]) * 8.0f, 0.05f);
+	}
+	A::State(s) = EditorSceneState::Edit;
+
+	// Generating again uses a new file and removes the old one; the settings are saved
+	s.FindGameObjectById(id, false)->components.Get<TerrainComponent>(kTerrainComponent)->seed = 4;
+	REQUIRE(s.GenerateTerrain(*s.FindGameObjectById(id, false)));
+	const std::string secondFile = s.FindGameObjectById(id, false)->modelPath;
+	CHECK(secondFile != firstFile);
+	CHECK(std::filesystem::exists(root / std::filesystem::path(firstFile))); // Undo still shows it
+	s.Undo();
+	CHECK(s.FindGameObjectById(id, false)->modelPath == firstFile);
+	s.Redo();
+	REQUIRE(s.DeserializeSceneFromString(s.SerializeSceneToString()));
+	const GameObject* loaded = s.FindGameObjectById(id, false);
+	REQUIRE(loaded != nullptr);
+	CHECK(loaded->modelPath == secondFile);
+
+	// A missing heightmap is an error, not a crash, and changes nothing
+	GameObject* again = s.FindGameObjectById(id, false);
+	strncpy_s(again->components.Get<TerrainComponent>(kTerrainComponent)->heightmap, "Assets/none.png", _TRUNCATE);
+	CHECK(!s.GenerateTerrain(*again));
+	CHECK(s.FindGameObjectById(id, false)->modelPath == secondFile);
+	// Closing the scene removes the bakes nothing uses any more, and keeps the one the saved scene uses
+	REQUIRE(s.SaveScene((root / "Assets" / "Land.scene.json").string()));
+	s.NewScene();
+	CHECK(!std::filesystem::exists(root / std::filesystem::path(firstFile)));
+	CHECK(std::filesystem::exists(root / std::filesystem::path(secondFile)));
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+
+namespace {
+	/// Text of the string literal that starts at `pos` (just after the opening quote), joined with literals that
+	/// directly follow it ("a" "b" is one string in C++); simple escapes only
+	std::string ReadCppLiteral(const std::string& text, size_t pos, size_t* end = nullptr)
+	{
+		std::string out;
+		for (;;) {
+			for (; pos < text.size() && text[pos] != '"'; ++pos) {
+				if (text[pos] == '\\' && pos + 1 < text.size()) {
+					const char next = text[++pos];
+					out += next == 'n' ? '\n' : next == 't' ? '\t' : next;
+				} else {
+					out += text[pos];
+				}
+			}
+			size_t next = pos + 1;
+			while (next < text.size() && std::isspace(static_cast<unsigned char>(text[next]))) ++next;
+			if (next >= text.size() || text[next] != '"') break;
+			pos = next + 1;
+		}
+		if (end) *end = pos;
+		return out;
+	}
+}
+
+TEST_CASE(Localization, JapaneseCoversEveryEditorString)
+{
+	namespace fs = std::filesystem;
+	// Runs where the sources are (the Sandbox folder, like CI); a packaged editor has none to check
+	const fs::path sources = fs::current_path();
+	if (!fs::exists(sources / "EditorSuite_UI.cpp")) return;
+	std::ifstream jaFile(sources / "Resources" / "Localization" / "ja.json", std::ios::binary);
+	REQUIRE(jaFile.good());
+	std::stringstream jaText;
+	jaText << jaFile.rdbuf();
+	const auto ja = SceneJson::Parse(jaText.str());
+	REQUIRE(ja.has_value() && ja->is_object());
+
+	// Calls whose first argument a person reads; a bare literal there is never translated
+	static const char* const kCalls[] = { "Text(\"", "TextDisabled(\"", "TextWrapped(\"", "Button(\"", "SmallButton(\"", "Checkbox(\"", "MenuItem(\"",
+		"BeginMenu(\"", "Begin(\"", "BeginTabItem(\"", "CollapsingHeader(\"", "DragFloat(\"", "DragInt(\"", "SliderFloat(\"", "SliderInt(\"",
+		"InputText(\"", "InputFloat(\"", "InputInt(\"", "Combo(\"", "ColorEdit3(\"", "ColorEdit4(\"", "Selectable(\"", "SeparatorText(\"",
+		"TreeNode(\"", "TreeNodeEx(\"", "SetItemTooltip(\"", "BeginPopupModal(\"", "BulletText(\"", "RadioButton(\"" };
+	std::vector<std::string> untranslated;
+	std::vector<std::string> unwrapped;
+	for (const auto& entry : fs::directory_iterator(sources)) {
+		const std::string name = entry.path().filename().string();
+		if (entry.path().extension() != ".cpp" || name == "EditorSuite_Tests.cpp") continue;
+		std::ifstream in(entry.path(), std::ios::binary);
+		std::stringstream buffer;
+		buffer << in.rdbuf();
+		const std::string text = buffer.str();
+		for (const char* prefix : { "Tr(\"", "TrId(\"" }) {
+			for (size_t at = text.find(prefix); at != std::string::npos; at = text.find(prefix, at + 1)) {
+				if (at > 0 && (std::isalnum(static_cast<unsigned char>(text[at - 1])) || text[at - 1] == '_')) continue;
+				std::string key = ReadCppLiteral(text, at + std::strlen(prefix));
+				if (const size_t hashes = key.find("##"); hashes != std::string::npos) key.resize(hashes);
+				if (std::count_if(key.begin(), key.end(), [](unsigned char c) { return std::isalpha(c) != 0; }) < 2) continue; // "X", "%d": nothing to translate
+				if (!ja->contains(key)) untranslated.push_back(name + ": " + key);
+			}
+		}
+		for (const char* call : kCalls) {
+			const std::string needle = std::string("ImGui::") + call;
+			for (size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) {
+				std::string literal = ReadCppLiteral(text, at + needle.size());
+				if (literal.rfind("##", 0) == 0) continue; // an ID only, nothing shown
+				if (const size_t hashes = literal.find("##"); hashes != std::string::npos) literal.resize(hashes);
+				int letters = 0;
+				for (unsigned char c : literal) letters += std::isalpha(c) ? 1 : 0;
+				if (letters < 2) continue; // "X", "%.2f", symbols
+				unwrapped.push_back(name + ": " + literal);
+			}
+		}
+		// The editor's own label widget, and placeholder text of search boxes
+		for (const char* needle : { "DrawVec3Control(\"", "InputTextWithHint(\"" }) {
+			for (size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) {
+				size_t end = 0;
+				std::string literal = ReadCppLiteral(text, at + std::strlen(needle), &end);
+				if (std::string_view(needle).starts_with("InputTextWithHint")) {
+					const size_t next = text.find_first_not_of(" ,", end + 1);
+					if (next == std::string::npos || text[next] != '"') continue; // the hint is already Tr(...)
+					literal = ReadCppLiteral(text, next + 1);
+				}
+				if (std::count_if(literal.begin(), literal.end(), [](unsigned char c) { return std::isalpha(c) != 0; }) < 2) continue;
+				unwrapped.push_back(name + ": " + literal);
+			}
+		}
+	}
+	// What the registry shows: component names, field labels, field tooltips (test-only components excluded)
+	for (const ComponentInfo& info : ComponentRegistry::Get().All()) {
+		if (!info.IsDataComponent() || info.category == "Tests") continue;
+		if (!ja->contains(info.name)) untranslated.push_back("component: " + info.name);
+		for (const ComponentField& field : info.fields) {
+			if (const std::string label = HumanizeFieldName(field.name); !ja->contains(label)) untranslated.push_back(info.name + " field: " + label);
+			if (field.tooltip && !ja->contains(field.tooltip)) untranslated.push_back(info.name + " tooltip: " + field.tooltip);
+		}
+	}
+	// Indonesian keeps up with Japanese
+	std::ifstream idFile(sources / "Resources" / "Localization" / "id.json", std::ios::binary);
+	std::stringstream idText;
+	idText << idFile.rdbuf();
+	const auto id = SceneJson::Parse(idText.str());
+	REQUIRE(id.has_value() && id->is_object());
+	for (auto it = ja->begin(); it != ja->end(); ++it) {
+		if (it.key() != "_language" && !id->contains(it.key())) untranslated.push_back("no Indonesian: " + it.key());
+	}
+	std::string report;
+	for (size_t i = 0; i < untranslated.size() && i < 200; ++i) report += "\n  no Japanese: " + untranslated[i];
+	for (size_t i = 0; i < unwrapped.size() && i < 15; ++i) report += "\n  not wrapped in Tr/TrId: " + unwrapped[i];
+	CHECK_MSG(untranslated.empty() && unwrapped.empty(), std::format("{} without Japanese, {} not wrapped{}", untranslated.size(), unwrapped.size(), report));
+}
+
+
+TEST_CASE(AutoSave, RulesForWhenAndWhere)
+{
+	CHECK(AutoSave::IsDue(130.0, 0.0, 120.0, true, true));
+	CHECK(!AutoSave::IsDue(100.0, 0.0, 120.0, true, true)); // too soon
+	CHECK(!AutoSave::IsDue(500.0, 0.0, 120.0, false, true)); // nothing to save
+	CHECK(!AutoSave::IsDue(500.0, 0.0, 120.0, true, false)); // Play mode: changes there are thrown away anyway
+	CHECK(!AutoSave::IsDue(500.0, 0.0, 0.0, true, true));   // interval 0 = off
+
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "AutoSaveRules";
+	CHECK(AutoSave::PathFor(root, root / "Assets" / "Scenes" / "Level1.scene.json") == root / "Library" / "AutoSave" / "Level1.scene.json.autosave.json");
+	CHECK(AutoSave::PathFor(root, "") == root / "Library" / "AutoSave" / "Untitled.autosave.json");
+
+	fs::create_directories(root);
+	const fs::path scene = root / "a.scene.json";
+	const fs::path copy = root / "a.autosave.json";
+	{ std::ofstream(scene) << "{}"; }
+	CHECK(!AutoSave::IsNewerThanScene(copy, scene)); // no copy
+	{ std::ofstream(copy) << "{}"; }
+	fs::last_write_time(copy, fs::last_write_time(scene) + std::chrono::seconds(10));
+	CHECK(AutoSave::IsNewerThanScene(copy, scene));
+	fs::last_write_time(copy, fs::last_write_time(scene) - std::chrono::seconds(10));
+	CHECK(!AutoSave::IsNewerThanScene(copy, scene));
+	CHECK(AutoSave::IsNewerThanScene(copy, root / "missing.scene.json"));
+}
+
+TEST_CASE(AutoSave, CopyIsWrittenRemovedAndRestored)
+{
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "AutoSaveProject";
+	fs::create_directories(root / "Assets" / "Scenes");
+	A::ProjectRoot(s) = root;
+	const std::string scenePath = (root / "Assets" / "Scenes" / "Work.scene.json").string();
+	REQUIRE(s.SaveScene(scenePath));
+	const fs::path copy = AutoSave::PathFor(root, scenePath);
+
+	A::AutoSaveInTests(s) = true;
+	A::RunAutoSave(s, 1000.0);
+	CHECK(!fs::exists(copy)); // nothing changed yet
+
+	s.CreateCube("Unsaved Work", { 1.0f, 2.0f, 3.0f });
+	A::Dirty(s) = true;
+	A::RunAutoSave(s, 2000.0);
+	REQUIRE(fs::exists(copy));
+	A::RunAutoSave(s, 2001.0); // not again right away
+	CHECK(A::LastAutoSave(s) == 2000.0);
+
+	// Saving makes the copy unnecessary
+	REQUIRE(s.SaveScene(scenePath));
+	CHECK(!fs::exists(copy));
+
+	// A crash after more work: the copy is offered when the scene opens, and brings the work back
+	s.CreateCube("Lost Work", { 0.0f, 0.0f, 0.0f });
+	A::Dirty(s) = true;
+	A::RunAutoSave(s, 5000.0);
+	REQUIRE(fs::exists(copy));
+	fs::last_write_time(copy, fs::last_write_time(scenePath) + std::chrono::seconds(30));
+	REQUIRE(s.LoadScene(scenePath));
+	CHECK(s.FindGameObjectByName("Lost Work", false) == nullptr);
+	REQUIRE(!A::PendingRestore(s).empty());
+	REQUIRE(A::Restore(s));
+	CHECK(s.FindGameObjectByName("Lost Work", false) != nullptr);
+	CHECK(A::Dirty(s));
+	CHECK(A::ScenePath(s) == scenePath); // Save goes to the real scene file
+	CHECK(A::PendingRestore(s).empty());
+
+	// Play mode never writes one
+	A::State(s) = EditorSceneState::Play;
+	fs::remove(copy);
+	A::RunAutoSave(s, 9000.0);
+	CHECK(!fs::exists(copy));
+	A::State(s) = EditorSceneState::Edit;
+	A::AutoSaveInTests(s) = false;
+	A::Dirty(s) = false;
+}
+
+
+TEST_CASE(Prefabs, LinkedInstancesFollowTheirPrefab)
+{
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "LinkedPrefabProject";
+	fs::create_directories(root / "Assets" / "Prefabs");
+	fs::create_directories(root / "Assets" / "Scenes");
+	A::ProjectRoot(s) = root;
+	s.ClearPrefabCache();
+
+	// A prefab with a child
+	GameObject& turret = s.CreateCube("Turret", { 0.0f, 0.0f, 0.0f });
+	const uint32_t turretId = turret.id;
+	GameObject& barrel = s.CreateCube("Barrel", { 0.0f, 1.0f, 0.0f });
+	barrel.parentId = static_cast<int>(turretId);
+	s.RebuildHierarchyLinks();
+	REQUIRE(s.SavePrefab(turretId, "Turret"));
+	{
+		std::ifstream in(root / "Assets" / "Prefabs" / "Turret.prefab.json");
+		std::stringstream text;
+		text << in.rdbuf();
+		CHECK(text.str().find("\"prefab\"") == std::string::npos); // a prefab file never links to itself
+	}
+	s.QueueDeleteGameObjectById(turretId);
+	s.ProcessPendingDeletes();
+
+	const uint32_t a = s.InstantiatePrefabNow("Turret", { -5.0f, 0.0f, 0.0f });
+	const uint32_t b = s.InstantiatePrefabNow("Turret", { 5.0f, 0.0f, 0.0f });
+	REQUIRE(a != 0u);
+	REQUIRE(b != 0u);
+	s.FindGameObjectById(b, false)->rotation = { 0.0f, 1.0f, 0.0f };
+	s.FindGameObjectById(b, false)->rotationQuat = Quaternion::FromEuler({ 0.0f, 1.0f, 0.0f });
+	CHECK(s.PrefabInstanceRoots("Turret").size() == 2u);
+
+	const auto childOf = [&](uint32_t parent) -> GameObject* {
+		for (auto& o : A::Objects(s)) {
+			if (o.parentId == static_cast<int>(parent)) return &o;
+		}
+		return nullptr;
+	};
+
+	// Change instance A's child and Apply: B gets it, B keeps its own place
+	REQUIRE(childOf(a) != nullptr);
+	childOf(a)->materialColor = { 1.0f, 0.0f, 0.0f, 1.0f };
+	REQUIRE(s.ApplyPrefabInstance(a));
+	REQUIRE(s.FindGameObjectById(b, false) != nullptr);
+	REQUIRE(childOf(b) != nullptr);
+	CHECK_NEAR(childOf(b)->materialColor.y, 0.0f, 1e-5f);
+	CHECK_NEAR(s.FindGameObjectById(b, false)->translation.x, 5.0f, 1e-5f);
+	CHECK_NEAR(s.FindGameObjectById(b, false)->rotation.y, 1.0f, 1e-5f);
+	CHECK(s.FindGameObjectById(a, false) != nullptr); // the root id survives, so references to it still work
+
+	// Revert throws away a local change but not the position
+	childOf(b)->materialColor = { 0.0f, 0.0f, 1.0f, 1.0f };
+	s.FindGameObjectById(b, false)->translation.z = 3.0f;
+	REQUIRE(s.RevertPrefabInstance(b));
+	CHECK_NEAR(childOf(b)->materialColor.x, 1.0f, 1e-5f);
+	CHECK_NEAR(s.FindGameObjectById(b, false)->translation.z, 3.0f, 1e-5f);
+
+	// The link is saved with the scene; opening the scene brings a later prefab edit in
+	const std::string scenePath = (root / "Assets" / "Scenes" / "Linked.scene.json").string();
+	REQUIRE(s.SaveScene(scenePath));
+	childOf(a)->materialColor = { 0.0f, 1.0f, 0.0f, 1.0f };
+	REQUIRE(s.SavePrefab(a, "Turret")); // edited elsewhere, e.g. in another scene
+	REQUIRE(s.LoadScene(scenePath));
+	REQUIRE(s.FindGameObjectById(b, false) != nullptr);
+	CHECK(s.FindGameObjectById(b, false)->prefabSource == "Turret");
+	REQUIRE(childOf(b) != nullptr);
+	CHECK_NEAR(childOf(b)->materialColor.y, 1.0f, 1e-5f);
+	CHECK_NEAR(s.FindGameObjectById(b, false)->translation.z, 3.0f, 1e-5f);
+
+	// Unlinked: an ordinary object again, untouched by the next sync
+	s.UnlinkPrefabInstance(b);
+	CHECK(s.FindGameObjectById(b, false)->prefabSource.empty());
+	CHECK(childOf(b)->prefabSource.empty());
+	CHECK(s.PrefabInstanceRoots("Turret").size() == 1u);
+
+	// A prefab that is gone: the instance stays as it is
+	fs::remove(root / "Assets" / "Prefabs" / "Turret.prefab.json");
+	s.ClearPrefabCache();
+	CHECK(!s.RevertPrefabInstance(a));
+	CHECK(s.FindGameObjectById(a, false) != nullptr);
+	CHECK(childOf(a) != nullptr);
+}
+
+
+TEST_CASE(Hierarchy, MultiSelectAddsRemovesAndActsOnAll)
+{
+	const uint32_t a = s.CreateCube("A", { 0.0f, 0.0f, 0.0f }).id;
+	const uint32_t b = s.CreateCube("B", { 2.0f, 0.0f, 0.0f }).id;
+	const uint32_t c = s.CreateCube("C", { 4.0f, 0.0f, 0.0f }).id;
+	GameObject& child = s.CreateCube("Child of A", { 0.0f, 1.0f, 0.0f });
+	const uint32_t childId = child.id;
+	child.parentId = static_cast<int>(a);
+	s.RebuildHierarchyLinks();
+	const auto index = [&](uint32_t id) { return A::IndexOf(s, id); };
+
+	s.SelectObject(index(a), false);
+	s.SelectObject(index(b), true); // Ctrl+click
+	s.SelectObject(index(childId), true);
+	CHECK(s.SelectedIds().size() == 3u);
+	CHECK(s.IsSelected(a) && s.IsSelected(b) && s.IsSelected(childId) && !s.IsSelected(c));
+	CHECK(A::Primary(s) == index(a)); // the first click stays the one the Inspector shows
+
+	// Ctrl+click again takes it out; on the primary the next one takes its place
+	s.SelectObject(index(b), true);
+	CHECK(!s.IsSelected(b));
+	s.SelectObject(index(a), true);
+	CHECK(!s.IsSelected(a));
+	CHECK(A::Primary(s) == index(childId));
+	// A plain click starts over
+	s.SelectObject(index(a), true);
+	s.SelectObject(index(c), false);
+	CHECK(s.SelectedIds() == std::vector<uint32_t>{ c });
+
+	// Moving with the gizmo moves the others by the same amount; a selected child moves with its parent only once
+	s.SelectObject(index(a), false);
+	s.SelectObject(index(b), true);
+	s.SelectObject(index(childId), true);
+	s.FindGameObjectById(a, false)->translation.x += 10.0f; // what the gizmo does to the primary
+	s.MoveExtraSelection({ 10.0f, 0.0f, 0.0f });
+	CHECK_NEAR(s.FindGameObjectById(b, false)->translation.x, 12.0f, 1e-5f);
+	CHECK_NEAR(s.FindGameObjectById(childId, false)->translation.x, 0.0f, 1e-5f); // local to A, which moved already
+
+	// Delete removes every selected object, and stale ids do not survive a new scene
+	s.DeleteSelectedGameObject();
+	s.ProcessPendingDeletes();
+	CHECK(s.FindGameObjectById(a, false) == nullptr);
+	CHECK(s.FindGameObjectById(b, false) == nullptr);
+	CHECK(s.FindGameObjectById(childId, false) == nullptr);
+	CHECK(s.FindGameObjectById(c, false) != nullptr);
+	CHECK(s.SelectedIds().size() <= 1u);
+	s.SelectObject(index(c), false);
+	s.SelectObject(-1, true);
+	CHECK(s.SelectedIds().empty());
+	s.SelectObject(index(c), false);
+	A::Extra(s).push_back(999999u); // an id from another scene
+	s.NewScene();
+	CHECK(A::Extra(s).empty());
+}
+
+
+namespace {
+	/// A prefab "Tower" (root + "Top" child) in a fresh project, two linked instances. Returns the root ids.
+	std::pair<uint32_t, uint32_t> MakeTowerInstances(EditorSuite& s, const char* project)
+	{
+		namespace fs = std::filesystem;
+		const fs::path root = A::TempRoot() / project;
+		fs::create_directories(root / "Assets" / "Prefabs");
+		fs::create_directories(root / "Assets" / "Scenes");
+		A::ProjectRoot(s) = root;
+		s.ClearPrefabCache();
+		const uint32_t tower = s.CreateCube("Tower", { 0.0f, 0.0f, 0.0f }).id;
+		GameObject& top = s.CreateCube("Top", { 0.0f, 2.0f, 0.0f });
+		top.parentId = static_cast<int>(tower);
+		s.RebuildHierarchyLinks();
+		s.SavePrefab(tower, "Tower");
+		s.QueueDeleteGameObjectById(tower);
+		s.ProcessPendingDeletes();
+		const uint32_t a = s.InstantiatePrefabNow("Tower", { -5.0f, 0.0f, 0.0f });
+		const uint32_t b = s.InstantiatePrefabNow("Tower", { 5.0f, 0.0f, 0.0f });
+		s.ResetUndoHistory();
+		return { a, b };
+	}
+
+	GameObject* ChildOf(EditorSuite& s, uint32_t parent)
+	{
+		for (auto& o : A::Objects(s)) {
+			if (o.parentId == static_cast<int>(parent)) return &o;
+		}
+		return nullptr;
+	}
+}
+
+TEST_CASE(Prefabs, ChildIdsSurviveSyncAndPrefabChanges)
+{
+	const auto [a, b] = MakeTowerInstances(s, "StablePrefabIds");
+	REQUIRE(ChildOf(s, b) != nullptr);
+	const uint32_t topOfB = ChildOf(s, b)->id;
+
+	// A script remembered the child's id: it still means the same child after any number of syncs
+	REQUIRE(s.RevertPrefabInstance(b));
+	REQUIRE(s.RevertPrefabInstance(b));
+	CHECK(ChildOf(s, b) != nullptr && ChildOf(s, b)->id == topOfB);
+
+	// The prefab gains a node in front of "Top" (in save order): the old child keeps its id and its own data
+	GameObject& extra = s.CreateCube("Base", { 0.0f, -1.0f, 0.0f });
+	const uint32_t extraId = extra.id;
+	extra.parentId = static_cast<int>(a);
+	s.RebuildHierarchyLinks();
+	for (auto& o : A::Objects(s)) {
+		if (o.parentId == static_cast<int>(a) && o.id != extraId) o.name = "Top";
+	}
+	// Base goes first among the children
+	auto& objects = A::Objects(s);
+	const auto baseIt = std::find_if(objects.begin(), objects.end(), [&](const GameObject& o) { return o.id == extraId; });
+	GameObject moved = std::move(*baseIt);
+	objects.erase(baseIt);
+	objects.insert(objects.begin(), std::move(moved));
+	s.RebuildHierarchyLinks();
+	REQUIRE(s.ApplyPrefabInstance(a));
+	int children = 0;
+	bool topKept = false;
+	for (auto& o : A::Objects(s)) {
+		if (o.parentId != static_cast<int>(b)) continue;
+		++children;
+		if (o.id == topOfB) topKept = o.name == "Top";
+	}
+	CHECK(children == 2);
+	CHECK(topKept);
+}
+
+TEST_CASE(Prefabs, OverridesStayAndCanBeReverted)
+{
+	const auto [a, b] = MakeTowerInstances(s, "PrefabOverrides");
+	REQUIRE(ChildOf(s, b) != nullptr);
+	const uint32_t topOfB = ChildOf(s, b)->id;
+
+	// The user changes one instance in the editor: that becomes an override of that instance only
+	ChildOf(s, b)->materialColor = { 0.0f, 0.0f, 1.0f, 1.0f };
+	s.PushUndoSnapshot();
+	const GameObject* top = s.FindGameObjectById(topOfB, false);
+	REQUIRE(top != nullptr);
+	CHECK(std::find(top->prefabOverrides.begin(), top->prefabOverrides.end(), "materialColor") != top->prefabOverrides.end());
+
+	// The prefab changes colour and size: B keeps its own colour but takes the new size
+	ChildOf(s, a)->materialColor = { 1.0f, 0.0f, 0.0f, 1.0f };
+	ChildOf(s, a)->scale = { 2.0f, 2.0f, 2.0f };
+	s.PushUndoSnapshot();
+	REQUIRE(s.ApplyPrefabInstance(a));
+	top = s.FindGameObjectById(topOfB, false);
+	REQUIRE(top != nullptr);
+	CHECK_NEAR(top->materialColor.z, 1.0f, 1e-5f);
+	CHECK_NEAR(top->scale.x, 2.0f, 1e-5f);
+	// Applying cleared A's own overrides: its values are the prefab now
+	CHECK(ChildOf(s, a)->prefabOverrides.empty());
+
+	// Saved and loaded with the scene
+	const std::string scenePath = (A::TempRoot() / "PrefabOverrides" / "Assets" / "Scenes" / "Overrides.scene.json").string();
+	REQUIRE(s.SaveScene(scenePath));
+	REQUIRE(s.LoadScene(scenePath));
+	top = s.FindGameObjectById(topOfB, false);
+	REQUIRE(top != nullptr);
+	CHECK_NEAR(top->materialColor.z, 1.0f, 1e-5f);
+	CHECK(!top->prefabOverrides.empty());
+
+	// Reverting the one property brings the prefab value back
+	REQUIRE(s.RevertPrefabOverride(topOfB, "materialColor"));
+	top = s.FindGameObjectById(topOfB, false);
+	REQUIRE(top != nullptr);
+	CHECK_NEAR(top->materialColor.x, 1.0f, 1e-5f);
+	CHECK(top->prefabOverrides.empty());
+	CHECK(!s.RevertPrefabOverride(topOfB, "materialColor")); // nothing left to revert
+
+	// Root position and rotation are the instance's own, never listed as overrides
+	s.FindGameObjectById(b, false)->translation.y = 4.0f;
+	s.PushUndoSnapshot();
+	CHECK(s.FindGameObjectById(b, false)->prefabOverrides.empty());
+
+	// Data components count per component
+	REQUIRE(s.AddComponentByName(*s.FindGameObjectById(topOfB, false), "Trail"));
+	top = s.FindGameObjectById(topOfB, false);
+	CHECK(std::find(top->prefabOverrides.begin(), top->prefabOverrides.end(), "components/Trail") != top->prefabOverrides.end());
+	s.SyncLinkedPrefabs(); // what opening the scene does
+	CHECK(s.FindGameObjectById(topOfB, false)->components.Has("Trail")); // an added component is an override too
+}
+
+TEST_CASE(Prefabs, PrefabModeEditsThePrefabAndComesBack)
+{
+	const auto [a, b] = MakeTowerInstances(s, "PrefabModeProject");
+	const std::string scenePath = (A::TempRoot() / "PrefabModeProject" / "Assets" / "Scenes" / "Main.scene.json").string();
+	REQUIRE(s.SaveScene(scenePath));
+	s.FindGameObjectById(a, false)->name = "Unsaved Edit"; // the scene has an unsaved change while the prefab is edited
+	s.PushUndoSnapshot(); // an editor edit: an override of that instance
+	A::Dirty(s) = true;
+	const size_t sceneObjects = A::Objects(s).size();
+
+	CHECK(!s.OpenPrefabMode("NoSuchPrefab"));
+	CHECK(!s.IsInPrefabMode());
+	REQUIRE(s.OpenPrefabMode("Tower"));
+	CHECK(s.IsInPrefabMode());
+	CHECK(s.FindGameObjectById(a, false) == nullptr || s.FindGameObjectById(a, false)->name != "Unsaved Edit"); // only the prefab is open
+	GameObject* top = nullptr;
+	int towers = 0;
+	for (auto& o : A::Objects(s)) {
+		if (o.name == "Tower") ++towers;
+		if (o.name == "Top") top = &o;
+	}
+	CHECK(towers == 1);
+	REQUIRE(top != nullptr);
+	top->materialColor = { 0.0f, 1.0f, 0.0f, 1.0f };
+	s.PushUndoSnapshot();
+	s.StartPlayMode(); // not while a prefab is open
+	CHECK(A::State(s) == EditorSceneState::Edit);
+	REQUIRE(s.SaveScene(A::ScenePath(s))); // Ctrl+S saves the prefab, not a scene
+	CHECK(!std::filesystem::exists(A::TempRoot() / "PrefabModeProject" / "Assets" / "Scenes" / "SampleScene.scene.json"));
+
+	s.ClosePrefabMode();
+	CHECK(!s.IsInPrefabMode());
+	CHECK(A::ScenePath(s) == scenePath);
+	CHECK(s.IsSceneDirty()); // the unsaved scene edit is still there
+	CHECK(A::Objects(s).size() == sceneObjects);
+	REQUIRE(s.FindGameObjectById(a, false) != nullptr);
+	CHECK(s.FindGameObjectById(a, false)->name == "Unsaved Edit");
+	// The scene's undo history survived the trip: the rename can still be undone and redone
+	s.Undo();
+	CHECK(s.FindGameObjectById(a, false)->name == "Tower");
+	s.Redo();
+	CHECK(s.FindGameObjectById(a, false)->name == "Unsaved Edit");
+	// Both instances show the saved prefab
+	for (uint32_t root : { a, b }) {
+		const GameObject* child = ChildOf(s, root);
+		REQUIRE(child != nullptr);
+		CHECK_NEAR(child->materialColor.y, 1.0f, 1e-5f);
+		CHECK_NEAR(child->materialColor.x, 0.0f, 1e-5f);
+	}
+
+	// Closing without saving leaves the prefab file as it was
+	REQUIRE(s.OpenPrefabMode("Tower"));
+	for (auto& o : A::Objects(s)) {
+		if (o.name == "Top") o.materialColor = { 1.0f, 0.0f, 1.0f, 1.0f };
+	}
+	s.ClosePrefabMode();
+	CHECK_NEAR(ChildOf(s, a)->materialColor.y, 1.0f, 1e-5f);
+	// Opening another scene leaves prefab mode first
+	REQUIRE(s.OpenPrefabMode("Tower"));
+	REQUIRE(s.LoadScene(scenePath));
+	CHECK(!s.IsInPrefabMode());
+}
+
+TEST_CASE(Prefabs, VariantsFollowTheirBaseAndKeepTheirOwnValues)
+{
+	const auto [a, b] = MakeTowerInstances(s, "PrefabVariants");
+	REQUIRE(ChildOf(s, b) != nullptr);
+	ChildOf(s, b)->materialColor = { 0.0f, 0.0f, 1.0f, 1.0f };
+	s.PushUndoSnapshot();
+
+	// B becomes the first instance of "Tower Variant": blue is now the variant's value, not an override
+	const std::string variant = s.CreatePrefabVariant(b);
+	REQUIRE(variant == "Tower Variant");
+	CHECK(s.FindGameObjectById(b, false)->prefabSource == variant);
+	CHECK(ChildOf(s, b)->prefabOverrides.empty());
+	CHECK_NEAR(ChildOf(s, b)->materialColor.z, 1.0f, 1e-5f);
+	CHECK(s.PrefabBaseOf(variant) == "Tower");
+	CHECK(s.PrefabBaseOf("Tower").empty());
+
+	// The base changes colour and size: the variant takes the size and keeps its blue
+	ChildOf(s, a)->materialColor = { 1.0f, 0.0f, 0.0f, 1.0f };
+	ChildOf(s, a)->scale = { 2.0f, 2.0f, 2.0f };
+	s.PushUndoSnapshot();
+	REQUIRE(s.ApplyPrefabInstance(a));
+	REQUIRE(ChildOf(s, b) != nullptr);
+	CHECK_NEAR(ChildOf(s, b)->materialColor.z, 1.0f, 1e-5f);
+	CHECK_NEAR(ChildOf(s, b)->materialColor.x, 0.0f, 1e-5f);
+	CHECK_NEAR(ChildOf(s, b)->scale.x, 2.0f, 1e-5f);
+
+	// A new instance of the variant is the same, and a child added to the variant stays with it
+	const uint32_t c = s.InstantiatePrefabNow(variant, { 0.0f, 0.0f, 8.0f });
+	REQUIRE(c != 0 && ChildOf(s, c) != nullptr);
+	CHECK_NEAR(ChildOf(s, c)->materialColor.z, 1.0f, 1e-5f);
+	CHECK_NEAR(ChildOf(s, c)->scale.y, 2.0f, 1e-5f);
+	GameObject& flag = s.CreateCube("Flag", { 0.0f, 4.0f, 8.0f });
+	flag.parentId = static_cast<int>(c);
+	s.RebuildHierarchyLinks();
+	REQUIRE(s.ApplyPrefabInstance(c));
+	int flags = 0;
+	for (const auto& o : A::Objects(s)) {
+		if (o.name == "Flag" && o.parentId == static_cast<int>(b)) ++flags;
+	}
+	CHECK(flags == 1); // B (same variant) got the flag
+	REQUIRE(ChildOf(s, a) != nullptr);
+	for (const auto& o : A::Objects(s)) CHECK(!(o.name == "Flag" && o.parentId == static_cast<int>(a))); // the base did not
+
+	// A prefab cannot be its own base
+	CHECK(!s.SavePrefab(a, "Tower", "Tower"));
+
+	// The variant drops the base's Top: gone from every variant instance, still in the base
+	for (const auto& o : A::Objects(s)) {
+		if (o.name == "Top" && o.parentId == static_cast<int>(c)) { s.QueueDeleteGameObjectById(o.id); break; }
+	}
+	s.ProcessPendingDeletes();
+	REQUIRE(s.ApplyPrefabInstance(c));
+	const auto hasTop = [&](uint32_t root) {
+		for (const auto& o : A::Objects(s)) {
+			if (o.name == "Top" && o.parentId == static_cast<int>(root)) return true;
+		}
+		return false;
+	};
+	CHECK(!hasTop(b));
+	CHECK(!hasTop(c));
+	CHECK(hasTop(a));
+	const uint32_t d = s.InstantiatePrefabNow(variant, { 0.0f, 0.0f, 16.0f });
+	CHECK(d != 0 && !hasTop(d));
+}
+
+TEST_CASE(Prefabs, JointsInsideNestedPrefabsAndVariantsStayConnected)
+{
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "NestedJoints";
+	fs::create_directories(root / "Assets" / "Prefabs");
+	A::ProjectRoot(s) = root;
+	s.ClearPrefabCache();
+	// A door on a hinge: the joint of "Leaf" connects to "Frame", both inside the prefab
+	const uint32_t frame = s.CreateCube("Frame", { 0.0f, 0.0f, 0.0f }).id;
+	GameObject& leaf = s.CreateCube("Leaf", { 1.0f, 0.0f, 0.0f });
+	leaf.parentId = static_cast<int>(frame);
+	const uint32_t leafId = leaf.id;
+	s.RebuildHierarchyLinks();
+	REQUIRE(s.AddComponentByName(*s.FindGameObjectById(leafId, false), "Joint"));
+	s.FindGameObjectById(leafId, false)->components.Get<JointComponent>("Joint")->connectedObjectId = static_cast<int>(frame);
+	REQUIRE(s.SavePrefab(frame, "Door"));
+	s.QueueDeleteGameObjectById(frame);
+	s.ProcessPendingDeletes();
+
+	// The door inside a house, and a variant of the door
+	const uint32_t house = s.CreateCube("House", { 0.0f, 0.0f, 0.0f }).id;
+	const uint32_t door = s.InstantiatePrefabNow("Door", { 3.0f, 0.0f, 0.0f });
+	s.FindGameObjectById(door, false)->parentId = static_cast<int>(house);
+	s.RebuildHierarchyLinks();
+	REQUIRE(s.SavePrefab(house, "House"));
+	s.QueueDeleteGameObjectById(house);
+	s.ProcessPendingDeletes();
+	const uint32_t plainDoor = s.InstantiatePrefabNow("Door", { 0.0f, 0.0f, 9.0f });
+	const std::string variant = s.CreatePrefabVariant(plainDoor);
+	REQUIRE(!variant.empty());
+
+	// Every instance: the leaf's joint points at the frame of the same instance
+	const auto jointOk = [&](uint32_t instanceRoot) {
+		std::vector<uint32_t> ids{ instanceRoot };
+		for (size_t i = 0; i < ids.size(); ++i) {
+			for (const auto& o : A::Objects(s)) {
+				if (o.parentId == static_cast<int>(ids[i])) ids.push_back(o.id);
+			}
+		}
+		uint32_t frameId = 0;
+		int connected = -1;
+		for (uint32_t id : ids) {
+			GameObject* o = s.FindGameObjectById(id, false);
+			if (o->name == "Frame") frameId = o->id;
+			if (const auto* joint = o->components.Get<JointComponent>("Joint")) connected = joint->connectedObjectId;
+		}
+		return frameId != 0 && connected == static_cast<int>(frameId);
+	};
+	CHECK(jointOk(s.InstantiatePrefabNow("House", { 0.0f, 0.0f, 20.0f })));
+	CHECK(jointOk(s.InstantiatePrefabNow(variant, { 0.0f, 0.0f, 30.0f })));
+	CHECK(jointOk(plainDoor));
+}
+
+TEST_CASE(Prefabs, NestedPrefabsFollowTheInnerPrefab)
+{
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "NestedPrefabs";
+	fs::create_directories(root / "Assets" / "Prefabs");
+	A::ProjectRoot(s) = root;
+	s.ClearPrefabCache();
+	const uint32_t wheel = s.CreateCube("Wheel", { 0.0f, 0.0f, 0.0f }).id;
+	GameObject& hub = s.CreateCube("Hub", { 0.0f, 0.0f, 0.0f });
+	hub.parentId = static_cast<int>(wheel);
+	s.RebuildHierarchyLinks();
+	REQUIRE(s.SavePrefab(wheel, "Wheel"));
+	s.QueueDeleteGameObjectById(wheel);
+	s.ProcessPendingDeletes();
+
+	// A car with a Wheel instance inside, moved and widened inside the car
+	const uint32_t car = s.CreateCube("Car", { 0.0f, 0.0f, 0.0f }).id;
+	const uint32_t inner = s.InstantiatePrefabNow("Wheel", { 2.0f, 0.0f, 0.0f });
+	s.FindGameObjectById(inner, false)->parentId = static_cast<int>(car);
+	s.FindGameObjectById(inner, false)->scale.x = 3.0f;
+	s.RebuildHierarchyLinks();
+	REQUIRE(s.SavePrefab(car, "Car"));
+	s.QueueDeleteGameObjectById(car);
+	s.ProcessPendingDeletes();
+
+	const uint32_t carA = s.InstantiatePrefabNow("Car", { 0.0f, 0.0f, 0.0f });
+	const auto find = [&](uint32_t under, const char* name) -> GameObject* {
+		for (auto& o : A::Objects(s)) {
+			if (o.name != name) continue;
+			for (const GameObject* p = &o; p; p = p->parentId >= 0 ? s.FindGameObjectById(static_cast<uint32_t>(p->parentId), false) : nullptr) {
+				if (p->id == under) return &o;
+			}
+		}
+		return nullptr;
+	};
+	REQUIRE(find(carA, "Wheel") != nullptr && find(carA, "Hub") != nullptr);
+	CHECK(find(carA, "Wheel")->nestedPrefab == "Wheel");
+	CHECK_NEAR(find(carA, "Wheel")->translation.x, 2.0f, 1e-5f);
+
+	// The Wheel prefab changes: the car's wheel follows, keeping where it sits and its wider scale
+	const uint32_t loose = s.InstantiatePrefabNow("Wheel", { 0.0f, 0.0f, 10.0f });
+	ChildOf(s, loose)->materialColor = { 0.0f, 1.0f, 0.0f, 1.0f };
+	s.FindGameObjectById(loose, false)->scale.y = 5.0f;
+	s.PushUndoSnapshot();
+	REQUIRE(s.ApplyPrefabInstance(loose));
+	REQUIRE(find(carA, "Hub") != nullptr);
+	CHECK_NEAR(find(carA, "Hub")->materialColor.y, 1.0f, 1e-5f);
+	CHECK_NEAR(find(carA, "Hub")->materialColor.x, 0.0f, 1e-5f);
+	CHECK_NEAR(find(carA, "Wheel")->scale.x, 3.0f, 1e-5f);
+	CHECK_NEAR(find(carA, "Wheel")->scale.y, 5.0f, 1e-5f);
+	CHECK_NEAR(find(carA, "Wheel")->translation.x, 2.0f, 1e-5f);
+
+	// Editing the car keeps the wheel nested: Apply on the car, then the wheel changes again
+	find(carA, "Wheel")->translation.x = 4.0f;
+	s.PushUndoSnapshot();
+	REQUIRE(s.ApplyPrefabInstance(carA));
+	ChildOf(s, loose)->materialColor = { 1.0f, 1.0f, 0.0f, 1.0f };
+	s.PushUndoSnapshot();
+	REQUIRE(s.ApplyPrefabInstance(loose));
+	REQUIRE(find(carA, "Hub") != nullptr);
+	CHECK_NEAR(find(carA, "Hub")->materialColor.x, 1.0f, 1e-5f);
+	CHECK_NEAR(find(carA, "Wheel")->translation.x, 4.0f, 1e-5f);
+
+	// A prefab inside itself is refused
+	const uint32_t self = s.InstantiatePrefabNow("Wheel", { 0.0f, 0.0f, 20.0f });
+	s.FindGameObjectById(self, false)->parentId = static_cast<int>(loose);
+	s.RebuildHierarchyLinks();
+	CHECK(!s.ApplyPrefabInstance(loose));
+}
+
+TEST_CASE(Prefabs, OverridesArePerFieldAndPerAxis)
+{
+	const auto [a, b] = MakeTowerInstances(s, "PrefabFieldOverrides");
+	REQUIRE(ChildOf(s, a) != nullptr && ChildOf(s, b) != nullptr);
+	const uint32_t topOfA = ChildOf(s, a)->id;
+	const uint32_t topOfB = ChildOf(s, b)->id;
+	const auto has = [&](uint32_t id, const char* key) {
+		const GameObject* o = s.FindGameObjectById(id, false);
+		return o && std::find(o->prefabOverrides.begin(), o->prefabOverrides.end(), key) != o->prefabOverrides.end();
+	};
+	const auto trail = [&](uint32_t id) { return s.FindGameObjectById(id, false)->components.Get<TrailComponent>("Trail"); };
+
+	// The prefab gets a Trail
+	REQUIRE(s.AddComponentByName(*s.FindGameObjectById(topOfA, false), "Trail"));
+	REQUIRE(s.ApplyPrefabInstance(a));
+	REQUIRE(trail(topOfB) != nullptr);
+	s.ResetUndoHistory();
+
+	// B changes one field of it and one axis of its scale: only those become overrides
+	trail(topOfB)->lifetime = 2.0f;
+	s.FindGameObjectById(topOfB, false)->scale.x = 3.0f;
+	s.PushUndoSnapshot();
+	CHECK(has(topOfB, "components/Trail/lifetime"));
+	CHECK(!has(topOfB, "components/Trail"));
+	CHECK(has(topOfB, "scale/0"));
+	CHECK(!has(topOfB, "scale"));
+
+	// The prefab changes the other fields and axes: B takes them and keeps its own
+	trail(topOfA)->lifetime = 0.9f;
+	trail(topOfA)->widthStart = 0.7f;
+	s.FindGameObjectById(topOfA, false)->scale = { 2.0f, 2.0f, 2.0f };
+	s.PushUndoSnapshot();
+	REQUIRE(s.ApplyPrefabInstance(a));
+	REQUIRE(trail(topOfB) != nullptr);
+	CHECK_NEAR(trail(topOfB)->lifetime, 2.0f, 1e-5f);
+	CHECK_NEAR(trail(topOfB)->widthStart, 0.7f, 1e-5f);
+	const Vector3 scale = s.FindGameObjectById(topOfB, false)->scale;
+	CHECK_NEAR(scale.x, 3.0f, 1e-5f);
+	CHECK_NEAR(scale.y, 2.0f, 1e-5f);
+
+	// Reverting one field brings back the prefab value of that field only
+	REQUIRE(s.RevertPrefabOverride(topOfB, "components/Trail/lifetime"));
+	CHECK_NEAR(trail(topOfB)->lifetime, 0.9f, 1e-5f);
+	CHECK_NEAR(s.FindGameObjectById(topOfB, false)->scale.x, 3.0f, 1e-5f);
+	REQUIRE(s.RevertPrefabOverride(topOfB, "scale/0"));
+	CHECK_NEAR(s.FindGameObjectById(topOfB, false)->scale.x, 2.0f, 1e-5f);
+	CHECK(s.FindGameObjectById(topOfB, false)->prefabOverrides.empty());
+
+	// A component the prefab drops takes its field overrides with it, without trouble
+	trail(topOfB)->lifetime = 5.0f;
+	s.PushUndoSnapshot();
+	REQUIRE(s.RemoveComponentByName(*s.FindGameObjectById(topOfA, false), "Trail"));
+	REQUIRE(s.ApplyPrefabInstance(a));
+	CHECK(trail(topOfB) == nullptr);
+}
+
+
+TEST_CASE(Timeline, RotationTakesTheShortWayAndEventsAtZeroFire)
+{
+	// 350 degrees to 10 degrees: through 0, not back through 180
+	TimelineTrack track;
+	track.property = TimelineProperty::Rotation;
+	const float deg = 3.14159265f / 180.0f;
+	track.SetKey({ 0.0f, { 0.0f, 350.0f * deg, 0.0f }, false });
+	track.SetKey({ 1.0f, { 0.0f, 10.0f * deg, 0.0f }, false });
+	const Quaternion middle = track.SampleRotation(0.5f);
+	const Quaternion forward = Quaternion::FromEuler({ 0.0f, 0.0f, 0.0f });
+	const float dot = std::abs(middle.x * forward.x + middle.y * forward.y + middle.z * forward.z + middle.w * forward.w);
+	CHECK_MSG(dot > 0.999f, std::format("dot {:.4f}", dot));
+	CHECK(std::isfinite(track.SampleRotation(std::numeric_limits<float>::quiet_NaN()).w));
+
+	// An event at time 0 fires when playback starts
+	const std::filesystem::path root = A::TempRoot() / "TimelineZero";
+	std::filesystem::create_directories(root / "Assets" / "Timelines");
+	A::ProjectRoot(s) = root;
+	Timeline timeline;
+	timeline.duration = 1.0f;
+	timeline.events = { { 0.0f, "start" } };
+	REQUIRE(A::SaveTimelineAsset(s, "Assets/Timelines/Zero.timeline.json", timeline));
+	GameObject& director = s.CreateGameObject("Director", GameObjectType::Empty);
+	REQUIRE(s.AddComponentByName(director, kTimelineComponent));
+	strncpy_s(director.components.Get<TimelineComponent>(kTimelineComponent)->timeline, "Assets/Timelines/Zero.timeline.json", _TRUNCATE);
+	A::State(s) = EditorSceneState::Play;
+	const int before = A::TimelineEvents(s);
+	A::RunTimelines(s, 0.1f);
+	CHECK(A::TimelineEvents(s) == before + 1);
+	A::RunTimelines(s, 0.1f);
+	CHECK(A::TimelineEvents(s) == before + 1); // once
+	A::State(s) = EditorSceneState::Edit;
+}
+
+TEST_CASE(Hierarchy, DuplicateCopiesChildrenAndEverySelectedObject)
+{
+	GameObject& parent = s.CreateCube("Car", { 0.0f, 0.0f, 0.0f });
+	const uint32_t carId = parent.id;
+	GameObject& wheel = s.CreateCube("Wheel", { 1.0f, 0.0f, 0.0f });
+	const uint32_t wheelId = wheel.id;
+	wheel.parentId = static_cast<int>(carId);
+	GameObject& lamp = s.CreateCube("Lamp", { 5.0f, 0.0f, 0.0f });
+	const uint32_t lampId = lamp.id;
+	s.RebuildHierarchyLinks();
+	REQUIRE(s.AddComponentByName(*s.FindGameObjectById(wheelId, false), "Joint"));
+	s.FindGameObjectById(wheelId, false)->components.Get<JointComponent>("Joint")->connectedObjectId = static_cast<int>(carId);
+
+	s.SelectObject(A::IndexOf(s, carId), false);
+	s.SelectObject(A::IndexOf(s, lampId), true);
+	const std::vector<uint32_t> copies = s.DuplicateObjects(s.SelectedIds());
+	REQUIRE(copies.size() == 2u);
+	const GameObject* carCopy = s.FindGameObjectById(copies[0], false);
+	REQUIRE(carCopy != nullptr);
+	CHECK(carCopy->id != carId);
+	// The copy has its own wheel, and the wheel's joint points at the copied car, not the original
+	const GameObject* wheelCopy = nullptr;
+	for (auto& o : A::Objects(s)) {
+		if (o.parentId == static_cast<int>(copies[0])) wheelCopy = &o;
+	}
+	REQUIRE(wheelCopy != nullptr);
+	CHECK(wheelCopy->id != wheelId);
+	CHECK(wheelCopy->name == "Wheel");
+	auto* joint = const_cast<GameObject*>(wheelCopy)->components.Get<JointComponent>("Joint");
+	REQUIRE(joint != nullptr);
+	CHECK(joint->connectedObjectId == static_cast<int>(copies[0]));
+	// The originals are untouched, and the copies are the new selection
+	CHECK(s.FindGameObjectById(wheelId, false)->parentId == static_cast<int>(carId));
+	CHECK(s.IsSelected(copies[0]) && s.IsSelected(copies[1]) && !s.IsSelected(carId));
+	// A selected child is copied with its parent, not twice
+	s.SelectObject(A::IndexOf(s, carId), false);
+	s.SelectObject(A::IndexOf(s, wheelId), true);
+	CHECK(s.DuplicateObjects(s.SelectedIds()).size() == 1u);
+}
+
+TEST_CASE(Hierarchy, MultiMoveFollowsTheWorldDirection)
+{
+	// B sits under a parent turned 90 degrees: moving A along world +X must move B along world +X too
+	const uint32_t a = s.CreateCube("A", { 0.0f, 0.0f, 0.0f }).id;
+	GameObject& turned = s.CreateGameObject("Turned", GameObjectType::Empty);
+	const uint32_t turnedId = turned.id;
+	turned.rotation = { 0.0f, 1.5707963f, 0.0f };
+	turned.rotationQuat = Quaternion::FromEuler(turned.rotation);
+	GameObject& b = s.CreateCube("B", { 0.0f, 0.0f, 0.0f });
+	const uint32_t bId = b.id;
+	b.parentId = static_cast<int>(turnedId);
+	s.RebuildHierarchyLinks();
+	s.UpdateWorldMatrices();
+	const Vector3 before = { s.FindGameObjectById(bId, false)->worldMatrix.m[3][0], 0.0f, s.FindGameObjectById(bId, false)->worldMatrix.m[3][2] };
+
+	s.SelectObject(A::IndexOf(s, a), false);
+	s.SelectObject(A::IndexOf(s, bId), true);
+	s.MoveExtraSelection({ 3.0f, 0.0f, 0.0f }); // world units
+	s.UpdateWorldMatrices();
+	const GameObject* moved = s.FindGameObjectById(bId, false);
+	CHECK_NEAR(moved->worldMatrix.m[3][0] - before.x, 3.0f, 1e-3f);
+	CHECK_NEAR(moved->worldMatrix.m[3][2] - before.z, 0.0f, 1e-3f);
+}
+
+TEST_CASE(Prefabs, JointsInsideAPrefabStayConnectedAndRenamesKeepTheLink)
+{
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "PrefabJointRename";
+	fs::create_directories(root / "Assets" / "Prefabs");
+	fs::create_directories(root / "Assets" / "Scenes");
+	A::ProjectRoot(s) = root;
+	s.ClearPrefabCache();
+	const uint32_t door = s.CreateCube("Door", { 0.0f, 0.0f, 0.0f }).id;
+	GameObject& leaf = s.CreateCube("Leaf", { 1.0f, 0.0f, 0.0f });
+	const uint32_t leafId = leaf.id;
+	leaf.parentId = static_cast<int>(door);
+	s.RebuildHierarchyLinks();
+	REQUIRE(s.AddComponentByName(*s.FindGameObjectById(leafId, false), "Joint"));
+	s.FindGameObjectById(leafId, false)->components.Get<JointComponent>("Joint")->connectedObjectId = static_cast<int>(door);
+	REQUIRE(s.SavePrefab(door, "Door"));
+	s.QueueDeleteGameObjectById(door);
+	s.ProcessPendingDeletes();
+
+	const uint32_t instance = s.InstantiatePrefabNow("Door", { 3.0f, 0.0f, 0.0f });
+	GameObject* instanceLeaf = nullptr;
+	for (auto& o : A::Objects(s)) {
+		if (o.parentId == static_cast<int>(instance)) instanceLeaf = &o;
+	}
+	REQUIRE(instanceLeaf != nullptr);
+	CHECK(instanceLeaf->components.Get<JointComponent>("Joint")->connectedObjectId == static_cast<int>(instance));
+
+	// Renaming the prefab file in the Project panel: this scene and scenes saved before keep their link
+	const std::string scenePath = (root / "Assets" / "Scenes" / "Doors.scene.json").string();
+	s.AssetDb().Refresh();
+	REQUIRE(s.SaveScene(scenePath));
+	REQUIRE(s.MoveAssetAndUpdateReferences("Assets/Prefabs/Door.prefab.json", "Assets/Prefabs/Gate.prefab.json"));
+	CHECK(s.FindGameObjectById(instance, false)->prefabSource == "Gate");
+	{
+		// The saved scene still says "Door"; its prefab GUID finds the renamed file
+		std::ifstream in(scenePath);
+		std::stringstream text;
+		text << in.rdbuf();
+		CHECK(text.str().find("\"Door\"") != std::string::npos);
+	}
+	REQUIRE(s.LoadScene(scenePath));
+	REQUIRE(s.FindGameObjectById(instance, false) != nullptr);
+	CHECK(s.FindGameObjectById(instance, false)->prefabSource == "Gate");
+	CHECK(s.RevertPrefabInstance(instance));
+}
+
+TEST_CASE(AutoSave, ChoiceIsRemembered)
+{
+	const std::filesystem::path file = A::TempRoot() / "Settings" / "editor_settings.json";
+	std::filesystem::create_directories(file.parent_path());
+	Localization::SetSettingsFileOverride(file);
+	{ std::ofstream(file) << R"({ "language": "ja" })"; }
+	CHECK(Localization::EditorSettingBool("autoSave", true));
+	Localization::SetEditorSettingBool("autoSave", false);
+	CHECK(!Localization::EditorSettingBool("autoSave", true));
+	std::ifstream in(file);
+	std::stringstream text;
+	text << in.rdbuf();
+	CHECK(text.str().find("\"language\"") != std::string::npos); // other settings survive
+	Localization::SetSettingsFileOverride({});
+}
+
+
+TEST_CASE(Localization, LabelsShowOnlyTheirVisiblePart)
+{
+	CHECK(Localization::VisibleLabel("Position") == "Position");
+	CHECK(Localization::VisibleLabel("位置###Position") == "位置"); // what DrawVec3Control prints
+	CHECK(Localization::VisibleLabel("Center##Sph") == "Center");
+	CHECK(Localization::VisibleLabel("##hidden").empty());
+	CHECK(Localization::VisibleLabel("").empty());
+}
+
+
+TEST_CASE(Animation, RagdollStaysVisibleWhereItFell)
+{
+	for (auto& obj : A::Objects(s)) obj.isActive = false;
+	MakeStaticBox(s, { -30.0f, -1.0f, -30.0f }, { 30.0f, 0.0f, 30.0f });
+	GameObject& character = s.CreateGameObject("Faller", GameObjectType::Empty);
+	character.meshType = GameObject::MeshType::CustomModel;
+	character.hasMesh = true;
+	character.modelPath = "Resources/Model/Idle.fbx";
+	character.scale = { 0.012f, 0.012f, 0.012f };
+	character.translation = { 0.0f, 40.0f, 0.0f }; // high above the floor
+	const uint32_t id = character.id;
+	// The Scene view looks at the floor only: the character up at 40 m is out of view
+	A::EditorCam(s).translation = { 0.0f, 3.0f, -10.0f };
+	A::EditorCam(s).rotation = { 0.2f, 0.0f, 0.0f };
+	CaptureGameViewSignature(s);
+	const int culledHigh = A::CulledObjects(s);
+	CHECK(culledHigh >= 1);
+
+	EngineAPI& api = A::Api(s);
+	REQUIRE(api.setRagdoll(api.hostContext, id, true));
+	StepPhysicsSeconds(s, 4.0f);
+	CaptureGameViewSignature(s);
+	// The body lies on the floor in view; the object itself is still up there, so its own box would cull it
+	CHECK_MSG(A::CulledObjects(s) < culledHigh, std::format("culled before {} after {}", culledHigh, A::CulledObjects(s)));
+	REQUIRE(api.setRagdoll(api.hostContext, id, false));
+}
+
+
+TEST_CASE(Hierarchy, MultiRotateAndScaleApplyToEverySelected)
+{
+	const uint32_t a = s.CreateCube("A", { 0.0f, 0.0f, 0.0f }).id;
+	GameObject& bObj = s.CreateCube("B", { 3.0f, 0.0f, 0.0f });
+	const uint32_t b = bObj.id;
+	bObj.rotation = { 0.0f, 0.5f, 0.0f };
+	bObj.scale = { 2.0f, 1.0f, 1.0f };
+	s.SelectObject(A::IndexOf(s, a), false);
+	s.SelectObject(A::IndexOf(s, b), true);
+	s.RotateScaleExtraSelection({ 0.0f, 0.25f, 0.0f }, { 1.5f, 1.0f, 1.0f });
+	const GameObject* moved = s.FindGameObjectById(b, false);
+	CHECK_NEAR(moved->rotation.y, 0.75f, 1e-5f);
+	CHECK_NEAR(moved->scale.x, 3.0f, 1e-5f); // the same ratio, so each keeps its own proportions
+	CHECK_NEAR(moved->scale.y, 1.0f, 1e-5f);
+	const Quaternion expected = Quaternion::FromEuler(moved->rotation);
+	CHECK_NEAR(moved->rotationQuat.y, expected.y, 1e-5f);
+	CHECK_NEAR(s.FindGameObjectById(a, false)->rotation.y, 0.0f, 1e-5f); // the primary is the gizmo's job
+}
+
+
+TEST_CASE(Hierarchy, DuplicateIsPlacedRightAfterTheOriginal)
+{
+	const uint32_t first = s.CreateCube("First", { 0.0f, 0.0f, 0.0f }).id;
+	GameObject& kid = s.CreateCube("Kid", { 0.0f, 1.0f, 0.0f });
+	kid.parentId = static_cast<int>(first);
+	const uint32_t kidId = kid.id;
+	const uint32_t last = s.CreateCube("Last", { 5.0f, 0.0f, 0.0f }).id;
+	s.RebuildHierarchyLinks();
+	// Something else is waiting to be deleted: its index must still mean it afterwards
+	s.QueueDeleteGameObjectById(last);
+	const std::vector<uint32_t> copies = s.DuplicateObjects({ first });
+	REQUIRE(copies.size() == 1u);
+	CHECK(A::IndexOf(s, copies[0]) == A::IndexOf(s, kidId) + 1); // after the original and its child, not at the end
+	s.ProcessPendingDeletes();
+	CHECK(s.FindGameObjectById(last, false) == nullptr);
+	CHECK(s.FindGameObjectById(copies[0], false) != nullptr);
+	CHECK(s.FindGameObjectById(first, false) != nullptr);
+}
+
+
+TEST_CASE(Prefabs, SyncKeepsTheHierarchyOrder)
+{
+	const auto [a, b] = MakeTowerInstances(s, "PrefabOrder");
+	const uint32_t after = s.CreateCube("After", { 0.0f, 0.0f, 0.0f }).id;
+	// Move instance A in front of everything: order A, ..., B, After
+	auto& objects = A::Objects(s);
+	const auto it = std::find_if(objects.begin(), objects.end(), [&](const GameObject& o) { return o.id == a; });
+	GameObject moved = std::move(*it);
+	objects.erase(it);
+	objects.insert(objects.begin(), std::move(moved));
+	s.RebuildHierarchyLinks();
+	const int aBefore = A::IndexOf(s, a);
+	const int afterBefore = A::IndexOf(s, after);
+	s.SyncLinkedPrefabs(); // what opening the scene does
+	CHECK(A::IndexOf(s, a) == aBefore); // not moved to the end of the Hierarchy
+	CHECK(A::IndexOf(s, after) == afterBefore);
+	CHECK(A::IndexOf(s, b) < A::IndexOf(s, after));
+	CHECK(ChildOf(s, a) != nullptr && A::IndexOf(s, ChildOf(s, a)->id) == aBefore + 1); // children right after their root
+}
+
+
+TEST_CASE(Audio, DopplerRaisesApproachingAndLowersLeavingSounds)
+{
+	using namespace SpatialAudio;
+	const Vector3 still{ 0.0f, 0.0f, 0.0f };
+	const Vector3 listener{ 0.0f, 0.0f, 0.0f };
+	const Vector3 source{ 0.0f, 0.0f, 20.0f };
+	CHECK_NEAR(DopplerFactor(listener, still, source, still), 1.0f, 1e-5f);
+	const float approaching = DopplerFactor(listener, still, source, { 0.0f, 0.0f, -30.0f });
+	const float leaving = DopplerFactor(listener, still, source, { 0.0f, 0.0f, 30.0f });
+	CHECK(approaching > 1.05f);
+	CHECK(leaving < 0.95f);
+	// The listener moving towards the sound works the same way
+	CHECK(DopplerFactor(listener, { 0.0f, 0.0f, 30.0f }, source, still) > 1.05f);
+	// Sideways motion changes nothing; a teleport (absurd speed) and NaN are ignored; the result stays in range
+	CHECK_NEAR(DopplerFactor(listener, still, source, { 30.0f, 0.0f, 0.0f }), 1.0f, 1e-4f);
+	CHECK_NEAR(DopplerFactor(listener, still, source, { 0.0f, 0.0f, -5000.0f }), 1.0f, 1e-5f);
+	const float nan = std::numeric_limits<float>::quiet_NaN();
+	CHECK_NEAR(DopplerFactor(listener, still, source, { nan, 0.0f, 0.0f }), 1.0f, 1e-5f);
+	const float fast = DopplerFactor(listener, still, source, { 0.0f, 0.0f, -300.0f });
+	CHECK(fast <= 2.0f && fast > 1.5f);
+	CHECK_NEAR(DopplerFactor(listener, still, listener, still), 1.0f, 1e-5f); // on top of the listener
+}
+
+TEST_CASE(Audio, WallsMuffleSoundsAndMovingSoundsShiftPitch)
+{
+	Audio* audio = Audio::GetInstance();
+	if (!audio->IsAvailable()) return;
+	EngineAPI& api = A::Api(s);
+	const std::string clip = WriteSilentWav("Audio/occlusion.wav");
+	for (auto& o : A::Objects(s)) o.isActive = false;
+	A::AimAudioListener(s, { 0.0f, 1.0f, 0.0f }, 0.0f);
+
+	GameObject& speaker = s.CreateGameObject("Speaker", GameObjectType::Empty);
+	speaker.translation = { 0.0f, 1.0f, 10.0f };
+	const uint32_t speakerId = speaker.id;
+	ScriptAudioParams params;
+	params.loop = true;
+	params.followObject = speakerId;
+	params.maxDistance = 100.0f;
+	const uint32_t voice = api.playSoundEx(&s, clip.c_str(), &params);
+	REQUIRE(voice != 0u);
+	for (int i = 0; i < 30; ++i) A::RunAudio(s, 1.0f / 60.0f);
+	const VoiceLevels open = LevelsOf(voice);
+	CHECK(audio->GetVoiceOcclusion(voice) < 0.05f);
+
+	// A static wall in between
+	const uint32_t wall = MakeStaticBox(s, { -5.0f, 0.0f, 4.0f }, { 5.0f, 3.0f, 5.0f });
+	for (int i = 0; i < 60; ++i) A::RunAudio(s, 1.0f / 60.0f);
+	CHECK(audio->GetVoiceOcclusion(voice) > 0.9f);
+	const VoiceLevels muffled = LevelsOf(voice);
+	CHECK(muffled.left + muffled.right < (open.left + open.right) * 0.7f);
+	// A moving (non-static) box in the way does not count: it may be the player in front of the camera
+	s.FindGameObjectById(wall, false)->isStatic = false;
+	for (int i = 0; i < 60; ++i) A::RunAudio(s, 1.0f / 60.0f);
+	CHECK(audio->GetVoiceOcclusion(voice) < 0.1f);
+	s.QueueDeleteGameObjectById(wall);
+	s.ProcessPendingDeletes();
+
+	// The sound flies towards the listener: its pitch goes up
+	for (int i = 0; i < 10; ++i) {
+		s.FindGameObjectById(speakerId, false)->translation.z -= 0.5f; // 30 m/s at 60 frames per second
+		A::RunAudio(s, 1.0f / 60.0f);
+	}
+	float pitch = 0.0f;
+	for (int i = 0; i < 50 && pitch <= 1.02f; ++i) {
+		pitch = audio->GetVoicePitch(voice);
+		Sleep(10);
+	}
+	CHECK_MSG(pitch > 1.02f, std::format("pitch {:.3f}", pitch));
+	audio->StopAllAudio();
 }
 
 

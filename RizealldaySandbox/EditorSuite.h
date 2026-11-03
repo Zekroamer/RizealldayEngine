@@ -8,6 +8,8 @@
 #include "render/EnvironmentProbe.h"
 #include "PbrMaterial.h"
 #include "VfxComponents.h"
+#include "Timeline.h"
+#include "Terrain.h"
 #include "3d/Camera.h"
 #include "3d/ShadowMap.h"
 #include "3d/Skybox.h"
@@ -114,9 +116,13 @@ struct GameObject {
 	std::string tag = "Untagged";
 	uint32_t layer = 0;              // 0..31, names in ScriptLayer (ScriptAPI.h) / GetCollisionLayerName()
 	uint32_t collisionMask = 0xFFFFFFFF;
-	// Set on objects created from a prefab (runtime only, not saved): used by object pooling
+	// Link to a prefab (saved with the scene): pooling and linked instances
 	std::string prefabSource;
-	int prefabNodeIndex = -1;
+	int prefabNodeIndex = -1; // position in the prefab file
+	int prefabNodeKey = -1;   // stable identity of the node: survives nodes added to or removed from the prefab
+	std::vector<std::string> prefabOverrides; // JSON keys this instance keeps over the prefab ("materialColor", "components/Trail")
+	std::string nestedPrefab; // part of a prefab placed inside the prefab of this instance (nested prefab)
+	int nestedNodeKey = -1;   // its node key in that inner prefab
 	GameObjectType type = GameObjectType::Empty;
 	int parentIndex = -1;
 	int parentId = -1;
@@ -397,9 +403,54 @@ public:
 	static void RegisterPhysicsComponents();
 	static void RegisterMaterialComponent();
 	static void RegisterVfxComponents();
+	static void RegisterTimelineComponent();
+	static void RegisterTerrainComponent();
+	/// During Play: advances every Timeline component and applies its tracks and events
+	void UpdateTimelines(float deltaTime);
+	std::shared_ptr<Timeline> GetTimeline(const std::string& assetPath);
+	bool SaveTimeline(const std::string& assetPath, const Timeline& timeline);
+	std::string CreateTimelineAsset(const std::string& name);
+	void ApplyTimeline(const Timeline& timeline, float time);
+	void DrawTimelineWindow();
+	/// Bakes the object's Terrain component into a mesh file and makes it the object's model. False: nothing changed.
+	/// heights: what to bake (a sculpt in progress); null = from the component (sculpted data, heightmap or noise)
+	/// preview: a bake shown while dragging a brush (replaced, not kept for Undo)
+	bool GenerateTerrain(GameObject& obj, const TerrainHeights* heights = nullptr, bool preview = false);
+	/// Removes old terrain bakes and height files that Undo kept, once nothing in the scene uses them (scene closed)
+	void CollectTerrainGarbage();
+	std::vector<std::string> terrainGarbage_;
+	std::unordered_set<std::string> terrainPreviewBakes_;
+	bool keepTerrainGarbage_ = false; // Prefab Mode keeps the scene aside: its bakes are still used
+	bool ComputeTerrainHeights(const TerrainComponent& terrain, TerrainHeights& out);
+	/// One brush dab where the world ray meets the terrain object. False when it misses.
+	bool SculptTerrainAt(uint32_t objectId, const Vector3& rayOrigin, const Vector3& rayDirection);
+	/// Writes the sculpted heights next to the scene's assets and bakes the mesh once more
+	bool FinishTerrainSculpt();
+	/// Points of the brush circle on the surface (world space), around where the ray meets the terrain
+	bool TerrainBrushOutline(uint32_t objectId, const Vector3& rayOrigin, const Vector3& rayDirection, std::vector<Vector3>& ring);
+	bool HitSculptedTerrain(const GameObject& obj, const TerrainComponent& terrain, const Vector3& rayOrigin, const Vector3& rayDirection, float& u, float& v);
+	void UpdateTerrainSculptInput(const ImVec2& imagePos, const ImVec2& imageSize, bool hovered);
+	struct TerrainSculptState {
+		bool active = false; // Inspector "Sculpt": left drag in the Scene view paints
+		TerrainBrush brush = TerrainBrush::Raise;
+		float radius = 0.08f;   // part of the terrain's width
+		float strength = 0.02f; // per dab
+		float flattenTo = 0.5f;
+		uint32_t objectId = 0;
+		TerrainHeights heights; // being sculpted
+		std::string source;     // the heightData they were loaded from
+		bool changed = false;
+		double lastBake = 0.0;
+	};
+	TerrainSculptState terrainSculpt_;
 	/// Once a frame on game time: heads follow their objects. Trails only run in Play.
 	void UpdateTrails();
-	void DrawEffects(ID3D12GraphicsCommandList* cmdList, const Camera& camera);
+	void DrawEffects(ID3D12GraphicsCommandList* cmdList, const Camera& camera, RenderTexture& target);
+	/// Decals, then the objects RenderScene3D held back (decalExcluded_). Call right after RenderScene3D.
+	void DrawDecals(ID3D12GraphicsCommandList* cmdList, const Camera& camera, RenderTexture& target);
+	/// Moving things (Rigidbody, skinned models) are drawn after the decals, so a mark on the floor never paints a character
+	static bool ReceivesDecals(const GameObject& obj, const Model* model);
+	std::vector<Object3d*> decalExcluded_; // filled by RenderScene3D, drawn by DrawDecals
 	/// Once per RenderViewports, outside any render pass
 	void UpdateGpuParticles(ID3D12GraphicsCommandList* cmdList);
 	/// Moves skeletal animation time: Animator state machines when `runStateMachines` (Play), else the Inspector clip
@@ -425,8 +476,14 @@ public:
 			Matrix4x4 boneFromBody{}; // the bone's world matrix relative to its body
 		};
 		std::vector<Part> parts;
+		// Where the bodies are (world): the object stays where it was, so culling must use this instead
+		Vector3 boundsMin{ 0.0f, 0.0f, 0.0f };
+		Vector3 boundsMax{ 0.0f, 0.0f, 0.0f };
+		bool hasBounds = false;
 	};
 	std::unordered_map<uint32_t, Ragdoll> ragdolls_;
+	/// World box for culling: the ragdoll bodies while one is active, else the model box placed by the object
+	AABB CullingBounds(const GameObject& obj, const Model& model, const Matrix4x4& world, bool animated) const;
 	/// Model that owns a state's clip: nullptr = the object's own model
 	Model* ResolveClipModel(const AnimState& state);
 	void DispatchScriptAnimationEvent(uint32_t objectId, const char* eventName);
@@ -506,7 +563,60 @@ public:
 	std::filesystem::path GetPrefabDirectory() const;
 	/// <Prefabs>/<name>.prefab.json, or wherever a prefab with that file name was moved to inside Assets/
 	std::filesystem::path ResolvePrefabFile(const std::string& prefabName) const;
-	bool SavePrefab(uint32_t rootId, const std::string& prefabName);
+	/// variantOf: save as a variant of that prefab (only the differences are its own). Empty keeps a variant a variant.
+	bool SavePrefab(uint32_t rootId, const std::string& prefabName, const std::string& variantOf = {});
+	/// The base of a prefab variant, "" for an ordinary prefab
+	std::string PrefabBaseOf(const std::string& prefabName);
+	/// Saves the instance as "<prefab> Variant" and links it to the variant. Returns the variant name, "" on failure.
+	std::string CreatePrefabVariant(uint32_t rootId);
+	/// additive = Ctrl+click: toggles the object; otherwise it becomes the only selection. index -1 clears.
+	void SelectObject(int index, bool additive);
+	std::vector<uint32_t> SelectedIds() const; // primary first
+	bool IsSelected(uint32_t id) const;
+	/// The gizmo moved the primary by delta (local units): the other selected objects follow, except children of selected objects
+	void MoveExtraSelection(const Vector3& delta);
+	/// The gizmo turned or scaled the primary: the others turn by the same Euler angles and scale by the same ratio
+	void RotateScaleExtraSelection(const Vector3& eulerDelta, const Vector3& scaleRatio);
+	/// Copies objects with their children (ids, parents and joints inside the copy remapped); selects and returns the new roots.
+	/// An id whose ancestor is also in the list is copied with that ancestor.
+	std::vector<uint32_t> DuplicateObjects(const std::vector<uint32_t>& ids);
+	/// A Joint connected to an object of a copied group follows the copy (prefab instances, duplicates)
+	static void RemapJointTarget(GameObject& obj, const std::unordered_map<uint32_t, uint32_t>& idMap);
+	// Linked prefab instances (EditorSuite_PrefabLinks.cpp)
+	std::vector<uint32_t> PrefabInstanceRoots(const std::string& prefabName) const; // "" = every prefab
+	/// Rebuilds from the prefab file and drops the overrides (Inspector "Revert")
+	bool RevertPrefabInstance(uint32_t rootId);
+	bool RebuildPrefabInstance(uint32_t rootId, bool keepOverrides);
+	struct PrefabRebuild; // ids and override values of an instance being rebuilt
+	const PrefabRebuild* prefabRebuild_ = nullptr;
+	bool suppressOverrideRecording_ = false; // syncs change objects without the user
+	uint32_t PrefabRebuildId(int nodeKey) const;
+	void MergePrefabRebuild(int nodeKey, void* json) const;
+	/// Drops one override of one object and rebuilds its instance. False when it had no such override.
+	bool RevertPrefabOverride(uint32_t objectId, const std::string& key);
+	/// Marks what an edit changed on linked objects as overrides (called by PushUndoSnapshot)
+	void RecordPrefabOverrides(uint32_t objectId, const std::string& beforeJson, const std::string& afterJson);
+	bool ApplyPrefabInstance(uint32_t rootId);
+	void UnlinkPrefabInstance(uint32_t rootId);
+	void SyncLinkedPrefabs();
+	void DrawPrefabLinkInspector(GameObject& obj);
+	// Prefab Mode: the prefab alone in the editor. Saving (Ctrl+S too) writes the prefab file; closing brings the scene back as it was.
+	bool OpenPrefabMode(const std::string& prefabName);
+	bool SavePrefabMode();
+	/// Back to the scene; prefab edits that were not saved are dropped
+	void ClosePrefabMode();
+	bool IsInPrefabMode() const { return prefabMode_.active; }
+	void DrawPrefabModeBar();
+	struct PrefabModeState {
+		bool active = false;
+		std::string prefab;
+		uint32_t rootId = 0;
+		std::string sceneJson; // the scene while the prefab is open
+		std::string scenePath;
+		std::string sceneName;
+		bool sceneDirty = false;
+	};
+	PrefabModeState prefabMode_;
 	bool HasPrefab(const std::string& prefabName);
 	void ClearPrefabCache();
 	// Creates the prefab's objects right away (editor use / deferred spawn processing). Returns the root id or 0.
@@ -960,6 +1070,7 @@ private:
 	std::vector<GameObject> gameObjects_;
 	std::unordered_map<uint32_t, size_t> idIndexCache_; // see FindGameObjectIndexById
 	int selectedObjectIndex_ = 0;
+	std::vector<uint32_t> extraSelection_; // multi-select beyond the primary, by id (EditorSuite_Selection.cpp)
 	uint32_t nextObjectId_ = 1;
 	char hierarchySearchBuf_[128] = "";
 	std::vector<int> pendingDeletes_;
@@ -1047,6 +1158,8 @@ private:
 
 	std::vector<UndoCommand> undoCommands_;
 	std::vector<UndoCommand> redoCommands_;
+	std::vector<UndoCommand> prefabModeUndo_; // the scene's history while a prefab is open
+	std::vector<UndoCommand> prefabModeRedo_;
 	UndoSceneState undoBaseline_;
 	bool undoMergeAllowed_ = false; // false right after Undo/Redo/reset so the next edit starts a new command
 	bool undoPushPending_ = false;  // an edit was made that PushUndoSnapshot() has not recorded yet
@@ -1195,7 +1308,9 @@ private:
 	/// Plays the object's Audio Source. preview = flat, for listening to the clip in the Inspector.
 	bool StartAudioSource(GameObject& obj, bool preview = false);
 	/// Once a frame after the camera sync: the game camera is the listener, 3D voices follow their objects
-	void UpdateAudio();
+	void UpdateAudio(float deltaTime = 0.0f);
+	/// A Static collider between the ears and the sound (the collider of the owner itself does not count)
+	bool IsSoundOccluded(const Vector3& ears, const Vector3& source, uint32_t ownerId);
 
 	bool showScriptGenModal_ = false;
 	int scriptGenTargetObjectIndex_ = -1; // >= 0 when opened via [Add Component -> Script -> New Script...]
@@ -1245,6 +1360,26 @@ private:
 	};
 	std::unordered_map<std::string, CachedAnimatorController> animatorControllers_;
 	bool showAnimatorWindow_ = false;
+	bool showTimelineWindow_ = false;
+	// Auto-save (EditorSuite_AutoSave.cpp)
+	bool autoSaveEnabled_ = true;
+	double autoSaveIntervalSeconds_ = 120.0;
+	double lastAutoSaveTime_ = 0.0;
+	bool autoSaveInTests_ = false;
+	std::string pendingAutoSaveRestore_; // copy offered by the modal
+	void UpdateAutoSave(double now);
+	void DiscardAutoSave(const std::string& scenePath);
+	void CheckForAutoSave(const std::string& scenePath);
+	bool RestoreAutoSave();
+	void DrawAutoSaveRestoreModal();
+	std::unordered_map<std::string, std::shared_ptr<Timeline>> timelines_; // by asset path
+	int timelineEventsFired_ = 0;
+	float timelineCursor_ = 0.0f;
+	bool timelinePreview_ = false;
+	int timelineSelectedTrack_ = -1;
+	int timelineSelectedKey_ = -1;
+	struct TimelineRestore { uint32_t id; Vector3 translation; Vector3 rotation; Vector3 scale; };
+	std::vector<TimelineRestore> timelineRestore_;
 	bool showSkeletonOverlay_ = false;
 	uint32_t animatorPreviewObject_ = 0; // Edit mode: object whose Animator previews animatorPreviewState_
 	uint32_t animatorPreviewState_ = 0;

@@ -135,6 +135,19 @@ private:
 	std::vector<ComponentInfo> infos_;
 };
 
+/// Inspector label of a field: "emitRate" -> "Emit Rate" (the key in the translation files)
+inline std::string HumanizeFieldName(const char* name)
+{
+	std::string out;
+	for (const char* c = name; c && *c; ++c) {
+		const bool upper = *c >= 'A' && *c <= 'Z';
+		const bool afterLower = c != name && ((c[-1] >= 'a' && c[-1] <= 'z') || (c[-1] >= '0' && c[-1] <= '9'));
+		if (upper && afterLower) out += ' ';
+		out += (c == name && *c >= 'a' && *c <= 'z') ? static_cast<char>(*c - 'a' + 'A') : *c;
+	}
+	return out;
+}
+
 /// Registers a data component type T (default-constructed T = values of a newly added component)
 template <typename T>
 ComponentInfo& RegisterDataComponent(const std::string& name, const std::string& category, std::vector<ComponentField> fields)

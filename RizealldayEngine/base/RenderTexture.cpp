@@ -195,6 +195,26 @@ void RenderTexture::BeginDepthRead(ID3D12GraphicsCommandList* cmdList)
 	depthInReadState_ = true;
 }
 
+void RenderTexture::BeginColorOnlyWithDepthRead(ID3D12GraphicsCommandList* cmdList)
+{
+	BeginDepthRead(cmdList);
+	cmdList->OMSetRenderTargets(1, &rtvHandle_, false, nullptr);
+}
+
+void RenderTexture::EndColorOnlyWithDepthRead(ID3D12GraphicsCommandList* cmdList)
+{
+	if (depthInReadState_) {
+		D3D12_RESOURCE_BARRIER barrier{};
+		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barrier.Transition.pResource = depthResource_.Get();
+		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+		cmdList->ResourceBarrier(1, &barrier);
+		depthInReadState_ = false;
+	}
+	cmdList->OMSetRenderTargets(1, &rtvHandle_, false, &dsvHandle_);
+}
+
 void RenderTexture::BeginRender(bool clearColor)
 {
 	if (!isInitialized_ || !dxCommon_ || dxCommon_->IsDeviceLost() || !colorResource_ || !depthResource_) {

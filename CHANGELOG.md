@@ -3,10 +3,39 @@
 ## [Belum dirilis]
 
 
+### Perbaikan
+- Duplicate (dan Ctrl+D yang sebelumnya tidak berfungsi) kini menyalin seluruh hierarki dan semua objek yang terpilih; sebelumnya anak-anak objek hilang dari salinan.
+- Joint di dalam prefab tetap tersambung pada setiap instance; mengganti nama file prefab tidak lagi memutus link.
+- Rotasi di Timeline berputar lewat jalur terpendek; event pada detik 0 kini terpanggil.
+- Geseran beberapa objek sekaligus mengikuti arah dunia walau parent-nya berputar.
+- Pilihan Auto Save diingat setelah editor ditutup.
+- Ragdoll yang jatuh jauh tidak lagi menghilang dari layar.
+- Gizmo rotasi dan skala kini berlaku untuk semua objek yang terpilih.
+- Label field komponen tampil rapi dan ikut bahasa editor; bahasa Indonesia kini selengkap bahasa Jepang.
+- Generate Terrain kadang menampilkan mesh lama; undo setelah Generate kini kembali ke terrain sebelumnya.
+- Riwayat undo scene tidak lagi hilang setelah membuka Prefab Mode.
+- Override prefab kini per field: mengubah `lifetime` sebuah Trail atau satu sumbu skala hanya mengunci field itu, field lain tetap mengikuti prefab.
+
 ### Fitur Baru
+- **Prefab tertaut**: instance mengingat prefab-nya. Inspector punya Apply (simpan ke prefab, perbarui semua instance), Revert, dan Unlink; membuka scene mengambil perubahan prefab terbaru. Posisi, rotasi, dan parent tiap instance tetap. Perubahan yang dibuat pada satu instance menjadi override: tetap saat prefab berubah, terdaftar di Inspector, dan bisa di-Revert satu per satu. Id objek anak tetap sama setelah sinkron, jadi referensi script ke anak tidak putus.
+- **Multi-select**: Ctrl+klik di Hierarchy; Delete menghapus semua, gizmo pindah menggeser semua.
+- **Editor dalam bahasa Jepang lengkap**: semua panel Inspector, modal, dan pesan status kini ikut Options > Language.
+- **Auto-save**: scene yang belum disimpan disalin tiap 2 menit ke `Library/AutoSave`; saat scene dibuka setelah editor tertutup tiba-tiba, editor menawarkan memulihkannya.
+- **Decal**: komponen `Decal` mengecat tekstur ke permukaan di dalam kotak objek, misalnya tanda serangan di lantai.
+- **Timeline**: komponen `Timeline` dan Window > Timeline untuk adegan dan gerakan berskrip: key posisi, rotasi, skala, serta event untuk script.
+- **Kabut**: di Lighting & Environment, berdasarkan jarak dan ketinggian. Script: `fogEnabled`, `fogColor`, `fogDensity`, `fogHeight`, `fogHeightFalloff` di `ScriptPostProcess`.
+- **Terrain**: komponen `Terrain` membuat mesh dan Mesh Collider dari noise atau gambar heightmap.
 - **Trail**: komponen `Trail`, ekor pita yang selalu menghadap kamera, untuk tebasan, dash, dan peluru.
 - **Partikel GPU**: komponen `GPU Particles` untuk ribuan partikel lewat compute shader, dengan preset Fire, Sparks, Smoke, Magic, dan Snow serta pratinjau langsung di Scene view.
 - **Audio 3D**: suara mengikuti posisi dan arah kamera game (kiri/kanan) serta mengecil dengan jarak. Bisa lewat komponen Audio Source (`3D Sound`, `Min/Max Distance`) atau script (`PlayAudioAt`, `PlayAudioOn`).
+- **Doppler dan dinding pada audio 3D**: suara yang mendekat terdengar lebih tinggi, yang menjauh lebih rendah; suara di balik collider Static terdengar lebih pelan dan teredam.
+- **Partikel GPU**: tabrakan dengan lantai (`Collide With Floor`, `Floor Height`, `Bounce`), gradasi 3 titik warna/ukuran (`Use Middle Key`), dan emitter digambar dari jauh ke dekat.
+- **Trail dengan tekstur**: field `Texture` di komponen Trail.
+- **Prefab Mode**: buka prefab sendirian (tombol Open di Inspector atau klik kanan file prefab), simpan dengan Ctrl+S, lalu Back to Scene.
+- **Prefab variant**: Create Variant membuat prefab baru yang mengikuti prefab asalnya dan menyimpan perbedaannya sendiri.
+- **Nested prefab**: prefab di dalam prefab lain tetap mengikuti perubahan prefab dalamnya.
+- **Pahat terrain**: centang Sculpt di komponen Terrain, lalu seret di Scene view (Raise, Lower, Smooth, Flatten). Lingkaran kuas tampil di permukaan; Ctrl+Z membatalkan satu goresan.
+- **Decal tidak lagi mengecat karakter**: objek ber-Rigidbody dan model beranimasi tidak terkena tanda di lantai.
 - **Bus audio, pitch, dan batas suara**: bus Effects/Music/Voice/UI dengan `SetBusVolume`, `SetAudioPitch`, maksimal 64 suara (12 per klip); musik tidak pernah tergantikan.
 - **Audio Source dari script**: `PlayAudioSource`, `StopAudioSource`. Play On Awake kini juga berlaku untuk objek yang muncul saat Play (spawn, pool, `LoadScene`).
 - **Komponen dari script**: `HasComponent`, `AddComponent`, `RemoveComponent`, dan `GetComponentFloat/Int/Bool/Vector3` beserta `Set...`-nya untuk data component.

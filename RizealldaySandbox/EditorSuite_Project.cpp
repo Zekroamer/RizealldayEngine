@@ -434,7 +434,7 @@ void EditorSuite::DrawProjectHub()
 	}
 
 	ImGui::TextUnformatted("Welcome to Rizeallday Engine");
-	ImGui::TextDisabled("Create a new game project or open an existing one to start.");
+	ImGui::TextDisabled(Tr("Create a new game project or open an existing one to start."));
 	ImGui::Spacing();
 
 	bool opened = false;
@@ -443,7 +443,7 @@ void EditorSuite::DrawProjectHub()
 
 		// Left: open an existing project
 		ImGui::TableSetColumnIndex(0);
-		ImGui::SeparatorText("Open Project");
+		ImGui::SeparatorText(Tr("Open Project"));
 		opened = DrawRecentProjectsList(210.0f);
 
 		const bool hasSelection = selectedRecentProject_ >= 0 && selectedRecentProject_ < static_cast<int>(recentProjects_.size());
@@ -453,17 +453,17 @@ void EditorSuite::DrawProjectHub()
 		}
 		ImGui::EndDisabled();
 		ImGui::SameLine();
-		if (ImGui::Button("Browse...##OpenProject")) {
+		if (ImGui::Button(TrId("Browse...##OpenProject"))) {
 			const std::string chosen = OpenNativeFolderDialog();
 			if (!chosen.empty()) {
 				opened = OpenProject(chosen);
 			}
 		}
-		ImGui::SetItemTooltip("Pick a project folder (contains ProjectSettings/project.json or Assets/)");
+		ImGui::SetItemTooltip(Tr("Pick a project folder (contains ProjectSettings/project.json or Assets/)"));
 
 		// Right: create a new project
 		ImGui::TableSetColumnIndex(1);
-		ImGui::SeparatorText("New Project");
+		ImGui::SeparatorText(Tr("New Project"));
 		ImGui::TextUnformatted("Project Name");
 		ImGui::SetNextItemWidth(-1.0f);
 		ImGui::InputText("##HubProjectName", projectNameBuf_, sizeof(projectNameBuf_));
@@ -471,17 +471,17 @@ void EditorSuite::DrawProjectHub()
 		ImGui::SetNextItemWidth(-ImGui::CalcTextSize("Browse...").x - ImGui::GetStyle().FramePadding.x * 2.0f - ImGui::GetStyle().ItemSpacing.x);
 		ImGui::InputText("##HubProjectFolder", projectFolderBuf_, sizeof(projectFolderBuf_));
 		ImGui::SameLine();
-		if (ImGui::Button("Browse...##NewProject")) {
+		if (ImGui::Button(TrId("Browse...##NewProject"))) {
 			const std::string chosen = OpenNativeFolderDialog();
 			if (!chosen.empty()) strncpy_s(projectFolderBuf_, chosen.c_str(), sizeof(projectFolderBuf_) - 1);
 		}
 		const std::filesystem::path previewPath = std::filesystem::path(projectFolderBuf_) / projectNameBuf_;
-		ImGui::TextWrapped("Will be created at: %s", previewPath.string().c_str());
-		ImGui::TextDisabled("Includes Assets/ folders, C++ scripts, project settings and a default scene.");
+		ImGui::TextWrapped(Tr("Will be created at: %s"), previewPath.string().c_str());
+		ImGui::TextDisabled(Tr("Includes Assets/ folders, C++ scripts, project settings and a default scene."));
 		ImGui::Checkbox(TrId("Initialize Git repository"), &newProjectInitGit_);
 		ImGui::SetItemTooltip("%s", Tr("git init + first commit (needs Git). Then add a remote and push."));
 		ImGui::Spacing();
-		if (ImGui::Button("Create Project", ImVec2(-1.0f, 0.0f))) {
+		if (ImGui::Button(TrId("Create Project"), ImVec2(-1.0f, 0.0f))) {
 			opened = CreateNewProject(projectFolderBuf_, projectNameBuf_);
 		}
 

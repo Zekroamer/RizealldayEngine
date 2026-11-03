@@ -66,6 +66,8 @@ void EditorSuite::RegisterBuiltinComponents()
 	RegisterPhysicsComponents();
 	RegisterMaterialComponent();
 	RegisterVfxComponents();
+	RegisterTimelineComponent();
+	RegisterTerrainComponent();
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +133,7 @@ void EditorSuite::DrawComponentInspectors(GameObject& obj)
 		ImGui::PushID(name.c_str());
 		bool keep = true;
 		if (ImGui::CollapsingHeader(std::format("{} (unknown component)", name).c_str(), &keep)) {
-			ImGui::TextDisabled("Not registered in this engine build; its data is kept as-is.");
+			ImGui::TextDisabled(Tr("Not registered in this engine build; its data is kept as-is."));
 			ImGui::TextWrapped("%s", json.c_str());
 		}
 		if (!keep) pendingDataComponentRemoval_ = name;
@@ -168,38 +170,41 @@ void EditorSuite::DrawDataComponentInspector(GameObject& obj, const ComponentInf
 		auto* base = static_cast<unsigned char*>(data->Data());
 		for (const ComponentField& field : info.fields) {
 			void* ptr = base + field.offset;
+			// "emitRate" -> "Emit Rate", translated; the field name stays the ImGui ID
+			const std::string labelText = std::string(Tr(HumanizeFieldName(field.name).c_str())) + "###" + field.name;
+			const char* label = labelText.c_str();
 			const bool limited = field.minValue < field.maxValue;
 			bool changed = false;
 			bool commitNow = false; // checkbox-like widgets record undo immediately, drags when released
 			switch (field.type) {
 			case ComponentFieldType::Float:
-				changed = ImGui::DragFloat(field.name, static_cast<float*>(ptr), 0.05f,
+				changed = ImGui::DragFloat(label, static_cast<float*>(ptr), 0.05f,
 					limited ? field.minValue : 0.0f, limited ? field.maxValue : 0.0f, "%.3f",
 					limited ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None);
 				break;
 			case ComponentFieldType::Int:
-				changed = ImGui::DragInt(field.name, static_cast<int*>(ptr), 0.2f,
+				changed = ImGui::DragInt(label, static_cast<int*>(ptr), 0.2f,
 					limited ? static_cast<int>(field.minValue) : 0, limited ? static_cast<int>(field.maxValue) : 0, "%d",
 					limited ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None);
 				break;
 			case ComponentFieldType::Bool:
-				changed = ImGui::Checkbox(field.name, static_cast<bool*>(ptr));
+				changed = ImGui::Checkbox(label, static_cast<bool*>(ptr));
 				commitNow = changed;
 				break;
 			case ComponentFieldType::Vector3:
-				changed = DrawVec3Control(field.name, *static_cast<Vector3*>(ptr), 0.0f);
+				changed = DrawVec3Control(label, *static_cast<Vector3*>(ptr), 0.0f);
 				commitNow = changed; // merged into one undo step while dragging
 				break;
 			case ComponentFieldType::Color:
 				changed = (field.size >= sizeof(float) * 4)
-					? ImGui::ColorEdit4(field.name, static_cast<float*>(ptr))
-					: ImGui::ColorEdit3(field.name, static_cast<float*>(ptr));
+					? ImGui::ColorEdit4(label, static_cast<float*>(ptr))
+					: ImGui::ColorEdit3(label, static_cast<float*>(ptr));
 				break;
 			case ComponentFieldType::Text:
-				changed = ImGui::InputText(field.name, static_cast<char*>(ptr), field.size);
+				changed = ImGui::InputText(label, static_cast<char*>(ptr), field.size);
 				break;
 			case ComponentFieldType::Asset:
-				changed = ImGui::InputText(field.name, static_cast<char*>(ptr), field.size);
+				changed = ImGui::InputText(label, static_cast<char*>(ptr), field.size);
 				// Drop a file from the Project panel onto the field
 				if (ImGui::BeginDragDropTarget()) {
 					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("RIZE_ASSET_PATH")) {

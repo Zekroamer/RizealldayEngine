@@ -53,6 +53,28 @@ inline Levels Compute(const Listener& listener, const Vector3& source, float min
 	return levels;
 }
 
+/// Pitch factor from motion along the line between them (speeds in m/s). 1 = no change; kept within 0.5 .. 2.
+inline float DopplerFactor(const Vector3& listener, const Vector3& listenerVelocity, const Vector3& source, const Vector3& sourceVelocity, float speedOfSound = 343.0f)
+{
+	const float dx = source.x - listener.x;
+	const float dy = source.y - listener.y;
+	const float dz = source.z - listener.z;
+	const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+	if (!(distance > 1.0e-4f) || !std::isfinite(distance)) return 1.0f;
+	// Speeds no object has are teleports (respawn, camera cut), not motion
+	const auto plausible = [](const Vector3& v) {
+		const float speed = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+		return std::isfinite(speed) && speed < 1000.0f ? v : Vector3{ 0.0f, 0.0f, 0.0f };
+	};
+	const Vector3 vl = plausible(listenerVelocity);
+	const Vector3 vs = plausible(sourceVelocity);
+	// Along the line from the listener to the sound: positive = moving away from the listener
+	const float listenerAlong = (vl.x * dx + vl.y * dy + vl.z * dz) / distance;
+	const float sourceAlong = (vs.x * dx + vs.y * dy + vs.z * dz) / distance;
+	const float denominator = (std::max)(speedOfSound + sourceAlong, 1.0f);
+	return std::clamp((speedOfSound + listenerAlong) / denominator, 0.5f, 2.0f);
+}
+
 struct VoiceInfo {
 	uint32_t sound = 0;
 	float loudness = 0.0f;  // volume x distance gain

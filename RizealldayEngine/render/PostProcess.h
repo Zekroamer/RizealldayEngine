@@ -32,6 +32,11 @@ struct PostProcessSettings {
 	int shadowCascades = 0; // 0 = one shadow map over all casters (scenes from before cascades)
 	float shadowDistance = 80.0f;
 	float environmentIntensity = 1.0f;
+	bool fogEnabled = false;
+	Vector3 fogColor = { 0.7f, 0.75f, 0.8f };
+	float fogDensity = 0.02f;
+	float fogHeight = 0.0f;        // world height where it is as dense as fogDensity
+	float fogHeightFalloff = 0.1f; // how fast it thins out above that; 0 = the same everywhere
 };
 
 /// HDR scene -> 8-bit output. Knows nothing about the editor: it takes textures and settings.
@@ -44,6 +49,8 @@ public:
 
 	/// The camera of the next Prepare (ambient occlusion rebuilds positions from depth)
 	void SetCamera(float tanHalfFovX, float tanHalfFovY, float nearZ, float farZ, bool perspective);
+	/// Height of the camera, and the height component of its right, up and forward axes (height fog)
+	void SetCameraHeight(float worldY, float rightY, float upY, float forwardY);
 
 	~PostProcess();
 	void Initialize(DirectXCommon* dxCommon, DXCManager* dxc);
@@ -114,6 +121,7 @@ private:
 	Target ssao_[2];
 	float cameraInfo_[4] = { 1.0f, 1.0f, 0.1f, 1000.0f };
 	bool cameraPerspective_ = true;
+	float cameraHeight_[4] = { 0.0f, 0.0f, 1.0f, 0.0f };
 	D3D12_GPU_DESCRIPTOR_HANDLE occlusion_{};
 
 	// Result of the last Prepare, consumed by Composite

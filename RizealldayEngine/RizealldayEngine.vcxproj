@@ -114,6 +114,7 @@
     <ClCompile Include="render\LightClusters.cpp" />
     <ClCompile Include="render\TrailRenderer.cpp" />
     <ClCompile Include="render\GpuParticles.cpp" />
+    <ClCompile Include="render\DecalRenderer.cpp" />
     <ClCompile Include="render\EnvironmentProbe.cpp" />
     <!-- physics/ -->
     <ClCompile Include="physics\PhysicsWorld.cpp">
@@ -221,6 +222,7 @@
     <ClInclude Include="render\LightClusters.h" />
     <ClInclude Include="render\TrailRenderer.h" />
     <ClInclude Include="render\GpuParticles.h" />
+    <ClInclude Include="render\DecalRenderer.h" />
     <ClInclude Include="render\EnvironmentProbe.h" />
     <ClInclude Include="2d\Sprite.h" />
     <ClInclude Include="input\Input.h" />

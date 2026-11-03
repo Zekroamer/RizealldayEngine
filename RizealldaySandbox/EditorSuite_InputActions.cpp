@@ -97,7 +97,7 @@ void EditorSuite::DrawInputActionsWindow()
 
 	// Waiting for a key / pad button / stick to bind
 	if (!inputCaptureAction_.empty()) {
-		ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "%s '%s' (Esc = cancel)", Tr("Press a key, a gamepad button or move a stick for"), inputCaptureAction_.c_str());
+		ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), Tr("%s '%s' (Esc = cancel)"), Tr("Press a key, a gamepad button or move a stick for"), inputCaptureAction_.c_str());
 		std::optional<InputBinding> captured;
 		if (const Input* in = currentInput_) {
 			if (in->TriggerKey(KEY_ESCAPE)) {
@@ -160,7 +160,7 @@ void EditorSuite::DrawInputActionsWindow()
 	}
 
 	ImGui::SetNextItemWidth(180.0f);
-	ImGui::InputTextWithHint("##NewAction", "Dash", inputNewActionBuf_, sizeof(inputNewActionBuf_));
+	ImGui::InputTextWithHint("##NewAction", Tr("Dash"), inputNewActionBuf_, sizeof(inputNewActionBuf_));
 	ImGui::SameLine();
 	if (ImGui::Button(TrId("Add Action")) && inputNewActionBuf_[0] != '\0') {
 		work.Add(inputNewActionBuf_);

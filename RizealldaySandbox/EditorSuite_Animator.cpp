@@ -61,7 +61,7 @@ void EditorSuite::RegisterAnimatorComponent()
 		}
 		if (a.runtime.started) {
 			const AnimState* state = controller->FindState(a.runtime.currentState);
-			ImGui::TextDisabled("%s: %s%s", Tr("State"), state ? state->name.c_str() : "-",
+			ImGui::TextDisabled(Tr("%s: %s%s"), Tr("State"), state ? state->name.c_str() : "-",
 				a.runtime.InTransition() ? " (fading)" : "");
 		} else if (!obj.editObject3d || !obj.editObject3d->GetModel() || !obj.editObject3d->GetModel()->HasBones()) {
 			ImGui::TextDisabled("%s", Tr("Needs a skinned (animated) model on this object."));
@@ -443,6 +443,14 @@ void EditorSuite::UpdateRagdolls()
 		std::vector<std::pair<int, Matrix4x4>>& overrides = obj->editObject3d->GetAnimationPlayer().Overrides();
 		overrides.clear();
 		const Matrix4x4 toModel = Mathematics::Inverse(obj->worldMatrix);
+		it->second.hasBounds = false;
+		for (const Physics::BodyState& state : states) {
+			const Vector3& p = state.position;
+			Ragdoll& r = it->second;
+			r.boundsMin = r.hasBounds ? Vector3{ (std::min)(r.boundsMin.x, p.x), (std::min)(r.boundsMin.y, p.y), (std::min)(r.boundsMin.z, p.z) } : p;
+			r.boundsMax = r.hasBounds ? Vector3{ (std::max)(r.boundsMax.x, p.x), (std::max)(r.boundsMax.y, p.y), (std::max)(r.boundsMax.z, p.z) } : p;
+			r.hasBounds = true;
+		}
 		for (size_t i = 0; i < states.size() && i < it->second.parts.size(); ++i) {
 			const Matrix4x4 body = TransformUtil::ComposeTRS(states[i].position, states[i].rotation, { 1.0f, 1.0f, 1.0f });
 			const Matrix4x4 boneWorld = Mathematics::Multiply(it->second.parts[i].boneFromBody, body);

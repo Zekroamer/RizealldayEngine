@@ -242,6 +242,14 @@ void PostProcess::SetCamera(float tanHalfFovX, float tanHalfFovY, float nearZ, f
 	cameraPerspective_ = perspective;
 }
 
+void PostProcess::SetCameraHeight(float worldY, float rightY, float upY, float forwardY)
+{
+	cameraHeight_[0] = worldY;
+	cameraHeight_[1] = rightY;
+	cameraHeight_[2] = upY;
+	cameraHeight_[3] = forwardY;
+}
+
 void PostProcess::Prepare(ID3D12GraphicsCommandList* cmdList, RenderTexture& scene, const PostProcessSettings& settings, float gameTime)
 {
 	Resize(scene.GetWidth(), scene.GetHeight());
@@ -324,6 +332,15 @@ void PostProcess::Prepare(ID3D12GraphicsCommandList* cmdList, RenderTexture& sce
 
 	composite_ = constants;
 	if (!bloom) composite_.flags &= ~4u;
+	if (settings.enabled && settings.fogEnabled && settings.fogDensity > 0.0f && cameraPerspective_) {
+		composite_.flags |= 16u;
+		const float fog[kScreenEffectParams] = {
+			settings.fogColor.x, settings.fogColor.y, settings.fogColor.z, settings.fogDensity,
+			settings.fogHeight, settings.fogHeightFalloff, cameraHeight_[0], 0.0f,
+			cameraHeight_[1] * cameraInfo_[0], cameraHeight_[2] * cameraInfo_[1], cameraHeight_[3], 0.0f,
+			cameraInfo_[0], cameraInfo_[1], cameraInfo_[2], cameraInfo_[3] };
+		std::memcpy(composite_.params, fog, sizeof(fog));
+	}
 	compositeBloom_ = bloom ? bloom_[0].srv : source;
 	compositeDepth_ = depth;
 	compositeSource_ = source;

@@ -34,8 +34,15 @@ namespace {
 		return j;
 	}
 
+	fs::path& SettingsOverride()
+	{
+		static fs::path path;
+		return path;
+	}
+
 	fs::path SettingsFilePath()
 	{
+		if (!SettingsOverride().empty()) return SettingsOverride();
 		char* localAppData = nullptr;
 		size_t len = 0;
 		fs::path base;
@@ -148,6 +155,33 @@ void LoadPreference()
 	if (auto it = j->find("language"); it != j->end() && it->is_string()) {
 		SetLanguage(it->get<std::string>());
 	}
+}
+
+bool EditorSettingBool(const char* key, bool fallback)
+{
+	const fs::path file = SettingsFilePath();
+	if (file.empty() || !key) return fallback;
+	const auto j = ReadJson(file);
+	if (!j) return fallback;
+	const auto it = j->find(key);
+	return (it != j->end() && it->is_boolean()) ? it->get<bool>() : fallback;
+}
+
+void SetEditorSettingBool(const char* key, bool value)
+{
+	const fs::path file = SettingsFilePath();
+	if (file.empty() || !key) return;
+	nlohmann::json j = ReadJson(file).value_or(nlohmann::json::object()); // keep the other settings
+	j[key] = value;
+	std::error_code ec;
+	fs::create_directories(file.parent_path(), ec);
+	std::ofstream out(file, std::ios::binary | std::ios::trunc);
+	if (out) out << j.dump(1, '\t') << '\n';
+}
+
+void SetSettingsFileOverride(const std::filesystem::path& file)
+{
+	SettingsOverride() = file;
 }
 
 void SavePreference()

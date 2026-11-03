@@ -60,8 +60,13 @@ public:
 
 	/// The ears, normally the game camera. Call once a frame, then ApplySpatial.
 	void SetListener(const Vector3& position, const Vector3& right);
-	/// Recomputes both ears of every 3D voice
-	void ApplySpatial();
+	/// Recomputes both ears of every 3D voice; deltaTime > 0 also updates doppler and smooths occlusion
+	void ApplySpatial(float deltaTime = 0.0f);
+	/// 0 = clear path, 1 = behind a wall (quieter and muffled); approached smoothly by ApplySpatial
+	void SetVoiceOcclusionTarget(uint32_t voiceHandle, float target);
+	float GetVoiceOcclusion(uint32_t voiceHandle) const;
+	struct SpatialVoice { uint32_t voice; Vector3 position; };
+	std::vector<SpatialVoice> SpatialVoices() const;
 
 	void SetBusVolume(AudioBus bus, float volume);
 	float GetBusVolume(AudioBus bus) const;
@@ -111,6 +116,13 @@ private:
 		Vector3 position{ 0.0f, 0.0f, 0.0f };
 		float minDistance = 1.0f;
 		float maxDistance = 50.0f;
+		float basePitch = 1.0f;   // what the game asked for; doppler multiplies it
+		float doppler = 1.0f;
+		float occlusion = 0.0f;   // smoothed towards occlusionTarget
+		float occlusionTarget = 0.0f;
+		uint32_t sampleRate = 44100;
+		Vector3 lastPosition{ 0.0f, 0.0f, 0.0f };
+		bool hasLastPosition = false;
 	};
 
 	void ApplySpatial(ActiveVoice& voice);
@@ -127,6 +139,8 @@ private:
 	std::array<IXAudio2SubmixVoice*, static_cast<size_t>(AudioBus::Count)> busVoices_{};
 	std::array<float, static_cast<size_t>(AudioBus::Count)> busVolumes_{ 1.0f, 1.0f, 1.0f, 1.0f };
 	SpatialAudio::Listener listener_;
+	Vector3 lastListenerPosition_{ 0.0f, 0.0f, 0.0f };
+	bool hasLastListenerPosition_ = false;
 	int maxVoices_ = 64;
 	int maxVoicesPerSound_ = 12;
 	bool mfInitialized_ = false;

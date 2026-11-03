@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Editor UI language (Options > Language).
@@ -12,6 +13,12 @@
 //   TrId("Inspector")  -> "<translation>###Inspector": the ImGui ID stays the English text in every language,
 //                         so windows, tabs, popups and imgui.ini settings do not change when the language does.
 namespace Localization {
+
+/// What a person sees of an ImGui label: "Label##id" and "Translated###English" show only the part before ##
+inline std::string_view VisibleLabel(std::string_view label)
+{
+	return label.substr(0, label.find("##"));
+}
 
 struct LanguageInfo {
 	std::string code;        // file name without extension ("ja"); "en" = built-in English
@@ -35,5 +42,10 @@ const char* TrId(const char* english);
 /// Remembered choice: %LOCALAPPDATA%/RizealldayEngine/editor_settings.json ("language")
 void LoadPreference();
 void SavePreference();
+/// Other editor preferences in the same file (e.g. "autoSave"); other keys in it are kept
+bool EditorSettingBool(const char* key, bool fallback);
+void SetEditorSettingBool(const char* key, bool value);
+/// Self-tests: use this file instead of %LOCALAPPDATA%; empty = back to the real one
+void SetSettingsFileOverride(const std::filesystem::path& file);
 
 } // namespace Localization

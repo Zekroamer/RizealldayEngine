@@ -8,18 +8,18 @@ namespace {
 void EditorSuite::DrawCppScriptGeneratorModal()
 {
 #ifdef USE_IMGUI
-	ImGui::OpenPopup("Unity-Style C++ Script Generator");
-	if (ImGui::BeginPopupModal("Unity-Style C++ Script Generator", &showScriptGenModal_, ImGuiWindowFlags_AlwaysAutoResize)) {
-		ImGui::Text("Create New C++ Script in GameScripts/Scripts/ (Derives from ScriptBase)");
+	ImGui::OpenPopup(TrId("Unity-Style C++ Script Generator"));
+	if (ImGui::BeginPopupModal(TrId("Unity-Style C++ Script Generator"), &showScriptGenModal_, ImGuiWindowFlags_AlwaysAutoResize)) {
+		ImGui::Text(Tr("Create New C++ Script in GameScripts/Scripts/ (Derives from ScriptBase)"));
 		ImGui::Separator();
 
-		if (ImGui::InputText("Class Name", scriptClassNameBuf_, sizeof(scriptClassNameBuf_))) {
+		if (ImGui::InputText(TrId("Class Name"), scriptClassNameBuf_, sizeof(scriptClassNameBuf_))) {
 			scriptGenErrorMsg_.clear();
 		}
-		ImGui::Checkbox("Include OnCollision Override", &scriptIncludeCollision_);
+		ImGui::Checkbox(TrId("Include OnCollision Override"), &scriptIncludeCollision_);
 		std::filesystem::path targetScriptsDir = ResolveGameScriptsDir() / "Scripts";
-		ImGui::TextDisabled("Target folder: %s", targetScriptsDir.string().c_str());
-		ImGui::TextDisabled("Generates <ClassName>.h and <ClassName>.cpp, builds GameScripts.dll, and opens in Visual Studio.");
+		ImGui::TextDisabled(Tr("Target folder: %s"), targetScriptsDir.string().c_str());
+		ImGui::TextDisabled(Tr("Generates <ClassName>.h and <ClassName>.cpp, builds GameScripts.dll, and opens in Visual Studio."));
 
 		if (!scriptGenErrorMsg_.empty()) {
 			ImGui::Spacing();
@@ -27,7 +27,7 @@ void EditorSuite::DrawCppScriptGeneratorModal()
 		}
 
 		ImGui::Separator();
-		if (ImGui::Button("Create & Open", ImVec2(140.0f, 0.0f))) {
+		if (ImGui::Button(TrId("Create & Open"), ImVec2(140.0f, 0.0f))) {
 			if (GenerateCppScriptFiles(scriptClassNameBuf_, targetScriptsDir.string(), scriptIncludeCollision_)) {
 				showScriptGenModal_ = false;
 				scriptGenTargetObjectIndex_ = -1;
@@ -35,7 +35,7 @@ void EditorSuite::DrawCppScriptGeneratorModal()
 			}
 		}
 		ImGui::SameLine();
-		if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) {
+		if (ImGui::Button(TrId("Cancel"), ImVec2(120.0f, 0.0f))) {
 			showScriptGenModal_ = false;
 			scriptGenTargetObjectIndex_ = -1;
 			scriptGenErrorMsg_.clear();

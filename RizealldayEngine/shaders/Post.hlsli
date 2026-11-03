@@ -17,7 +17,7 @@ cbuffer PostConstants : register(b0)
     float gLetterbox;
     float gBloomIntensity;
     float gBloomThreshold;
-    uint gFlags; // 1 = enabled, 2 = tone mapping, 4 = bloom, 8 = ambient occlusion
+    uint gFlags; // 1 = enabled, 2 = tone mapping, 4 = bloom, 8 = ambient occlusion, 16 = fog (composite only)
     float gTime; // game time in seconds
     float2 gTexelSize;
     float2 gPad;

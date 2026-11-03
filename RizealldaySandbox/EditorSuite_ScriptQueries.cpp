@@ -395,7 +395,7 @@ bool EditorSuite::StartAudioSource(GameObject& obj, bool preview)
 	return obj.runtimeVoiceHandle != 0;
 }
 
-void EditorSuite::UpdateAudio()
+void EditorSuite::UpdateAudio(float deltaTime)
 {
 	Audio* audio = Audio::GetInstance();
 	if (!audio->IsAvailable()) return;
@@ -412,7 +412,38 @@ void EditorSuite::UpdateAudio()
 		audio->SetVoicePosition(follower.voice, WorldPosition(*obj));
 		return false;
 	});
-	audio->ApplySpatial();
+	if (deltaTime > 0.0f && gameCamera_) {
+		std::unordered_map<uint32_t, uint32_t> owners; // voice -> object whose own collider never hides it
+		for (const GameObject& obj : gameObjects_) {
+			if (obj.runtimeVoiceHandle != 0) owners[obj.runtimeVoiceHandle] = obj.id;
+		}
+		for (const AudioFollower& follower : audioFollowers_) owners[follower.voice] = follower.objectId;
+		const Vector3 ears = gameCamera_->translation;
+		for (const Audio::SpatialVoice& voice : audio->SpatialVoices()) {
+			const auto owner = owners.find(voice.voice);
+			audio->SetVoiceOcclusionTarget(voice.voice, IsSoundOccluded(ears, voice.position, owner != owners.end() ? owner->second : 0u) ? 1.0f : 0.0f);
+		}
+	}
+	audio->ApplySpatial(deltaTime);
+}
+
+bool EditorSuite::IsSoundOccluded(const Vector3& ears, const Vector3& source, uint32_t ownerId)
+{
+	Vector3 direction = source - ears;
+	float remaining = std::sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
+	if (!(remaining > 0.1f) || !std::isfinite(remaining)) return false;
+	direction = direction * (1.0f / remaining);
+	Vector3 origin = ears;
+	// Only Static colliders are walls: a moving one may be the player standing in front of the camera
+	for (int step = 0; step < 4 && remaining > 0.1f; ++step) {
+		ScriptRaycastHit hit{};
+		if (!ScriptRaycast(origin, direction, remaining - 0.05f, 0xFFFFFFFFu, ownerId, hit)) return false;
+		const GameObject* blocker = FindGameObjectById(hit.objectId, false);
+		if (blocker && blocker->isStatic) return true;
+		origin = hit.point + direction * 0.05f;
+		remaining -= hit.distance + 0.05f;
+	}
+	return false;
 }
 
 void EditorSuite::ResetScriptRuntimeState()
@@ -544,14 +575,30 @@ void EditorSuite::SetupEngineAPIExtensions()
 	engineApi_.getPostProcess = [](void* ctx, ScriptPostProcess* out) -> bool {
 		if (!ctx || !out) return false;
 		const PostProcessSettings& p = static_cast<EditorSuite*>(ctx)->postSettings_;
-		*out = { p.enabled, p.toneMapping, p.bloom, p.fxaa, p.exposure, p.bloomThreshold, p.bloomIntensity, p.contrast, p.saturation, p.tint, p.vignette, p.letterbox };
+		*out = { p.enabled, p.toneMapping, p.bloom, p.fxaa, p.exposure, p.bloomThreshold, p.bloomIntensity, p.contrast, p.saturation, p.tint, p.vignette, p.letterbox, p.fogEnabled, p.fogColor, p.fogDensity, p.fogHeight, p.fogHeightFalloff };
 		return true;
 	};
 	engineApi_.setPostProcess = [](void* ctx, const ScriptPostProcess* value) -> bool {
 		if (!ctx || !value) return false;
 		PostProcessSettings& p = static_cast<EditorSuite*>(ctx)->postSettings_;
-		p = { value->enabled, value->toneMapping, value->bloom, value->fxaa, (std::max)(value->exposure, 0.0f), value->bloomThreshold, (std::max)(value->bloomIntensity, 0.0f),
-			(std::max)(value->contrast, 0.0f), (std::max)(value->saturation, 0.0f), value->tint, std::clamp(value->vignette, 0.0f, 1.0f), std::clamp(value->letterbox, 0.0f, 0.5f) };
+		// Field by field: scripts do not see the lighting quality settings, and must not reset them
+		p.enabled = value->enabled;
+		p.toneMapping = value->toneMapping;
+		p.bloom = value->bloom;
+		p.fxaa = value->fxaa;
+		p.exposure = (std::max)(value->exposure, 0.0f);
+		p.bloomThreshold = value->bloomThreshold;
+		p.bloomIntensity = (std::max)(value->bloomIntensity, 0.0f);
+		p.contrast = (std::max)(value->contrast, 0.0f);
+		p.saturation = (std::max)(value->saturation, 0.0f);
+		p.tint = value->tint;
+		p.vignette = std::clamp(value->vignette, 0.0f, 1.0f);
+		p.letterbox = std::clamp(value->letterbox, 0.0f, 0.5f);
+		p.fogEnabled = value->fogEnabled;
+		p.fogColor = value->fogColor;
+		p.fogDensity = (std::max)(value->fogDensity, 0.0f);
+		p.fogHeight = value->fogHeight;
+		p.fogHeightFalloff = (std::max)(value->fogHeightFalloff, 0.0f);
 		return true;
 	};
 	engineApi_.setScreenEffect = [](void* ctx, int slot, const char* shaderFile, const float* params16) -> bool {

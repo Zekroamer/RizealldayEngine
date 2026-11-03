@@ -1,11 +1,32 @@
 ﻿#include "EditorSuiteInternal.h"
 #include "render/GpuParticles.h"
+#include "render/DecalRenderer.h"
 #include "base/TextureManager.h"
 #include <chrono>
+#include <map>
 
 // Visual effect components (Fase 7). The effects themselves live in RizealldayEngine/render.
 
 namespace {
+	/// White with a round alpha falloff: what particles and decals use without a texture of their own
+	uint32_t SoftCircleTexture()
+	{
+		static uint32_t handle = 0; // asked for every frame: build the pixels once
+		if (handle != 0) return handle;
+		constexpr uint32_t kSize = 64;
+		std::vector<uint8_t> rgba(kSize * kSize * 4, 255);
+		for (uint32_t y = 0; y < kSize; ++y) {
+			for (uint32_t x = 0; x < kSize; ++x) {
+				const float dx = (x + 0.5f) / kSize * 2.0f - 1.0f;
+				const float dy = (y + 0.5f) / kSize * 2.0f - 1.0f;
+				const float t = std::clamp(1.0f - std::sqrt(dx * dx + dy * dy), 0.0f, 1.0f);
+				rgba[(static_cast<size_t>(y) * kSize + x) * 4 + 3] = static_cast<uint8_t>(t * t * (3.0f - 2.0f * t) * 255.0f);
+			}
+		}
+		handle = TextureManager::GetInstance()->CreateTextureFromRGBA("__SoftCircle", rgba.data(), kSize, kSize);
+		return handle;
+	}
+
 	TrailStyle StyleOf(const TrailComponent& trail)
 	{
 		TrailStyle style;
@@ -16,6 +37,7 @@ namespace {
 		const auto bright = [&](const Vector4& c) { return Vector4{ c.x * trail.intensity, c.y * trail.intensity, c.z * trail.intensity, c.w }; };
 		style.colorStart = bright(trail.colorStart);
 		style.colorEnd = bright(trail.colorEnd);
+		style.softEdges = trail.texture[0] == '\0';
 		return style;
 	}
 }
@@ -31,7 +53,15 @@ void EditorSuite::RegisterVfxComponents()
 		RIZE_FIELD(TrailComponent, colorEnd, ComponentFieldType::Color, 0.0f, 0.0f),
 		RIZE_FIELD(TrailComponent, intensity, ComponentFieldType::Float, 0.0f, 100.0f),
 		RIZE_FIELD(TrailComponent, additive, ComponentFieldType::Bool, 0.0f, 0.0f),
-		RIZE_FIELD(TrailComponent, emitting, ComponentFieldType::Bool, 0.0f, 0.0f) });
+		RIZE_FIELD(TrailComponent, emitting, ComponentFieldType::Bool, 0.0f, 0.0f),
+		RIZE_FIELD(TrailComponent, texture, ComponentFieldType::Asset, 0.0f, 0.0f) });
+
+	RegisterDataComponent<DecalComponent>(kDecalComponent, "Rendering", {
+		RIZE_FIELD(DecalComponent, texture, ComponentFieldType::Asset, 0.0f, 0.0f),
+		RIZE_FIELD(DecalComponent, color, ComponentFieldType::Color, 0.0f, 0.0f),
+		RIZE_FIELD(DecalComponent, intensity, ComponentFieldType::Float, 0.0f, 100.0f),
+		RIZE_FIELD(DecalComponent, edgeFade, ComponentFieldType::Float, 0.0f, 1.0f),
+		RIZE_FIELD(DecalComponent, additive, ComponentFieldType::Bool, 0.0f, 0.0f) });
 
 	ComponentInfo& particles = RegisterDataComponent<GpuParticlesComponent>(kGpuParticlesComponent, "Rendering", {
 		RIZE_FIELD(GpuParticlesComponent, capacity, ComponentFieldType::Int, 1.0f, 1000000.0f),
@@ -50,6 +80,13 @@ void EditorSuite::RegisterVfxComponents()
 		RIZE_FIELD(GpuParticlesComponent, sizeEnd, ComponentFieldType::Float, 0.0f, 1000.0f),
 		RIZE_FIELD(GpuParticlesComponent, colorStart, ComponentFieldType::Color, 0.0f, 0.0f),
 		RIZE_FIELD(GpuParticlesComponent, colorEnd, ComponentFieldType::Color, 0.0f, 0.0f),
+		RIZE_FIELD(GpuParticlesComponent, useMiddleKey, ComponentFieldType::Bool, 0.0f, 0.0f),
+		RIZE_FIELD(GpuParticlesComponent, middleTime, ComponentFieldType::Float, 0.001f, 0.999f),
+		RIZE_FIELD(GpuParticlesComponent, sizeMiddle, ComponentFieldType::Float, 0.0f, 1000.0f),
+		RIZE_FIELD(GpuParticlesComponent, colorMiddle, ComponentFieldType::Color, 0.0f, 0.0f),
+		RIZE_FIELD(GpuParticlesComponent, collideWithFloor, ComponentFieldType::Bool, 0.0f, 0.0f),
+		RIZE_FIELD(GpuParticlesComponent, floorHeight, ComponentFieldType::Float, -100000.0f, 100000.0f),
+		RIZE_FIELD(GpuParticlesComponent, bounce, ComponentFieldType::Float, 0.0f, 1.0f),
 		RIZE_FIELD(GpuParticlesComponent, intensity, ComponentFieldType::Float, 0.0f, 100.0f),
 		RIZE_FIELD(GpuParticlesComponent, additive, ComponentFieldType::Bool, 0.0f, 0.0f),
 		RIZE_FIELD(GpuParticlesComponent, texture, ComponentFieldType::Asset, 0.0f, 0.0f) });
@@ -103,9 +140,15 @@ void EditorSuite::UpdateGpuParticles(ID3D12GraphicsCommandList* cmdList)
 		const auto bright = [&](const Vector4& c) { return Vector4{ c.x * p->intensity, c.y * p->intensity, c.z * p->intensity, c.w }; };
 		settings.colorStart = bright(p->colorStart);
 		settings.colorEnd = bright(p->colorEnd);
+		settings.useMiddleKey = p->useMiddleKey;
+		settings.middleTime = p->middleTime;
+		settings.sizeMiddle = p->sizeMiddle;
+		settings.colorMiddle = bright(p->colorMiddle);
+		settings.collideWithFloor = p->collideWithFloor;
+		settings.floorHeight = p->floorHeight;
+		settings.bounce = p->bounce;
 		settings.additive = p->additive;
-		const std::string texture = p->texture[0] != '\0' ? ResolveAssetPath(p->texture) : std::string("Resources/circle.png");
-		settings.textureHandle = TextureManager::GetInstance()->LoadTexture(texture);
+		settings.textureHandle = p->texture[0] != '\0' ? TextureManager::GetInstance()->LoadTexture(ResolveAssetPath(p->texture)) : SoftCircleTexture();
 
 		const Vector3 origin{ obj.worldMatrix.m[3][0], obj.worldMatrix.m[3][1], obj.worldMatrix.m[3][2] };
 		GpuParticles::GetInstance()->Simulate(cmdList, obj.id, origin, deltaTime, emit, settings);
@@ -128,16 +171,42 @@ void EditorSuite::UpdateTrails()
 	}
 }
 
-void EditorSuite::DrawEffects(ID3D12GraphicsCommandList* cmdList, const Camera& camera)
+void EditorSuite::DrawDecals(ID3D12GraphicsCommandList* cmdList, const Camera& camera, RenderTexture& target)
 {
-	std::vector<TrailVertex> additive;
-	std::vector<TrailVertex> blended;
+	std::vector<DecalDraw> decals;
+	for (GameObject& obj : gameObjects_) {
+		const DecalComponent* decal = obj.isActive ? obj.components.Get<DecalComponent>(kDecalComponent) : nullptr;
+		if (!decal) continue;
+		DecalDraw draw;
+		draw.world = obj.worldMatrix;
+		draw.color = { decal->color.x * decal->intensity, decal->color.y * decal->intensity, decal->color.z * decal->intensity, decal->color.w };
+		draw.edgeFade = decal->edgeFade;
+		draw.additive = decal->additive;
+		draw.textureHandle = decal->texture[0] != '\0' ? TextureManager::GetInstance()->LoadTexture(ResolveAssetPath(decal->texture)) : SoftCircleTexture();
+		decals.push_back(draw);
+	}
+	if (!decals.empty() && target.IsDepthReadable()) {
+		target.BeginColorOnlyWithDepthRead(cmdList);
+		DecalRenderer::GetInstance()->Draw(cmdList, camera, target.GetDepthSrvGPUHandle(), target.GetWidth(), target.GetHeight(), decals);
+		target.EndColorOnlyWithDepthRead(cmdList);
+	}
+	// Not in the depth the decals read: drawn over the marks like anything else in front of the floor
+	for (Object3d* held : decalExcluded_) held->Draw(cmdList);
+	decalExcluded_.clear();
+}
+
+void EditorSuite::DrawEffects(ID3D12GraphicsCommandList* cmdList, const Camera& camera, RenderTexture& target)
+{
+	(void)target;
+
+	// One draw per texture and blend mode; blended ones first
+	std::map<std::pair<bool, uint32_t>, std::vector<TrailVertex>> trails;
 	for (GameObject& obj : gameObjects_) {
 		const TrailComponent* trail = obj.components.Get<TrailComponent>(kTrailComponent);
 		if (!trail || trail->ribbon.PointCount() < 2) continue;
-		trail->ribbon.BuildMesh(camera.translation, gameTime_, StyleOf(*trail), trail->additive ? additive : blended);
+		const uint32_t texture = trail->texture[0] != '\0' ? TextureManager::GetInstance()->LoadTexture(ResolveAssetPath(trail->texture)) : 0u;
+		trail->ribbon.BuildMesh(camera.translation, gameTime_, StyleOf(*trail), trails[{ trail->additive, texture }]);
 	}
-	TrailRenderer::GetInstance()->Draw(cmdList, camera, blended, false);
-	TrailRenderer::GetInstance()->Draw(cmdList, camera, additive, true);
+	for (const auto& [key, vertices] : trails) TrailRenderer::GetInstance()->Draw(cmdList, camera, vertices, key.first, key.second);
 	GpuParticles::GetInstance()->Draw(cmdList, camera);
 }

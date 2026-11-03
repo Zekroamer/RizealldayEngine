@@ -102,6 +102,22 @@ void EditorSuite::CalculateLightViewProjection()
 	lightViewProjectionMatrix_ = Mathematics::Multiply(viewMat, projMat);
 }
 
+AABB EditorSuite::CullingBounds(const GameObject& obj, const Model& model, const Matrix4x4& world, bool animated) const
+{
+	if (const auto ragdoll = ragdolls_.find(obj.id); ragdoll != ragdolls_.end() && ragdoll->second.hasBounds) {
+		// Body centres plus room for the limbs around them
+		constexpr float kMargin = 0.6f;
+		return { ragdoll->second.boundsMin - Vector3{ kMargin, kMargin, kMargin }, ragdoll->second.boundsMax + Vector3{ kMargin, kMargin, kMargin } };
+	}
+	AABB localBox = model.GetLocalAABB();
+	if (animated) {
+		// Expand bounding box slightly for animated meshes so bone motion does not clip prematurely
+		const Vector3 halfExt = (localBox.max - localBox.min) * 0.5f;
+		localBox.min = localBox.min - halfExt;
+		localBox.max = localBox.max + halfExt;
+	}
+	return Frustum::TransformAABB(localBox, world);
+}
 Model* EditorSuite::ResolveMeshModel(const GameObject& obj)
 {
 	switch (obj.meshType) {
@@ -255,7 +271,7 @@ void EditorSuite::RenderShadowPass(ID3D12GraphicsCommandList* cmdList, const Cam
 	for (auto& obj : gameObjects_) {
 		if (!obj.isActive || !obj.hasMesh || !obj.meshEnabled || !obj.castShadow) continue;
 		Model* model = ResolveMeshModel(obj);
-		if (model) casters.push_back({ &obj, model, Frustum::TransformAABB(model->GetLocalAABB(), obj.worldMatrix) });
+		if (model) casters.push_back({ &obj, model, CullingBounds(obj, *model, obj.worldMatrix, false) });
 	}
 
 	shadowMap_.BeginShadowPass(cmdList);
@@ -331,6 +347,11 @@ void EditorSuite::RenderScene3D(ID3D12GraphicsCommandList* cmdList, Camera& came
 	std::unordered_map<uint64_t, size_t> groupIndex;
 	std::vector<InstanceGroup> groups;
 	std::vector<Object3d*> singles;
+	decalExcluded_.clear();
+	bool sceneHasDecals = false;
+	for (const auto& obj : gameObjects_) {
+		if (obj.isActive && obj.components.Has(kDecalComponent)) { sceneHasDecals = true; break; }
+	}
 
 	for (auto& obj : gameObjects_) {
 		if (!obj.isActive || !obj.hasMesh || !obj.meshEnabled) {
@@ -400,14 +421,7 @@ void EditorSuite::RenderScene3D(ID3D12GraphicsCommandList* cmdList, Camera& came
 		}
 
 		if (enableFrustumCulling_ && model) {
-			AABB localBox = model->GetLocalAABB();
-			if (model->GetAnimationCount() > 0) {
-				// Expand bounding box slightly for animated meshes so bone motion does not clip prematurely
-				Vector3 halfExt = (localBox.max - localBox.min) * 0.5f;
-				localBox.min = localBox.min - halfExt;
-				localBox.max = localBox.max + halfExt;
-			}
-			AABB worldBox = Frustum::TransformAABB(localBox, obj3d->worldTransform.matWorld);
+			const AABB worldBox = CullingBounds(obj, *model, obj3d->worldTransform.matWorld, model->GetAnimationCount() > 0);
 			if (!camFrustum.IsAABBVisible(worldBox)) {
 				culledCount++;
 				continue;
@@ -415,6 +429,10 @@ void EditorSuite::RenderScene3D(ID3D12GraphicsCommandList* cmdList, Camera& came
 		}
 
 		visibleCount++;
+		if (sceneHasDecals && !ReceivesDecals(obj, model)) {
+			decalExcluded_.push_back(obj3d.get());
+			continue;
+		}
 		if (enableInstancing_ && model && mat && !model->HasBones() && gsMode == GeometryShaderMode::None && !obj.useGeometryShader &&
 			obj3d->GetBlendMode() == BlendMode::Opaque && mat->outlineWidth <= 0.0f) {
 			// FNV-1a over everything that must match. A 64-bit collision would only give one object the other's material.
@@ -459,6 +477,11 @@ void EditorSuite::RenderScene3D(ID3D12GraphicsCommandList* cmdList, Camera& came
 	}
 }
 
+bool EditorSuite::ReceivesDecals(const GameObject& obj, const Model* model)
+{
+	return !obj.hasRigidbody && !(model && model->HasBones());
+}
+
 void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showParticles)
 {
 	if (!dxCommon_ || dxCommon_->IsDeviceLost() || !cmdList) {
@@ -485,6 +508,8 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 	const auto setPostCamera = [&](const Camera& camera) {
 		const Matrix4x4& proj = camera.GetProjectionMatrix();
 		postProcess_.SetCamera(1.0f / proj.m[0][0], 1.0f / proj.m[1][1], camera.nearClip, camera.farClip, proj.m[3][3] == 0.0f);
+		const Matrix4x4& view = camera.GetViewMatrix();
+		postProcess_.SetCameraHeight(camera.translation.y, view.m[1][0], view.m[1][1], view.m[1][2]);
 	};
 
 #ifdef USE_IMGUI
@@ -497,6 +522,7 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 	editSceneRT_.BeginRender();
 	skybox_.Draw(cmdList, editorCamera_);
 	RenderScene3D(cmdList, editorCamera_, true);
+	DrawDecals(cmdList, editorCamera_, editSceneRT_);
 	if (showGrid_) {
 		// Depth-tested ground grid: hidden behind scene geometry, unlike an ImGui overlay.
 		// Lifted slightly above y = 0 so it does not z-fight with a ground plane at the origin.
@@ -515,7 +541,7 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 			}
 		}
 	}
-	DrawEffects(cmdList, editorCamera_);
+	DrawEffects(cmdList, editorCamera_, editSceneRT_);
 	editSceneRT_.EndRender();
 	// The Scene view shows the scene itself: post-processing is the game's look
 	editViewRT_.BeginRender(false);
@@ -537,6 +563,7 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 	if (gameCamera_) {
 		skybox_.Draw(cmdList, *gameCamera_);
 		RenderScene3D(cmdList, *gameCamera_, false);
+		DrawDecals(cmdList, *gameCamera_, gameSceneRT_);
 		if (activeParticles) {
 			for (auto& obj : gameObjects_) {
 				if (obj.isActive && obj.hasParticleSystem && obj.particleQuad) {
@@ -545,7 +572,7 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 				}
 			}
 		}
-		DrawEffects(cmdList, *gameCamera_);
+		DrawEffects(cmdList, *gameCamera_, gameSceneRT_);
 	}
 	gameSceneRT_.EndRender();
 	{
@@ -622,6 +649,7 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 	if (gameCamera_) {
 		skybox_.Draw(cmdList, *gameCamera_);
 		RenderScene3D(cmdList, *gameCamera_, true);
+		DrawDecals(cmdList, *gameCamera_, gameSceneRT_);
 		if (activeParticles) {
 			for (auto& obj : gameObjects_) {
 				if (obj.isActive && obj.hasParticleSystem && obj.particleQuad) {
@@ -630,7 +658,7 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 				}
 			}
 		}
-		DrawEffects(cmdList, *gameCamera_);
+		DrawEffects(cmdList, *gameCamera_, gameSceneRT_);
 	}
 	gameSceneRT_.EndRender();
 	{

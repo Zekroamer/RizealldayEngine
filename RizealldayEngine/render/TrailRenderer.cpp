@@ -3,6 +3,7 @@
 #include "base/DirectXCommon.h"
 #include "base/DXCManager.h"
 #include "base/Log.h"
+#include "base/TextureManager.h"
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -58,7 +59,7 @@ void TrailRibbon::BuildMesh(const Vector3& cameraPosition, double now, const Tra
 {
 	if (points_.size() < 2) return;
 	const float lifetime = (std::max)(style.lifetime, 0.001f);
-	struct Ring { Vector3 left; Vector3 centre; Vector3 right; Vector4 color; };
+	struct Ring { Vector3 left; Vector3 centre; Vector3 right; Vector4 color; float age; };
 	std::vector<Ring> rings(points_.size());
 	Vector3 side{ 0.0f, 1.0f, 0.0f }; // the last good one is kept where the ribbon points at the camera
 	for (size_t i = 0; i < points_.size(); ++i) {
@@ -74,26 +75,29 @@ void TrailRibbon::BuildMesh(const Vector3& cameraPosition, double now, const Tra
 		const float t = std::clamp(static_cast<float>(now - points_[i].born) / lifetime, 0.0f, 1.0f);
 		const float halfWidth = (std::max)(style.widthStart + (style.widthEnd - style.widthStart) * t, 0.0f) * 0.5f;
 		const Vector3 offset{ side.x * halfWidth, side.y * halfWidth, side.z * halfWidth };
-		rings[i] = { { p.x + offset.x, p.y + offset.y, p.z + offset.z }, p, { p.x - offset.x, p.y - offset.y, p.z - offset.z }, Lerp(style.colorStart, style.colorEnd, t) };
+		rings[i] = { { p.x + offset.x, p.y + offset.y, p.z + offset.z }, p, { p.x - offset.x, p.y - offset.y, p.z - offset.z }, Lerp(style.colorStart, style.colorEnd, t), t };
 	}
 
-	const auto vertex = [](const Vector3& position, const Vector4& color, float alpha) {
-		return TrailVertex{ { position.x, position.y, position.z, 1.0f }, { color.x, color.y, color.z, color.w * alpha } };
+	const float edge = style.softEdges ? 0.0f : 1.0f;
+	const auto vertex = [&](const Vector3& position, const Ring& ring, float side) {
+		const float alpha = side == 0.5f ? 1.0f : edge;
+		return TrailVertex{ { position.x, position.y, position.z, 1.0f }, { ring.color.x, ring.color.y, ring.color.z, ring.color.w * alpha }, { ring.age, side } };
 	};
-	const auto quad = [&](const Vector3& a0, float alphaA0, const Vector3& a1, float alphaA1, const Vector3& b0, float alphaB0, const Vector3& b1, float alphaB1, const Vector4& colorA, const Vector4& colorB) {
-		out.push_back(vertex(a0, colorA, alphaA0));
-		out.push_back(vertex(a1, colorA, alphaA1));
-		out.push_back(vertex(b0, colorB, alphaB0));
-		out.push_back(vertex(b0, colorB, alphaB0));
-		out.push_back(vertex(a1, colorA, alphaA1));
-		out.push_back(vertex(b1, colorB, alphaB1));
+	// Two strips per segment, left half and right half, so the soft edge has a full-alpha centre line
+	const auto quad = [&](const Ring& a, const Ring& b, const Vector3& a0, const Vector3& a1, const Vector3& b0, const Vector3& b1, float side0, float side1) {
+		out.push_back(vertex(a0, a, side0));
+		out.push_back(vertex(a1, a, side1));
+		out.push_back(vertex(b0, b, side0));
+		out.push_back(vertex(b0, b, side0));
+		out.push_back(vertex(a1, a, side1));
+		out.push_back(vertex(b1, b, side1));
 	};
 	for (size_t i = 0; i + 1 < rings.size(); ++i) {
 		if (points_[i + 1].startsPiece) continue;
 		const Ring& a = rings[i];
 		const Ring& b = rings[i + 1];
-		quad(a.left, 0.0f, a.centre, 1.0f, b.left, 0.0f, b.centre, 1.0f, a.color, b.color);
-		quad(a.centre, 1.0f, a.right, 0.0f, b.centre, 1.0f, b.right, 0.0f, a.color, b.color);
+		quad(a, b, a.left, a.centre, b.left, b.centre, 0.0f, 0.5f);
+		quad(a, b, a.centre, a.right, b.centre, b.right, 0.5f, 1.0f);
 	}
 }
 
@@ -107,14 +111,28 @@ void TrailRenderer::Initialize(DirectXCommon* dxCommon, DXCManager* dxc)
 {
 	dxCommon_ = dxCommon;
 
-	// Same shaders as the line drawer: world position + color, view-projection as root constants
-	D3D12_ROOT_PARAMETER parameter{};
-	parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-	parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-	parameter.Constants.Num32BitValues = 16;
+	// View-projection as root constants, the texture as a table
+	D3D12_DESCRIPTOR_RANGE range{};
+	range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	range.NumDescriptors = 1;
+	D3D12_ROOT_PARAMETER parameters[2] = {};
+	parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+	parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+	parameters[0].Constants.Num32BitValues = 16;
+	parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	parameters[1].DescriptorTable.NumDescriptorRanges = 1;
+	parameters[1].DescriptorTable.pDescriptorRanges = &range;
+	D3D12_STATIC_SAMPLER_DESC sampler{};
+	sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+	sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+	sampler.MaxLOD = D3D12_FLOAT32_MAX;
+	sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 	D3D12_ROOT_SIGNATURE_DESC sigDesc{};
-	sigDesc.pParameters = &parameter;
-	sigDesc.NumParameters = 1;
+	sigDesc.pParameters = parameters;
+	sigDesc.NumParameters = _countof(parameters);
+	sigDesc.pStaticSamplers = &sampler;
+	sigDesc.NumStaticSamplers = 1;
 	sigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 	Microsoft::WRL::ComPtr<ID3DBlob> signatureBlob;
 	Microsoft::WRL::ComPtr<ID3DBlob> errorBlob;
@@ -127,18 +145,21 @@ void TrailRenderer::Initialize(DirectXCommon* dxCommon, DXCManager* dxc)
 	hr = dxCommon_->GetDevice()->CreateRootSignature(0, signatureBlob->GetBufferPointer(), signatureBlob->GetBufferSize(), IID_PPV_ARGS(&rootSignature_));
 	assert(SUCCEEDED(hr));
 
-	Microsoft::WRL::ComPtr<IDxcBlob> vs = dxc->CompileShader(L"shaders/Line.VS.hlsl", L"vs_6_0", dxc->GetDxcUtils(), dxc->GetDxcCompiler(), dxc->GetIncludeHandler());
-	Microsoft::WRL::ComPtr<IDxcBlob> ps = dxc->CompileShader(L"shaders/Line.PS.hlsl", L"ps_6_0", dxc->GetDxcUtils(), dxc->GetDxcCompiler(), dxc->GetIncludeHandler());
+	Microsoft::WRL::ComPtr<IDxcBlob> vs = dxc->CompileShader(L"shaders/Trail.VS.hlsl", L"vs_6_0", dxc->GetDxcUtils(), dxc->GetDxcCompiler(), dxc->GetIncludeHandler());
+	Microsoft::WRL::ComPtr<IDxcBlob> ps = dxc->CompileShader(L"shaders/Trail.PS.hlsl", L"ps_6_0", dxc->GetDxcUtils(), dxc->GetDxcCompiler(), dxc->GetIncludeHandler());
 	assert(vs && ps);
 	if (!vs || !ps) return;
 
-	D3D12_INPUT_ELEMENT_DESC inputElements[2] = {};
+	D3D12_INPUT_ELEMENT_DESC inputElements[3] = {};
 	inputElements[0].SemanticName = "POSITION";
 	inputElements[0].Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
 	inputElements[0].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
 	inputElements[1].SemanticName = "COLOR";
 	inputElements[1].Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
 	inputElements[1].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
+	inputElements[2].SemanticName = "TEXCOORD";
+	inputElements[2].Format = DXGI_FORMAT_R32G32_FLOAT;
+	inputElements[2].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
 
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
 	desc.pRootSignature = rootSignature_.Get();
@@ -182,16 +203,19 @@ void TrailRenderer::Finalize()
 	dxCommon_ = nullptr;
 }
 
-void TrailRenderer::Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera, const std::vector<TrailVertex>& vertices, bool additive)
+void TrailRenderer::Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera, const std::vector<TrailVertex>& vertices, bool additive, uint32_t textureHandle)
 {
 	if (vertices.empty() || !dxCommon_ || !alphaPso_ || !additivePso_) return;
 	const size_t bytes = vertices.size() * sizeof(TrailVertex);
 	const D3D12_GPU_VIRTUAL_ADDRESS address = dxCommon_->UploadData(vertices.data(), bytes, sizeof(float));
 	if (address == 0) return;
 
+	TextureManager* textures = TextureManager::GetInstance();
+	textures->SetDescriptorHeaps(cmdList);
 	cmdList->SetGraphicsRootSignature(rootSignature_.Get());
 	cmdList->SetPipelineState(additive ? additivePso_.Get() : alphaPso_.Get());
 	cmdList->SetGraphicsRoot32BitConstants(0, 16, &camera.GetViewProjectionMatrix(), 0);
+	cmdList->SetGraphicsRootDescriptorTable(1, textures->GetGPUHandle(textureHandle != 0 ? textureHandle : textures->GetDefaultWhiteTexture()));
 	cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	const D3D12_VERTEX_BUFFER_VIEW view{ address, static_cast<UINT>(bytes), sizeof(TrailVertex) };
 	cmdList->IASetVertexBuffers(0, 1, &view);

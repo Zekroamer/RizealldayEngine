@@ -141,9 +141,46 @@ bool EditorSuite::CreateThirdPersonDemo()
 
 	// Effects: a fire simulated on the GPU
 	GameObject& fire = CreateGameObject("Fire", GameObjectType::Empty);
-	fire.translation = { 7.0f, -0.4f, -4.0f };
+	fire.translation = { 1.0f, 0.0f, 3.0f };
 	if (AddComponentByName(fire, kGpuParticlesComponent)) {
 		ApplyGpuParticlePreset(*fire.components.Get<GpuParticlesComponent>(kGpuParticlesComponent), "Fire");
+	}
+	// A warning mark painted on the floor
+	GameObject& mark = CreateGameObject("Floor Mark", GameObjectType::Empty);
+	mark.translation = { -2.0f, -0.5f, 2.0f };
+	mark.scale = { 3.0f, 1.0f, 3.0f };
+	if (AddComponentByName(mark, kDecalComponent)) {
+		auto* decal = mark.components.Get<DecalComponent>(kDecalComponent);
+		decal->color = { 1.0f, 0.15f, 0.1f, 0.9f };
+		decal->intensity = 2.0f;
+	}
+	// A platform moved by a looping Timeline
+	CreateCube("Moving Platform", { -8.0f, 0.5f, 10.0f }).materialColor = { 0.3f, 0.8f, 0.7f, 1.0f };
+	GameObject& director = CreateGameObject("Director", GameObjectType::Empty);
+	const std::string timelinePath = CreateTimelineAsset("PlatformLoop");
+	if (!timelinePath.empty() && AddComponentByName(director, kTimelineComponent)) {
+		Timeline timeline;
+		timeline.duration = 6.0f;
+		TimelineTrack& track = timeline.FindOrAddTrack("Moving Platform", TimelineProperty::Position);
+		track.SetKey({ 0.0f, { -8.0f, 0.5f, 10.0f }, true });
+		track.SetKey({ 3.0f, { 8.0f, 0.5f, 10.0f }, true });
+		track.SetKey({ 6.0f, { -8.0f, 0.5f, 10.0f }, true });
+		SaveTimeline(timelinePath, timeline);
+		auto* player = director.components.Get<TimelineComponent>(kTimelineComponent);
+		strncpy_s(player->timeline, timelinePath.c_str(), _TRUNCATE);
+		player->loop = true;
+	}
+	// Hills beyond the arena
+	GameObject& land = CreateGameObject("Hills", GameObjectType::Empty);
+	land.translation = { 0.0f, -2.0f, 50.0f };
+	land.materialColor = { 0.45f, 0.6f, 0.35f, 1.0f };
+	const uint32_t landId = land.id;
+	if (AddComponentByName(land, kTerrainComponent)) {
+		auto* terrain = land.components.Get<TerrainComponent>(kTerrainComponent);
+		terrain->size = 80.0f;
+		terrain->height = 14.0f;
+		terrain->resolution = 65;
+		GenerateTerrain(*FindGameObjectById(landId, false));
 	}
 
 	GameObject& player = CreateCube("Player", { 0.0f, 2.0f, 0.0f });

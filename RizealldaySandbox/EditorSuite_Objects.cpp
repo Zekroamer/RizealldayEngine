@@ -129,9 +129,8 @@ GameObject& EditorSuite::CreateQuad(const std::string& name, const Vector3& pos)
 
 void EditorSuite::DeleteSelectedGameObject()
 {
-	if (selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size())) {
-		QueueDeleteGameObject(selectedObjectIndex_);
-	}
+	for (uint32_t id : SelectedIds()) QueueDeleteGameObject(FindGameObjectIndexById(id));
+	extraSelection_.clear();
 }
 
 void EditorSuite::QueueDeleteGameObject(int index)
@@ -211,22 +210,9 @@ void EditorSuite::ProcessPendingDeletes()
 {
 	// 1. Process deferred duplication if requested
 	if (pendingDuplicateIndex_ >= 0 && pendingDuplicateIndex_ < static_cast<int>(gameObjects_.size())) {
-		for (auto& sc : gameObjects_[pendingDuplicateIndex_].scripts) {
-			CaptureScriptFieldsToSaved(sc);
-		}
-		GameObject clone = gameObjects_[pendingDuplicateIndex_];
-		clone.id = nextObjectId_++;
-		clone.name += " (Copy)";
-		clone.translation.x += 1.0f;
-		clone.childrenIds.clear();
-		clone.parentIndex = -1;
-		clone.parentId = -1;
-		gameObjects_.push_back(std::move(clone));
-		selectedObjectIndex_ = static_cast<int>(gameObjects_.size()) - 1;
-		RefreshAllScriptObjectViews();
-		EnsureEditModeScriptInstances();
-		isSceneDirty_ = true;
-		PushUndoSnapshot();
+		// The clicked object, or the whole selection when it is part of it
+		const uint32_t clicked = gameObjects_[pendingDuplicateIndex_].id;
+		DuplicateObjects(IsSelected(clicked) ? SelectedIds() : std::vector<uint32_t>{ clicked });
 		pendingDuplicateIndex_ = -1;
 	}
 

@@ -4,8 +4,8 @@ void EditorSuite::DrawMapchipInspectorSection()
 {
 #ifdef USE_IMGUI
 	if (DrawComponentHeader("Mapchip Level Editor", ComponentKind::Mapchip)) {
-		ImGui::Checkbox("Render 3D Blocks in Viewport", &renderMapchip3DBlocks_);
-		ImGui::Text("Palette:");
+		ImGui::Checkbox(TrId("Render 3D Blocks in Viewport"), &renderMapchip3DBlocks_);
+		ImGui::Text(Tr("Palette:"));
 		const char* tileNames[] = { "0: Empty", "1: Wall Block", "2: Spike", "3: Spawn", "4: Goal" };
 		for (int t = 0; t < 5; ++t) {
 			ImGui::RadioButton(tileNames[t], &selectedBrushTile_, t);
@@ -13,7 +13,7 @@ void EditorSuite::DrawMapchipInspectorSection()
 		}
 
 		ImGui::Spacing();
-		ImGui::Text("Level Grid (15x10):");
+		ImGui::Text(Tr("Level Grid (15x10):"));
 
 		float cellW = 18.0f;
 		float cellH = 18.0f;
@@ -44,11 +44,11 @@ void EditorSuite::DrawMapchipInspectorSection()
 		}
 
 		ImGui::SetCursorScreenPos(ImVec2(startPos.x, startPos.y + mapRows_ * (cellH + 2.0f) + 8.0f));
-		if (ImGui::Button("Save Mapchip CSV", ImVec2(140.0f, 24.0f))) {
+		if (ImGui::Button(TrId("Save Mapchip CSV"), ImVec2(140.0f, 24.0f))) {
 			SaveMapchipCSV(mapFilePathBuf_);
 		}
 		ImGui::SameLine();
-		if (ImGui::Button("Load Mapchip CSV", ImVec2(140.0f, 24.0f))) {
+		if (ImGui::Button(TrId("Load Mapchip CSV"), ImVec2(140.0f, 24.0f))) {
 			LoadMapchipCSV(mapFilePathBuf_);
 		}
 	}

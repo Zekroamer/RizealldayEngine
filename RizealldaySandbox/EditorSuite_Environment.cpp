@@ -52,6 +52,18 @@ void EditorSuite::DrawPostProcessSettingsUI()
 	changed |= ImGui::DragFloat(TrId("Shadow Distance"), &post.shadowDistance, 1.0f, 5.0f, 1000.0f);
 	changed |= ImGui::DragFloat(TrId("Environment Intensity"), &post.environmentIntensity, 0.01f, 0.0f, 10.0f);
 	ImGui::SetItemTooltip("%s", Tr("How much the sky lights PBR materials"));
+
+	ImGui::Spacing();
+	ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s", Tr("Fog"));
+	ImGui::Separator();
+	changed |= ImGui::Checkbox(TrId("Enable Fog"), &post.fogEnabled);
+	ImGui::BeginDisabled(!post.fogEnabled);
+	changed |= ImGui::ColorEdit3(TrId("Fog Color"), &post.fogColor.x);
+	changed |= ImGui::DragFloat(TrId("Fog Density"), &post.fogDensity, 0.001f, 0.0f, 10.0f, "%.3f");
+	changed |= ImGui::DragFloat(TrId("Fog Height"), &post.fogHeight, 0.1f);
+	changed |= ImGui::DragFloat(TrId("Height Falloff"), &post.fogHeightFalloff, 0.005f, 0.0f, 10.0f, "%.3f");
+	ImGui::SetItemTooltip("%s", Tr("How fast the fog thins out above Fog Height. 0 = the same at every height."));
+	ImGui::EndDisabled();
 	if (changed) {
 		isSceneDirty_ = true;
 		PushUndoSnapshot();
@@ -62,12 +74,12 @@ void EditorSuite::DrawPostProcessSettingsUI()
 void EditorSuite::DrawSkyboxSettingsUI()
 {
 #ifdef USE_IMGUI
-	ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "Skybox / Environment Settings");
+	ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), Tr("Skybox / Environment Settings"));
 	ImGui::Separator();
 
 	const char* modeNames[] = { "Gradient", "Solid Color", "Cubemap" };
 	int currentMode = static_cast<int>(skybox_.GetMode());
-	if (ImGui::Combo("Background Mode", &currentMode, modeNames, 3)) {
+	if (ImGui::Combo(TrId("Background Mode"), &currentMode, modeNames, 3)) {
 		skybox_.SetMode(static_cast<SkyboxMode>(currentMode));
 		if (skybox_.GetMode() == SkyboxMode::Cubemap) {
 			if (!skybox_.LoadCubemap(skybox_.GetCubemapPath())) {
@@ -78,46 +90,46 @@ void EditorSuite::DrawSkyboxSettingsUI()
 		isSceneDirty_ = true;
 		PushUndoSnapshot();
 	}
-	ImGui::SetItemTooltip("Select sky background rendering mode: Gradient, Solid Color, or Cubemap");
+	ImGui::SetItemTooltip(Tr("Select sky background rendering mode: Gradient, Solid Color, or Cubemap"));
 
 	ImGui::Spacing();
 
 	if (skybox_.GetMode() == SkyboxMode::Gradient) {
 		Vector4 topCol = skybox_.GetTopColor();
 		float topArr[3] = { topCol.x, topCol.y, topCol.z };
-		if (ImGui::ColorEdit3("Top Color", topArr)) {
+		if (ImGui::ColorEdit3(TrId("Top Color"), topArr)) {
 			skybox_.SetTopColor({ topArr[0], topArr[1], topArr[2], topCol.w });
 			isSceneDirty_ = true;
 		}
 		if (ImGui::IsItemDeactivatedAfterEdit()) PushUndoSnapshot();
-		ImGui::SetItemTooltip("Sky apex / zenith gradient color");
+		ImGui::SetItemTooltip(Tr("Sky apex / zenith gradient color"));
 
 		Vector4 horizCol = skybox_.GetHorizonColor();
 		float horizArr[3] = { horizCol.x, horizCol.y, horizCol.z };
-		if (ImGui::ColorEdit3("Horizon Color", horizArr)) {
+		if (ImGui::ColorEdit3(TrId("Horizon Color"), horizArr)) {
 			skybox_.SetHorizonColor({ horizArr[0], horizArr[1], horizArr[2], horizCol.w });
 			isSceneDirty_ = true;
 		}
 		if (ImGui::IsItemDeactivatedAfterEdit()) PushUndoSnapshot();
-		ImGui::SetItemTooltip("Sky horizon midpoint gradient color");
+		ImGui::SetItemTooltip(Tr("Sky horizon midpoint gradient color"));
 
 		Vector4 botCol = skybox_.GetBottomColor();
 		float botArr[3] = { botCol.x, botCol.y, botCol.z };
-		if (ImGui::ColorEdit3("Ground Color", botArr)) {
+		if (ImGui::ColorEdit3(TrId("Ground Color"), botArr)) {
 			skybox_.SetBottomColor({ botArr[0], botArr[1], botArr[2], botCol.w });
 			isSceneDirty_ = true;
 		}
 		if (ImGui::IsItemDeactivatedAfterEdit()) PushUndoSnapshot();
-		ImGui::SetItemTooltip("Nadir / ground hemisphere gradient color");
+		ImGui::SetItemTooltip(Tr("Nadir / ground hemisphere gradient color"));
 	} else if (skybox_.GetMode() == SkyboxMode::SolidColor) {
 		Vector4 solidCol = skybox_.GetSolidColor();
 		float solidArr[3] = { solidCol.x, solidCol.y, solidCol.z };
-		if (ImGui::ColorEdit3("Solid Color", solidArr)) {
+		if (ImGui::ColorEdit3(TrId("Solid Color"), solidArr)) {
 			skybox_.SetSolidColor({ solidArr[0], solidArr[1], solidArr[2], solidCol.w });
 			isSceneDirty_ = true;
 		}
 		if (ImGui::IsItemDeactivatedAfterEdit()) PushUndoSnapshot();
-		ImGui::SetItemTooltip("Uniform solid clear color for the viewport background");
+		ImGui::SetItemTooltip(Tr("Uniform solid clear color for the viewport background"));
 	} else if (skybox_.GetMode() == SkyboxMode::Cubemap) {
 		if (availableCubemaps_.empty()) {
 			RefreshAvailableCubemaps();
@@ -133,7 +145,7 @@ void EditorSuite::DrawSkyboxSettingsUI()
 		}
 
 		const char* previewText = (currentIdx >= 0) ? availableCubemaps_[currentIdx].c_str() : "(Select Cubemap...)";
-		if (ImGui::BeginCombo("Cubemap Asset", previewText)) {
+		if (ImGui::BeginCombo(TrId("Cubemap Asset"), previewText)) {
 			for (int i = 0; i < static_cast<int>(availableCubemaps_.size()); ++i) {
 				bool isSelected = (currentIdx == i);
 				if (ImGui::Selectable(availableCubemaps_[i].c_str(), isSelected)) {
@@ -150,17 +162,17 @@ void EditorSuite::DrawSkyboxSettingsUI()
 			}
 			ImGui::EndCombo();
 		}
-		ImGui::SetItemTooltip("Choose a cubemap DDS file detected in Resources or Assets");
+		ImGui::SetItemTooltip(Tr("Choose a cubemap DDS file detected in Resources or Assets"));
 
 		ImGui::SameLine();
-		if (ImGui::Button("Refresh")) {
+		if (ImGui::Button(TrId("Refresh"))) {
 			RefreshAvailableCubemaps();
 		}
-		ImGui::SetItemTooltip("Rescan folders for .dds cubemap textures");
+		ImGui::SetItemTooltip(Tr("Rescan folders for .dds cubemap textures"));
 
 		char pathBuf[256];
 		strncpy_s(pathBuf, currentPath.c_str(), sizeof(pathBuf) - 1);
-		if (ImGui::InputText("File Path", pathBuf, sizeof(pathBuf))) {
+		if (ImGui::InputText(TrId("File Path"), pathBuf, sizeof(pathBuf))) {
 			skybox_.SetCubemapPath(pathBuf);
 			isSceneDirty_ = true;
 		}
@@ -171,29 +183,29 @@ void EditorSuite::DrawSkyboxSettingsUI()
 			}
 			PushUndoSnapshot();
 		}
-		ImGui::SetItemTooltip("Manual file path to DDS cubemap (press Enter to apply)");
+		ImGui::SetItemTooltip(Tr("Manual file path to DDS cubemap (press Enter to apply)"));
 
 		float rot = skybox_.GetRotation();
-		if (ImGui::SliderFloat("Rotation (Y)", &rot, 0.0f, 360.0f, "%.1f deg")) {
+		if (ImGui::SliderFloat(TrId("Rotation (Y)"), &rot, 0.0f, 360.0f, "%.1f deg")) {
 			skybox_.SetRotation(rot);
 			isSceneDirty_ = true;
 		}
 		if (ImGui::IsItemDeactivatedAfterEdit()) PushUndoSnapshot();
-		ImGui::SetItemTooltip("Rotate cubemap around Y axis (in degrees)");
+		ImGui::SetItemTooltip(Tr("Rotate cubemap around Y axis (in degrees)"));
 
 		float exp = skybox_.GetExposure();
-		if (ImGui::SliderFloat("Exposure", &exp, 0.1f, 5.0f, "%.2f")) {
+		if (ImGui::SliderFloat(TrId("Exposure"), &exp, 0.1f, 5.0f, "%.2f")) {
 			skybox_.SetExposure(exp);
 			isSceneDirty_ = true;
 		}
 		if (ImGui::IsItemDeactivatedAfterEdit()) PushUndoSnapshot();
-		ImGui::SetItemTooltip("Cubemap brightness and exposure multiplier");
+		ImGui::SetItemTooltip(Tr("Cubemap brightness and exposure multiplier"));
 
 		ImGui::Spacing();
 		if (skybox_.HasValidCubemap()) {
-			ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.3f, 1.0f), "Status: Cubemap Active & Loaded");
+			ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.3f, 1.0f), Tr("Status: Cubemap Active & Loaded"));
 		} else {
-			ImGui::TextColored(ImVec4(0.9f, 0.5f, 0.1f, 1.0f), "Status: Fallback Gradient Active");
+			ImGui::TextColored(ImVec4(0.9f, 0.5f, 0.1f, 1.0f), Tr("Status: Fallback Gradient Active"));
 		}
 	}
 #endif

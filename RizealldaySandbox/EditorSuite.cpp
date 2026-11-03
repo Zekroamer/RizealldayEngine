@@ -15,6 +15,10 @@ GameObject::GameObject(const GameObject& other) {
 	collisionMask = other.collisionMask;
 	prefabSource = other.prefabSource;
 	prefabNodeIndex = other.prefabNodeIndex;
+	prefabNodeKey = other.prefabNodeKey;
+	prefabOverrides = other.prefabOverrides;
+	nestedPrefab = other.nestedPrefab;
+	nestedNodeKey = other.nestedNodeKey;
 	type = other.type;
 	parentIndex = other.parentIndex;
 	parentId = other.parentId;
@@ -154,6 +158,10 @@ GameObject& GameObject::operator=(const GameObject& other) {
 		collisionMask = other.collisionMask;
 		prefabSource = other.prefabSource;
 		prefabNodeIndex = other.prefabNodeIndex;
+	prefabNodeKey = other.prefabNodeKey;
+	prefabOverrides = other.prefabOverrides;
+	nestedPrefab = other.nestedPrefab;
+	nestedNodeKey = other.nestedNodeKey;
 		type = other.type;
 		parentIndex = other.parentIndex;
 		parentId = other.parentId;
@@ -313,6 +321,10 @@ bool EditorSuite::IsExportedGameLaunch()
 
 EditorSuite::~EditorSuite()
 {
+	if (!isRunningTests_) {
+		gameObjects_.clear(); // the editor closes: undo is gone, so old terrain bakes are too
+		CollectTerrainGarbage();
+	}
 	// The handler captures `this`; the splash screen (TitleScene) can close without asking
 	WinApp::GetInstance()->SetCloseRequestHandler(nullptr);
 	WinApp::GetInstance()->SetFileDropHandler(nullptr);
@@ -337,6 +349,7 @@ void EditorSuite::Initialize(
 	smokeFramesLeft_ = _wtoi(EngineUpdate::CommandLineValue(L"--smoke-frames").c_str());
 #ifdef USE_IMGUI
 	Localization::LoadPreference(); // editor UI language chosen in Options > Language
+	autoSaveEnabled_ = Localization::EditorSettingBool("autoSave", true);
 #endif
 	dxCommon_ = dxCommon;
 	gameCamera_ = gameCamera;
@@ -405,7 +418,7 @@ void EditorSuite::Initialize(
 	modelPreviewRT_.Initialize(dxCommon_, 256, 256, 4, 4, 132, previewClearColor);
 	postProcess_.Initialize(dxCommon_, &dxc_);
 #ifdef USE_IMGUI
-	editSceneRT_.Initialize(dxCommon_, 1920, 1080, DirectXCommon::kSceneRtvBaseIndex, DirectXCommon::kSceneDsvBaseIndex, dxCommon_->AllocateSrvIndex(), editClearColor, true);
+	editSceneRT_.Initialize(dxCommon_, 1920, 1080, DirectXCommon::kSceneRtvBaseIndex, DirectXCommon::kSceneDsvBaseIndex, dxCommon_->AllocateSrvIndex(), editClearColor, true, dxCommon_->AllocateSrvIndex());
 	previewSceneRT_.Initialize(dxCommon_, 256, 256, DirectXCommon::kSceneRtvBaseIndex + 2, DirectXCommon::kSceneDsvBaseIndex + 2, dxCommon_->AllocateSrvIndex(), previewClearColor, true);
 	InitializeGameSceneTarget(1920, 1080);
 #else
@@ -519,6 +532,7 @@ void EditorSuite::Initialize(
 					}
 				}
 				if (const std::string window = argValue("--window "); window == "animator") showAnimatorWindow_ = true;
+				else if (window == "timeline") showTimelineWindow_ = true;
 				else if (window == "profiler") showProfiler_ = true;
 				else if (window == "open-project") showOpenProjectModal_ = true;
 #endif
@@ -677,6 +691,9 @@ void EditorSuite::Update(float deltaTime, Input* input)
 	currentDeltaTime_ = deltaTime;
 	unscaledDeltaTime_ = deltaTime;
 	ProcessPendingImports(); // files dropped from Explorer
+#ifdef USE_IMGUI
+	UpdateAutoSave(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
+#endif
 	if (smokeFramesLeft_ > 0) {
 		RecordSmokeFrame();
 		if (--smokeFramesLeft_ == 0) FinishSmokeRun();
@@ -738,6 +755,7 @@ void EditorSuite::Update(float deltaTime, Input* input)
 			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) SaveScene(currentScenePath_);
 			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N)) NewScene();
 			if (ImGui::IsKeyPressed(ImGuiKey_Delete)) DeleteSelectedGameObject();
+			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D) && !io.WantTextInput) pendingDuplicateIndex_ = selectedObjectIndex_;
 
 			if (!isFlightNavigating_) {
 				if (ImGui::IsKeyPressed(ImGuiKey_Q)) currentGizmo_ = GizmoType::Hand;
@@ -819,7 +837,7 @@ void EditorSuite::Update(float deltaTime, Input* input)
 			break;
 		}
 	}
-	UpdateAudio();
+	UpdateAudio(unscaledDeltaTime_);
 	UpdateTrails();
 
 	// 4. Authoritative Punctual Lights Sync to lights_ (LightGroup)
@@ -934,6 +952,7 @@ void EditorSuite::Update(float deltaTime, Input* input)
 	{
 		const bool inPlay = (sceneState_ != EditorSceneState::Edit) || IsStandaloneMode();
 		const float animationDeltaTime = advancePlayFrame ? gameDeltaTime : (inPlay ? 0.0f : deltaTime);
+		if (advancePlayFrame) UpdateTimelines(gameDeltaTime);
 		UpdateAnimations(animationDeltaTime, inPlay);
 	}
 

@@ -411,7 +411,7 @@ uint32_t Audio::PlayAudio(uint32_t soundHandle, const PlayParams& params)
 	XAUDIO2_SEND_DESCRIPTOR send{ 0, busVoices_[busIndex] };
 	XAUDIO2_VOICE_SENDS sends{ 1, &send };
 	IXAudio2SourceVoice* pSourceVoice = nullptr;
-	HRESULT result = xAudio2_->CreateSourceVoice(&pSourceVoice, &soundData.wfex, 0, kMaxPitch, nullptr, &sends);
+	HRESULT result = xAudio2_->CreateSourceVoice(&pSourceVoice, &soundData.wfex, XAUDIO2_VOICE_USEFILTER, kMaxPitch, nullptr, &sends);
 	if (FAILED(result) || !pSourceVoice) {
 		return 0;
 	}
@@ -427,6 +427,8 @@ uint32_t Audio::PlayAudio(uint32_t soundHandle, const PlayParams& params)
 	voice.position = params.position;
 	voice.minDistance = params.minDistance;
 	voice.maxDistance = params.maxDistance;
+	voice.basePitch = SafePitch(params.pitch);
+	voice.sampleRate = soundData.wfex.nSamplesPerSec;
 
 	pSourceVoice->SetVolume(voice.volume);
 	pSourceVoice->SetFrequencyRatio(SafePitch(params.pitch));
@@ -462,8 +464,12 @@ void Audio::ApplySpatial(ActiveVoice& voice)
 	if (!voice.spatial || !voice.sourceVoice) {
 		return;
 	}
-	const SpatialAudio::Levels levels = SpatialAudio::Compute(listener_, voice.position, voice.minDistance, voice.maxDistance);
-	voice.gain = levels.gain;
+	SpatialAudio::Levels levels = SpatialAudio::Compute(listener_, voice.position, voice.minDistance, voice.maxDistance);
+	// Behind a wall: quieter (the low-pass filter set by ApplySpatial(dt) makes it muffled too)
+	const float occlusionGain = 1.0f - 0.6f * voice.occlusion;
+	levels.left *= occlusionGain;
+	levels.right *= occlusionGain;
+	voice.gain = levels.gain * occlusionGain;
 	// Every source channel feeds both ears: a stereo clip becomes one point in the world
 	float matrix[kMaxSpatialChannels * 2] = {};
 	for (uint32_t source = 0; source < voice.channels; ++source) {
@@ -473,10 +479,58 @@ void Audio::ApplySpatial(ActiveVoice& voice)
 	voice.sourceVoice->SetOutputMatrix(BusVoice(voice.bus), voice.channels, 2, matrix);
 }
 
-void Audio::ApplySpatial()
+void Audio::SetVoiceOcclusionTarget(uint32_t voiceHandle, float target)
 {
+	for (auto& active : activeVoices_) {
+		if (active.voiceHandle == voiceHandle) {
+			active.occlusionTarget = std::isfinite(target) ? std::clamp(target, 0.0f, 1.0f) : 0.0f;
+			return;
+		}
+	}
+}
+
+float Audio::GetVoiceOcclusion(uint32_t voiceHandle) const
+{
+	for (const auto& active : activeVoices_) {
+		if (active.voiceHandle == voiceHandle) return active.occlusion;
+	}
+	return 0.0f;
+}
+
+std::vector<Audio::SpatialVoice> Audio::SpatialVoices() const
+{
+	std::vector<SpatialVoice> voices;
+	for (const auto& active : activeVoices_) {
+		if (active.spatial && active.sourceVoice) voices.push_back({ active.voiceHandle, active.position });
+	}
+	return voices;
+}
+
+void Audio::ApplySpatial(float deltaTime)
+{
+	const bool step = deltaTime > 0.0f && std::isfinite(deltaTime);
+	const auto velocity = [&](const Vector3& now, const Vector3& before, bool known) {
+		return (step && known) ? (now - before) * (1.0f / deltaTime) : Vector3{ 0.0f, 0.0f, 0.0f };
+	};
+	const Vector3 listenerVelocity = velocity(listener_.position, lastListenerPosition_, hasLastListenerPosition_);
 	for (auto& voice : activeVoices_) {
+		if (step && voice.spatial && voice.sourceVoice) {
+			voice.doppler = SpatialAudio::DopplerFactor(listener_.position, listenerVelocity, voice.position,
+				velocity(voice.position, voice.lastPosition, voice.hasLastPosition));
+			voice.sourceVoice->SetFrequencyRatio(SafePitch(voice.basePitch * voice.doppler));
+			voice.occlusion += (voice.occlusionTarget - voice.occlusion) * (std::min)(deltaTime * 8.0f, 1.0f); // no click when a wall appears
+			// Same formula as XAudio2CutoffFrequencyToRadians (only declared with XAUDIO2_HELPER_FUNCTIONS)
+			const float cutoff = (std::min)(2.0f * std::sin(3.14159265f * 700.0f / static_cast<float>((std::max)(voice.sampleRate, 1u))), 1.0f);
+			XAUDIO2_FILTER_PARAMETERS filter{ LowPassFilter, 1.0f + (cutoff - 1.0f) * voice.occlusion, 1.0f };
+			voice.sourceVoice->SetFilterParameters(&filter);
+			voice.lastPosition = voice.position;
+			voice.hasLastPosition = true;
+		}
 		ApplySpatial(voice);
+	}
+	if (step) {
+		lastListenerPosition_ = listener_.position;
+		hasLastListenerPosition_ = true;
 	}
 }
 
@@ -500,7 +554,8 @@ void Audio::SetVoicePitch(uint32_t voiceHandle, float pitch)
 {
 	for (auto& active : activeVoices_) {
 		if (active.voiceHandle == voiceHandle && active.sourceVoice) {
-			active.sourceVoice->SetFrequencyRatio(SafePitch(pitch));
+			active.basePitch = SafePitch(pitch);
+			active.sourceVoice->SetFrequencyRatio(SafePitch(active.basePitch * active.doppler));
 			return;
 		}
 	}

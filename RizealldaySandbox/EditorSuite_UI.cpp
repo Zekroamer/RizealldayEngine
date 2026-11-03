@@ -65,6 +65,8 @@ void EditorSuite::DrawEditorUI(float deltaTime, bool& showParticles)
 
 	if (showProfiler_) DrawProfilerWindow();
 	if (showAnimatorWindow_) DrawAnimatorWindow();
+	if (showTimelineWindow_) DrawTimelineWindow();
+	DrawAutoSaveRestoreModal();
 	if (showInputActionsWindow_) DrawInputActionsWindow();
 #endif
 }
@@ -228,6 +230,9 @@ void EditorSuite::DrawMainMenuBar()
 			if (ImGui::MenuItem(TrId("Lighting / Environment"), nullptr, showLightingSettings_)) {
 				showLightingSettings_ = !showLightingSettings_;
 			}
+			if (ImGui::MenuItem(TrId("Timeline"), nullptr, showTimelineWindow_)) {
+				showTimelineWindow_ = !showTimelineWindow_;
+			}
 			if (ImGui::MenuItem(TrId("Animator"), nullptr, showAnimatorWindow_)) {
 				showAnimatorWindow_ = !showAnimatorWindow_;
 			}
@@ -247,6 +252,8 @@ void EditorSuite::DrawMainMenuBar()
 		}
 		if (ImGui::BeginMenu(TrId("Options"))) {
 			if (ImGui::MenuItem(TrId("Input Actions..."), nullptr, showInputActionsWindow_)) showInputActionsWindow_ = !showInputActionsWindow_;
+			if (ImGui::MenuItem(TrId("Auto Save"), nullptr, &autoSaveEnabled_)) Localization::SetEditorSettingBool("autoSave", autoSaveEnabled_);
+			ImGui::SetItemTooltip("%s", Tr("Every 2 minutes, a copy of a scene with unsaved changes goes to Library/AutoSave."));
 			if (ImGui::BeginMenu(TrId("Language"))) {
 				// Language names come from the files ("_language"), so each one is shown in its own script
 				for (const Localization::LanguageInfo& lang : Localization::AvailableLanguages()) {
@@ -431,7 +438,7 @@ void EditorSuite::DrawHierarchyPanel()
 
 		ImGui::SameLine();
 		ImGui::SetNextItemWidth(-1.0f);
-		ImGui::InputTextWithHint("##SearchHierarchy", "Search...", hierarchySearchBuf_, sizeof(hierarchySearchBuf_));
+		ImGui::InputTextWithHint("##SearchHierarchy", Tr("Search..."), hierarchySearchBuf_, sizeof(hierarchySearchBuf_));
 
 		ImGui::Separator();
 
@@ -529,19 +536,19 @@ void EditorSuite::DrawHierarchyPanel()
 
 					ImGui::PushID(static_cast<int>(obj.id));
 
-					const char* typeName = "Empty";
-					if (obj.type == GameObjectType::Cube) typeName = "Cube";
-					else if (obj.type == GameObjectType::Sphere) typeName = "Sphere";
-					else if (obj.type == GameObjectType::Plane) typeName = "Plane";
-					else if (obj.type == GameObjectType::Quad) typeName = "Quad";
-					else if (obj.type == GameObjectType::Camera) typeName = "Camera";
-					else if (obj.type == GameObjectType::DirectionalLight) typeName = "Light";
-					else if (obj.type == GameObjectType::PointLight) typeName = "Point Light";
-					else if (obj.type == GameObjectType::SpotLight) typeName = "Spot Light";
-					else if (obj.type == GameObjectType::ParticleSystem) typeName = "Particles";
-					else if (obj.type == GameObjectType::MapchipGrid) typeName = "Mapchip";
-					else if (obj.type == GameObjectType::Sprite) typeName = "Sprite";
-					else if (obj.type == GameObjectType::AudioSource || obj.hasAudioSource) typeName = "Audio";
+					const char* typeName = Tr("Empty");
+					if (obj.type == GameObjectType::Cube) typeName = Tr("Cube");
+					else if (obj.type == GameObjectType::Sphere) typeName = Tr("Sphere");
+					else if (obj.type == GameObjectType::Plane) typeName = Tr("Plane");
+					else if (obj.type == GameObjectType::Quad) typeName = Tr("Quad");
+					else if (obj.type == GameObjectType::Camera) typeName = Tr("Camera");
+					else if (obj.type == GameObjectType::DirectionalLight) typeName = Tr("Light");
+					else if (obj.type == GameObjectType::PointLight) typeName = Tr("Point Light");
+					else if (obj.type == GameObjectType::SpotLight) typeName = Tr("Spot Light");
+					else if (obj.type == GameObjectType::ParticleSystem) typeName = Tr("Particles");
+					else if (obj.type == GameObjectType::MapchipGrid) typeName = Tr("Mapchip");
+					else if (obj.type == GameObjectType::Sprite) typeName = Tr("Sprite");
+					else if (obj.type == GameObjectType::AudioSource || obj.hasAudioSource) typeName = Tr("Audio");
 
 					// Row layout: [ name ............ type  (x) ] -- active toggle on the right, type tag dimmed
 					const float rowStartX = ImGui::GetCursorPosX();
@@ -552,7 +559,7 @@ void EditorSuite::DrawHierarchyPanel()
 					ImGuiTreeNodeFlags nodeFlags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick |
 						ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen;
 					if (!kids) nodeFlags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-					if (static_cast<int>(i) == selectedObjectIndex_) nodeFlags |= ImGuiTreeNodeFlags_Selected;
+					if (IsSelected(obj.id)) nodeFlags |= ImGuiTreeNodeFlags_Selected;
 
 					if (!obj.isActive) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
 					ImGui::SetNextItemAllowOverlap();
@@ -560,7 +567,7 @@ void EditorSuite::DrawHierarchyPanel()
 					if (!obj.isActive) ImGui::PopStyleColor();
 
 					if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
-						selectedObjectIndex_ = static_cast<int>(i);
+						SelectObject(static_cast<int>(i), ImGui::GetIO().KeyCtrl);
 					}
 
 					// Drag & drop reparenting: drag a row onto another row to make it a child
@@ -576,7 +583,7 @@ void EditorSuite::DrawHierarchyPanel()
 					}
 
 					if (ImGui::BeginPopupContextItem()) {
-						selectedObjectIndex_ = static_cast<int>(i);
+						if (!IsSelected(obj.id)) SelectObject(static_cast<int>(i), false);
 						if (ImGui::MenuItem(TrId("Delete GameObject"), "Del")) {
 							QueueDeleteGameObject(static_cast<int>(i));
 						}
@@ -805,8 +812,8 @@ void EditorSuite::DrawHierarchyCreationMenu()
 		if (ImGui::MenuItem(TrId("Third Person Demo (new scene)"), nullptr, false, canCreate)) {
 			CreateThirdPersonDemo();
 		}
-		ImGui::SetItemTooltip("Creates Assets/Scenes/SurvivorsDemo.scene.json and the Enemy / Bullet prefabs,\n"
-			"using the Survivors* sample scripts in GameScripts. Unsaved changes in the current scene are discarded.");
+		ImGui::SetItemTooltip("%s", Tr("Creates Assets/Scenes/SurvivorsDemo.scene.json and the Enemy / Bullet prefabs,\n"
+			"using the Survivors* sample scripts in GameScripts. Unsaved changes in the current scene are discarded."));
 		ImGui::EndMenu();
 	}
 #endif
@@ -831,6 +838,7 @@ void EditorSuite::DrawViewportsPanel()
 	ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse;
 
 	if (ImGui::Begin(TrId("Viewport"), nullptr, flags)) {
+		DrawPrefabModeBar();
 		if (ImGui::BeginTabBar("ViewportTabs")) {
 			// TAB 1: # SCENE VIEW (Interactive 3D Viewport)
 			if (ImGui::BeginTabItem(TrId("# Scene"))) {
@@ -880,6 +888,7 @@ void EditorSuite::DrawViewportsPanel()
 					editorCamera_.translation = editorCamera_.translation + (forward * (io.MouseWheel * 1.5f));
 				}
 
+				UpdateTerrainSculptInput(imgPos, avail, isHovered);
 				DrawSceneViewOverlays(imgPos, avail);
 				ImGui::EndTabItem();
 			}

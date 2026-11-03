@@ -40,7 +40,7 @@ void EditorSuite::DrawSceneViewOverlays(const ImVec2& vpPos, const ImVec2& vpSiz
 		}
 	}
 
-	if (showGizmos_ && selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size())) {
+	if (showGizmos_ && !terrainSculpt_.active && selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size())) {
 		DrawTransformGizmo(vpPos, vpSize);
 	}
 
@@ -130,25 +130,25 @@ void EditorSuite::DrawFloatingBottomBar(const ImVec2& vpPos, const ImVec2& vpSiz
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(12.0f, 4.0f));
 	ImGui::SetCursorScreenPos(ImVec2(barPos.x + 8.0f, barPos.y + 3.0f));
 	ImGui::BeginGroup();
-	ImGui::Checkbox("Grid", &showGrid_);
-	ImGui::SetItemTooltip("Toggle 3D ground plane grid");
+	ImGui::Checkbox(TrId("Grid"), &showGrid_);
+	ImGui::SetItemTooltip(Tr("Toggle 3D ground plane grid"));
 	ImGui::SameLine();
-	ImGui::Checkbox("Gizmos", &showGizmos_);
-	ImGui::SetItemTooltip("Toggle 3D transform gizmos");
+	ImGui::Checkbox(TrId("Gizmos"), &showGizmos_);
+	ImGui::SetItemTooltip(Tr("Toggle 3D transform gizmos"));
 	ImGui::SameLine();
-	ImGui::Checkbox("Wire", &showWireframe_);
-	ImGui::SetItemTooltip("Toggle collider wireframe rendering");
+	ImGui::Checkbox(TrId("Wire"), &showWireframe_);
+	ImGui::SetItemTooltip(Tr("Toggle collider wireframe rendering"));
 	ImGui::SameLine();
-	ImGui::Checkbox("Bones", &showSkeletonOverlay_);
+	ImGui::Checkbox(TrId("Bones"), &showSkeletonOverlay_);
 	ImGui::SetItemTooltip("%s", Tr("Show the skeleton of the selected animated object"));
 	ImGui::SameLine();
-	ImGui::Checkbox("Light", &enableLighting_);
-	ImGui::SetItemTooltip("Toggle viewport scene lighting");
+	ImGui::Checkbox(TrId("Light"), &enableLighting_);
+	ImGui::SetItemTooltip(Tr("Toggle viewport scene lighting"));
 	ImGui::SameLine();
-	ImGui::Checkbox("Cull", &enableFrustumCulling_);
-	ImGui::SetItemTooltip("Toggle view frustum AABB culling");
+	ImGui::Checkbox(TrId("Cull"), &enableFrustumCulling_);
+	ImGui::SetItemTooltip(Tr("Toggle view frustum AABB culling"));
 	ImGui::SameLine();
-	ImGui::TextDisabled("Visible %d  Culled %d", lastVisibleObjects_, lastCulledObjects_);
+	ImGui::TextDisabled(Tr("Visible %d  Culled %d"), lastVisibleObjects_, lastCulledObjects_);
 	ImGui::EndGroup();
 	ImGui::PopStyleVar(2);
 
@@ -164,6 +164,24 @@ void EditorSuite::DrawTransformGizmo(const ImVec2& vpPos, const ImVec2& vpSize)
 #ifdef USE_IMGUI
 	if (selectedObjectIndex_ < 0 || selectedObjectIndex_ >= static_cast<int>(gameObjects_.size())) return;
 	auto& sel = gameObjects_[selectedObjectIndex_];
+	// Whatever this function does to the primary, the rest of the selection follows when it returns
+	struct FollowPrimary {
+		EditorSuite& suite;
+		uint32_t id;
+		Vector3 before;
+		Vector3 rotationBefore;
+		Vector3 scaleBefore;
+		~FollowPrimary() {
+			const GameObject* primary = suite.FindGameObjectById(id, false);
+			if (!primary) return;
+			const auto ratio = [](float now, float was) { return was != 0.0f ? now / was : 1.0f; };
+			suite.RotateScaleExtraSelection(primary->rotation - rotationBefore,
+				{ ratio(primary->scale.x, scaleBefore.x), ratio(primary->scale.y, scaleBefore.y), ratio(primary->scale.z, scaleBefore.z) });
+			const Vector3 local = primary->translation - before;
+			const GameObject* parent = primary->parentId >= 0 ? suite.FindGameObjectById(static_cast<uint32_t>(primary->parentId), false) : nullptr;
+			suite.MoveExtraSelection(parent ? TransformUtil::TransformDirection(local, parent->worldMatrix) : local);
+		}
+	} follow{ *this, sel.id, sel.translation, sel.rotation, sel.scale };
 
 	ImVec2 originScreen; float originDepth;
 	Vector3 selWorldPos{};

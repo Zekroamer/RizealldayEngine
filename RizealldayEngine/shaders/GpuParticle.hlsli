@@ -1,4 +1,4 @@
-cbuffer DrawConstants : register(b0)
+﻿cbuffer DrawConstants : register(b0)
 {
     float4x4 gViewProjection;
     float3 gCameraRight;
@@ -7,6 +7,10 @@ cbuffer DrawConstants : register(b0)
     float gSizeEnd;
     float4 gColorStart;
     float4 gColorEnd;
+    float4 gColorMiddle;
+    float gSizeMiddle;
+    float gMiddleTime; // < 0: two keys only
+    float2 gPad;
 };
 
 struct GpuParticleVSOutput

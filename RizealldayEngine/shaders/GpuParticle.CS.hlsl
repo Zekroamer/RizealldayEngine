@@ -1,4 +1,4 @@
-// Moves every particle of one emitter and respawns the ring range [emitStart, emitStart + emitCount).
+﻿// Moves every particle of one emitter and respawns the ring range [emitStart, emitStart + emitCount).
 struct Particle
 {
     float3 position;
@@ -24,6 +24,10 @@ cbuffer Constants : register(b0)
     uint gEmitCount;
     uint gCapacity;
     uint gSeed;
+    float gFloorHeight;
+    float gBounce;
+    uint gCollideWithFloor;
+    uint gPad;
 };
 
 uint Pcg(uint value)
@@ -73,6 +77,15 @@ void main(uint3 id : SV_DispatchThreadID)
         p.velocity += gGravity * gDeltaTime;
         p.velocity *= saturate(1.0f - gDrag * gDeltaTime);
         p.position += p.velocity * gDeltaTime;
+        if (gCollideWithFloor != 0u && p.position.y < gFloorHeight)
+        {
+            p.position.y = gFloorHeight;
+            if (p.velocity.y < 0.0f)
+            {
+                p.velocity.y *= -gBounce;
+                p.velocity.xz *= 0.8f; // friction on every touch, so they come to rest
+            }
+        }
         p.age += gDeltaTime;
     }
     gParticles[index] = p;

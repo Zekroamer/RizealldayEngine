@@ -107,6 +107,20 @@ int EditorSuite::RepointAssetReferences(const std::string& from, const std::stri
 	};
 
 	int changed = 0;
+	// A renamed prefab file: its instances follow (they link by name)
+	const std::string prefabSuffix = ".prefab.json";
+	const auto prefabName = [&](const std::string& path) {
+		const std::string file = std::filesystem::path(path).filename().string();
+		return lower(file).ends_with(prefabSuffix) ? file.substr(0, file.size() - prefabSuffix.size()) : std::string();
+	};
+	if (const std::string oldName = prefabName(from), newName = prefabName(to); !oldName.empty() && !newName.empty() && oldName != newName) {
+		for (GameObject& obj : gameObjects_) {
+			if (obj.prefabSource != oldName) continue;
+			obj.prefabSource = newName;
+			++changed;
+		}
+		ClearPrefabCache();
+	}
 	std::string moved;
 	for (GameObject& obj : gameObjects_) {
 		for (std::string* path : { &obj.texturePath, &obj.modelPath, &obj.audioClipName }) {
@@ -239,13 +253,16 @@ void EditorSuite::DrawProjectAndConsolePanel()
 							assetDeleteTarget_ = p;
 							openAssetDeletePopup_ = true;
 						}
+						if (const std::string file = p.filename().string(); !isDirectory && file.ends_with(".prefab.json") && ImGui::MenuItem(TrId("Open in Prefab Mode"))) {
+							OpenPrefabMode(file.substr(0, file.size() - std::string_view(".prefab.json").size()));
+						}
 						ImGui::Separator();
-						ImGui::TextDisabled("GUID: %s", isDirectory ? "(folder)" : assetDb.FindGuid(assetPath).c_str());
+						ImGui::TextDisabled(Tr("GUID: %s"), isDirectory ? "(folder)" : assetDb.FindGuid(assetPath).c_str());
 						ImGui::EndPopup();
 					}
 					if (ImGui::BeginDragDropSource()) {
 						ImGui::SetDragDropPayload("RIZE_ASSET_PATH", assetPath.c_str(), assetPath.size() + 1);
-						ImGui::Text("Move %s", p.filename().string().c_str());
+						ImGui::Text(Tr("Move %s"), p.filename().string().c_str());
 						ImGui::EndDragDropSource();
 					}
 					if (isDirectory && ImGui::BeginDragDropTarget()) {
@@ -327,10 +344,10 @@ void EditorSuite::DrawProjectAndConsolePanel()
 				}
 
 				ImGui::SameLine();
-				ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Directory: %s", currentDirectory_.string().c_str());
+				ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), Tr("Directory: %s"), currentDirectory_.string().c_str());
 				ImGui::SameLine((std::max)(ImGui::GetCursorPosX(), ImGui::GetWindowContentRegionMax().x - 200.0f));
 				ImGui::SetNextItemWidth(190.0f);
-				ImGui::InputTextWithHint("##AssetSearch", "Search Assets...", assetSearchBuf_, sizeof(assetSearchBuf_));
+				ImGui::InputTextWithHint("##AssetSearch", Tr("Search Assets..."), assetSearchBuf_, sizeof(assetSearchBuf_));
 
 				ImGui::Separator();
 
@@ -350,7 +367,7 @@ void EditorSuite::DrawProjectAndConsolePanel()
 						// Render directories first (double-click to enter subfolder)
 						for (const auto& entry : dirs) {
 							std::string filename = entry.path().filename().string();
-							ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.3f, 1.0f), "[DIR]");
+							ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.3f, 1.0f), Tr("[DIR]"));
 							ImGui::SameLine();
 							bool isSel = (selectedAssetPath_ == entry.path());
 							if (ImGui::Selectable(filename.c_str(), isSel, ImGuiSelectableFlags_AllowDoubleClick)) {
@@ -362,7 +379,7 @@ void EditorSuite::DrawProjectAndConsolePanel()
 									currentDirectory_ = entry.path();
 								}
 							}
-							ImGui::SetItemTooltip("Double-click to open folder '%s'. Drop assets here to move them.", filename.c_str());
+							ImGui::SetItemTooltip(Tr("Double-click to open folder '%s'. Drop assets here to move them."), filename.c_str());
 							assetItemInteractions(entry.path(), managedAssetPath(entry.path()), true);
 						}
 
@@ -427,7 +444,7 @@ void EditorSuite::DrawProjectAndConsolePanel()
 									}
 								}
 								if (filename.ends_with(".prefab.json")) {
-									ImGui::SetItemTooltip("Double-click to place in the scene. Scripts: InstantiatePrefab(\"%s\")",
+									ImGui::SetItemTooltip(Tr("Double-click to place in the scene. Scripts: InstantiatePrefab(\"%s\")"),
 										filename.substr(0, filename.size() - 12).c_str());
 								}
 							}
@@ -448,10 +465,10 @@ void EditorSuite::DrawProjectAndConsolePanel()
 					openAssetRenamePopup_ = false;
 				}
 				if (ImGui::BeginPopupModal(TrId("Rename Asset"), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-					ImGui::Text("Rename '%s'", assetRenameTarget_.filename().string().c_str());
+					ImGui::Text(Tr("Rename '%s'"), assetRenameTarget_.filename().string().c_str());
 					if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
 					const bool submitted = ImGui::InputText("##AssetRename", assetRenameBuf_, sizeof(assetRenameBuf_), ImGuiInputTextFlags_EnterReturnsTrue);
-					ImGui::TextDisabled("References in scenes and prefabs follow the asset (GUID).");
+					ImGui::TextDisabled(Tr("References in scenes and prefabs follow the asset (GUID)."));
 					if (submitted || ImGui::Button(TrId("Rename"), ImVec2(120.0f, 0.0f))) {
 						const std::string newName = assetRenameBuf_;
 						if (!newName.empty() && newName.find_first_of("/\\:*?\"<>|") == std::string::npos) {
@@ -472,8 +489,8 @@ void EditorSuite::DrawProjectAndConsolePanel()
 					openAssetDeletePopup_ = false;
 				}
 				if (ImGui::BeginPopupModal(TrId("Delete Asset"), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-					ImGui::Text("Move '%s' to the recycle bin?", assetDeleteTarget_.filename().string().c_str());
-					ImGui::TextDisabled("Objects that use it keep the path but show nothing until it is restored.");
+					ImGui::Text(Tr("Move '%s' to the recycle bin?"), assetDeleteTarget_.filename().string().c_str());
+					ImGui::TextDisabled(Tr("Objects that use it keep the path but show nothing until it is restored."));
 					if (ImGui::Button(TrId("Delete"), ImVec2(120.0f, 0.0f))) {
 						DeleteAssetToRecycleBin(managedAssetPath(assetDeleteTarget_));
 						ImGui::CloseCurrentPopup();
@@ -494,13 +511,13 @@ void EditorSuite::DrawProjectAndConsolePanel()
 					infoCount_ = 0; warningCount_ = 0; errorCount_ = 0;
 				}
 				ImGui::SameLine();
-				ImGui::Checkbox("Collapse", &collapseLogs_);
+				ImGui::Checkbox(TrId("Collapse"), &collapseLogs_);
 				ImGui::SameLine(ImGui::GetContentRegionAvail().x - 180.0f);
-				ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.4f, 1.0f), "Info: %d", infoCount_);
+				ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.4f, 1.0f), Tr("Info: %d"), infoCount_);
 				ImGui::SameLine();
-				ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.3f, 1.0f), "Warn: %d", warningCount_);
+				ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.3f, 1.0f), Tr("Warn: %d"), warningCount_);
 				ImGui::SameLine();
-				ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Error: %d", errorCount_);
+				ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), Tr("Error: %d"), errorCount_);
 
 				ImGui::Separator();
 				ImGui::BeginChild("ConsoleScrollArea", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);

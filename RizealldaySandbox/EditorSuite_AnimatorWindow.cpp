@@ -161,7 +161,7 @@ void EditorSuite::DrawAnimatorWindow()
 	char pathBuf[260];
 	strncpy_s(pathBuf, animatorWindowAsset_.c_str(), _TRUNCATE);
 	ImGui::SetNextItemWidth(360.0f);
-	if (ImGui::InputTextWithHint("##AnimatorAsset", "Assets/Animators/<Name>.animator.json", pathBuf, sizeof(pathBuf), ImGuiInputTextFlags_EnterReturnsTrue)) {
+	if (ImGui::InputTextWithHint("##AnimatorAsset", Tr("Assets/Animators/<Name>.animator.json"), pathBuf, sizeof(pathBuf), ImGuiInputTextFlags_EnterReturnsTrue)) {
 		animatorWindowAsset_ = pathBuf;
 	}
 	if (ImGui::BeginDragDropTarget()) {
@@ -615,7 +615,7 @@ void EditorSuite::DrawAnimatorSidePanel(AnimatorController& c, AnimatorComponent
 		const AnimState* to = c.FindState(t.to);
 		const AnimState* from = c.FindState(t.from);
 		ImGui::SeparatorText(Tr("Transition"));
-		ImGui::Text("%s  ->  %s", t.from == AnimTransition::kAnyState ? Tr("Any State") : (from ? from->name.c_str() : "?"), to ? to->name.c_str() : "?");
+		ImGui::Text(Tr("%s  ->  %s"), t.from == AnimTransition::kAnyState ? Tr("Any State") : (from ? from->name.c_str() : "?"), to ? to->name.c_str() : "?");
 		if (!AnimatorController::IsUsable(t)) {
 			ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "%s", Tr("Never fires: add a condition or enable Has Exit Time."));
 		}
@@ -627,7 +627,7 @@ void EditorSuite::DrawAnimatorSidePanel(AnimatorController& c, AnimatorComponent
 			edited(ImGui::Checkbox(TrId("Can Transition To Self"), &t.canTransitionToSelf));
 			ImGui::SetItemTooltip("%s", Tr("Off: an Any State transition is ignored while already in its target state."));
 		}
-		ImGui::Text("%s: %d", Tr("Priority"), animatorSelectedTransition_ + 1);
+		ImGui::Text(Tr("%s: %d"), Tr("Priority"), animatorSelectedTransition_ + 1);
 		ImGui::SameLine();
 		if (ImGui::SmallButton("^") && animatorSelectedTransition_ > 0) {
 			std::swap(c.transitions[animatorSelectedTransition_], c.transitions[animatorSelectedTransition_ - 1]);

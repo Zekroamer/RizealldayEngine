@@ -57,21 +57,21 @@ void EditorSuite::DrawProfilerWindow()
 	// ---- 1. Header ----
 	const bool slowFrame = snap.frameAvgMs > kBudget30Ms;
 	if (slowFrame) ImGui::PushStyleColor(ImGuiCol_Text, kWarningColor);
-	ImGui::Text("FPS: %.1f", snap.fps);
+	ImGui::Text(Tr("FPS: %.1f"), snap.fps);
 	ImGui::SameLine();
-	ImGui::Text("| CPU: %.2f ms", snap.frameAvgMs);
+	ImGui::Text(Tr("| CPU: %.2f ms"), snap.frameAvgMs);
 	if (slowFrame) ImGui::PopStyleColor();
 	ImGui::SameLine();
 	if (snap.gpuValid) {
-		ImGui::Text("| GPU: %.2f ms", snap.gpuFrameAvgMs);
+		ImGui::Text(Tr("| GPU: %.2f ms"), snap.gpuFrameAvgMs);
 	} else {
-		ImGui::TextDisabled("| GPU: n/a");
+		ImGui::TextDisabled(Tr("| GPU: n/a"));
 	}
 	if (dxCommon_) {
-		ImGui::TextDisabled("Adapter: %s", dxCommon_->GetAdapterName().c_str());
+		ImGui::TextDisabled(Tr("Adapter: %s"), dxCommon_->GetAdapterName().c_str());
 	}
 	if (!Profiler::GetInstance()->IsGpuEnabled()) {
-		ImGui::TextDisabled("GPU timestamps are unavailable on this device.");
+		ImGui::TextDisabled(Tr("GPU timestamps are unavailable on this device."));
 	}
 
 	ImGui::Separator();
@@ -100,7 +100,7 @@ void EditorSuite::DrawProfilerWindow()
 
 	// ---- 4. Counters ----
 	if (ImGui::CollapsingHeader(TrId("Counters"), ImGuiTreeNodeFlags_DefaultOpen)) {
-		ImGui::Text("Draw calls: %u (%u instances)", snap.drawCalls, snap.instances);
+		ImGui::Text(Tr("Draw calls: %u (%u instances)"), snap.drawCalls, snap.instances);
 
 		const float uploadKb = static_cast<float>(snap.uploadBytesUsed) / 1024.0f;
 		const float uploadCapMb = static_cast<float>(snap.uploadCapacity) / (1024.0f * 1024.0f);
@@ -114,8 +114,8 @@ void EditorSuite::DrawProfilerWindow()
 		ImGui::ProgressBar(uploadFraction, ImVec2(-1.0f, 0.0f), uploadText);
 		if (uploadWarning) ImGui::PopStyleColor();
 
-		ImGui::Text("SRV descriptors: %u / %u", snap.srvUsed, snap.srvCapacity);
-		ImGui::Text("GameObjects: %zu", gameObjects_.size());
+		ImGui::Text(Tr("SRV descriptors: %u / %u"), snap.srvUsed, snap.srvCapacity);
+		ImGui::Text(Tr("GameObjects: %zu"), gameObjects_.size());
 	}
 
 	ImGui::End();

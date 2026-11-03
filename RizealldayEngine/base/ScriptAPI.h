@@ -122,6 +122,11 @@ struct ScriptPostProcess {
 	Vector3 tint = { 1.0f, 1.0f, 1.0f };
 	float vignette = 0.0f;
 	float letterbox = 0.0f; // fraction of the height covered at the top and at the bottom
+	bool fogEnabled = false;
+	Vector3 fogColor = { 0.7f, 0.75f, 0.8f };
+	float fogDensity = 0.02f;
+	float fogHeight = 0.0f;
+	float fogHeightFalloff = 0.1f;
 };
 
 /// Mesh Renderer settings readable/writable from scripts (hit flash, fade, hide)
@@ -393,7 +398,7 @@ struct EngineAPI {
 /// Engine <-> GameScripts.dll compatibility check. Bump kScriptApiVersion when the meaning of the API changes;
 /// layout changes of EngineAPI / ScriptGameObjectView / ScriptBase are caught automatically by the sizes.
 /// The fingerprint is defined at the end of this header (it needs the complete ScriptBase).
-constexpr uint32_t kScriptApiVersion = 12; // 4: Animator, 5: ShakeCamera / Hitstop / input actions, 6: MoveCharacter, 7: FindPath, 8: KeepAcrossScenes, 9: material outline, 10: camera input + projection + prewarm + post-processing, 11: animation layers + bones + IK + ragdoll, 12: audio buses + pitch + 3D + components by name
+constexpr uint32_t kScriptApiVersion = 13; // 4: Animator, 5: ShakeCamera / Hitstop / input actions, 6: MoveCharacter, 7: FindPath, 8: KeepAcrossScenes, 9: material outline, 10: camera input + projection + prewarm + post-processing, 11: animation layers + bones + IK + ragdoll, 12: audio buses + pitch + 3D + components by name, 13: fog in ScriptPostProcess
 
 /// Size of the UI canvas used by the UI* helpers (stretched over the game view)
 constexpr float kUICanvasWidth = 1280.0f;

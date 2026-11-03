@@ -3,8 +3,11 @@
 #include "math/Vector4.h"
 #include <d3d12.h>
 #include <wrl.h>
+#include <algorithm>
 #include <cstdint>
+#include <numeric>
 #include <unordered_map>
+#include <vector>
 
 class DirectXCommon;
 class DXCManager;
@@ -24,9 +27,39 @@ struct GpuParticleSettings {
 	float sizeEnd = 0.0f;
 	Vector4 colorStart{ 1.0f, 1.0f, 1.0f, 1.0f };
 	Vector4 colorEnd{ 1.0f, 1.0f, 1.0f, 0.0f };
+	bool useMiddleKey = false; // size and colour pass through the middle values at middleTime
+	float middleTime = 0.5f;
+	float sizeMiddle = 0.2f;
+	Vector4 colorMiddle{ 1.0f, 1.0f, 1.0f, 1.0f };
+	bool collideWithFloor = false; // a flat floor at floorHeight (world Y)
+	float floorHeight = 0.0f;
+	float bounce = 0.3f; // 0 = stops, 1 = keeps its speed
 	bool additive = true;
 	uint32_t textureHandle = 0;
 };
+
+/// Value at life fraction t (0..1). Same formula as Key() in GpuParticle.VS.hlsl.
+inline float GpuParticleKey(float t, float start, float middle, float end, float middleTime, bool useMiddleKey)
+{
+	const auto mix = [](float a, float b, float f) { return a + (b - a) * f; };
+	t = std::clamp(t, 0.0f, 1.0f);
+	if (!useMiddleKey) return mix(start, end, t);
+	const float m = std::clamp(middleTime, 0.001f, 0.999f);
+	return t < m ? mix(start, middle, t / m) : mix(middle, end, (t - m) / (1.0f - m));
+}
+
+/// Indices of the emitters, farthest from the eye first (alpha blending needs back to front)
+inline std::vector<size_t> GpuParticleDrawOrder(const std::vector<Vector3>& origins, const Vector3& eye)
+{
+	std::vector<size_t> order(origins.size());
+	std::iota(order.begin(), order.end(), size_t{ 0 });
+	const auto distance = [&](size_t i) {
+		const Vector3 d{ origins[i].x - eye.x, origins[i].y - eye.y, origins[i].z - eye.z };
+		return d.x * d.x + d.y * d.y + d.z * d.z;
+	};
+	std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return distance(a) > distance(b); });
+	return order;
+}
 
 /// How many particles a continuous rate gives this step, keeping the fraction for the next one
 inline uint32_t GpuParticleEmitCount(float rate, float deltaTime, float& carry)
@@ -58,6 +91,7 @@ private:
 	struct Emitter {
 		Microsoft::WRL::ComPtr<ID3D12Resource> buffer;
 		GpuParticleSettings settings;
+		Vector3 origin{ 0.0f, 0.0f, 0.0f };
 		uint32_t ringHead = 0;
 		uint32_t seed = 1;
 		bool simulated = false;

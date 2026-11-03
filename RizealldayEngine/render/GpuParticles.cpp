@@ -19,6 +19,8 @@ namespace {
 		Vector3 gravity; float drag;
 		float lifeMin, lifeMax, speedMin, speedMax;
 		uint32_t emitStart, emitCount, capacity, seed;
+		float floorHeight, bounce;
+		uint32_t collideWithFloor, pad;
 	};
 
 	struct DrawConstants {
@@ -27,6 +29,10 @@ namespace {
 		Vector3 cameraUp; float sizeEnd;
 		Vector4 colorStart;
 		Vector4 colorEnd;
+		Vector4 colorMiddle;
+		float sizeMiddle;
+		float middleTime; // < 0: two keys
+		float pad[2];
 	};
 
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> MakeSignature(ID3D12Device* device, const D3D12_ROOT_SIGNATURE_DESC& desc)
@@ -187,6 +193,7 @@ void GpuParticles::Simulate(ID3D12GraphicsCommandList* cmdList, uint64_t id, con
 	}
 	emitter.settings = settings;
 	emitter.settings.capacity = capacity;
+	emitter.origin = origin;
 	emitter.simulated = true;
 
 	D3D12_RESOURCE_BARRIER barrier{};
@@ -213,6 +220,9 @@ void GpuParticles::Simulate(ID3D12GraphicsCommandList* cmdList, uint64_t id, con
 	constants.emitCount = count;
 	constants.capacity = capacity;
 	constants.seed = emitter.seed;
+	constants.floorHeight = std::isfinite(settings.floorHeight) ? settings.floorHeight : 0.0f;
+	constants.bounce = std::clamp(settings.bounce, 0.0f, 1.0f);
+	constants.collideWithFloor = settings.collideWithFloor ? 1u : 0u;
 	emitter.seed = emitter.seed * 1664525u + 1013904223u;
 	emitter.ringHead = (emitter.ringHead + count) % capacity;
 
@@ -255,8 +265,17 @@ void GpuParticles::Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera
 	TextureManager::GetInstance()->SetDescriptorHeaps(cmdList);
 	cmdList->SetGraphicsRootSignature(drawSignature_.Get());
 	cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	// Back to front, so a near cloud of smoke covers a far one
+	std::vector<const Emitter*> drawn;
+	std::vector<Vector3> origins;
 	for (const auto& [id, emitter] : emitters_) {
 		if (!emitter.isShaderResource) continue;
+		drawn.push_back(&emitter);
+		origins.push_back(emitter.origin);
+	}
+	const Vector3 eye = camera.translation;
+	for (const size_t index : GpuParticleDrawOrder(origins, eye)) {
+		const Emitter& emitter = *drawn[index];
 		DrawConstants constants{};
 		constants.viewProjection = camera.GetViewProjectionMatrix();
 		constants.cameraRight = { view.m[0][0], view.m[1][0], view.m[2][0] };
@@ -265,6 +284,9 @@ void GpuParticles::Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera
 		constants.sizeEnd = emitter.settings.sizeEnd;
 		constants.colorStart = emitter.settings.colorStart;
 		constants.colorEnd = emitter.settings.colorEnd;
+		constants.colorMiddle = emitter.settings.colorMiddle;
+		constants.sizeMiddle = emitter.settings.sizeMiddle;
+		constants.middleTime = emitter.settings.useMiddleKey ? std::clamp(emitter.settings.middleTime, 0.001f, 0.999f) : -1.0f;
 		const D3D12_GPU_VIRTUAL_ADDRESS address = dxCommon_->UploadConstants(constants);
 		if (address == 0) continue;
 		cmdList->SetPipelineState(emitter.settings.additive ? additivePso_.Get() : alphaPso_.Get());

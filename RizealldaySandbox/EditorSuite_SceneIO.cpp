@@ -91,6 +91,11 @@ void EditorSuite::WriteSceneSettingsJson(void* outJson) const
 	post["shadowCascades"] = postSettings_.shadowCascades;
 	post["shadowDistance"] = Num(postSettings_.shadowDistance);
 	post["environmentIntensity"] = Num(postSettings_.environmentIntensity);
+	post["fogEnabled"] = postSettings_.fogEnabled;
+	post["fogColor"] = SceneJson::Arr(postSettings_.fogColor);
+	post["fogDensity"] = Num(postSettings_.fogDensity);
+	post["fogHeight"] = Num(postSettings_.fogHeight);
+	post["fogHeightFalloff"] = Num(postSettings_.fogHeightFalloff);
 	root["postProcess"] = std::move(post);
 
 	// Mapchip Data
@@ -126,6 +131,21 @@ void EditorSuite::WriteGameObjectJson(const GameObject& obj, void* outJson) cons
 	o["isActive"] = obj.isActive;
 	o["isStatic"] = obj.isStatic;
 	o["tag"] = obj.tag;
+	if (!obj.nestedPrefab.empty()) {
+		o["nestedPrefab"] = obj.nestedPrefab;
+		o["nestedNode"] = obj.nestedNodeKey;
+	}
+	if (!obj.prefabSource.empty()) {
+		o["prefab"] = obj.prefabSource;
+		o["prefabNode"] = obj.prefabNodeIndex;
+		o["prefabOverrides"] = obj.prefabOverrides;
+		// A scene saved before the prefab file was renamed still finds it
+		const std::string prefabAsset = AssetDb().ToAssetPath(ResolvePrefabFile(obj.prefabSource).string());
+		if (!prefabAsset.empty()) {
+			if (const std::string guid = AssetDb().GuidForPath(prefabAsset); !guid.empty()) o["prefabGuid"] = guid;
+		}
+	}
+	if (obj.prefabNodeKey >= 0) o["prefabNodeKey"] = obj.prefabNodeKey; // also in prefab files
 	o["layer"] = obj.layer;
 	o["collisionMask"] = obj.collisionMask;
 	o["parentId"] = obj.parentId;
@@ -329,6 +349,7 @@ bool EditorSuite::DeserializeSceneFromString(const std::string& content)
 	using SceneJson::Json;
 
 	if (content.empty()) return false;
+	extraSelection_.clear(); // ids of the old scene mean other objects in the new one
 
 	// Parse first: a broken file must never wipe the scene that is currently open
 	std::string parseError;
@@ -462,6 +483,11 @@ void EditorSuite::ReadSceneSettingsJson(const void* json)
 		SceneJson::Read(*post, "shadowCascades", postSettings_.shadowCascades);
 		SceneJson::Read(*post, "shadowDistance", postSettings_.shadowDistance);
 		SceneJson::Read(*post, "environmentIntensity", postSettings_.environmentIntensity);
+		SceneJson::Read(*post, "fogEnabled", postSettings_.fogEnabled);
+		SceneJson::Read(*post, "fogColor", postSettings_.fogColor);
+		SceneJson::Read(*post, "fogDensity", postSettings_.fogDensity);
+		SceneJson::Read(*post, "fogHeight", postSettings_.fogHeight);
+		SceneJson::Read(*post, "fogHeightFalloff", postSettings_.fogHeightFalloff);
 	}
 
 	// Skybox
@@ -537,6 +563,24 @@ void EditorSuite::ReadGameObjectJson(const void* json, GameObject& obj)
 	SceneJson::Read(j, "isActive", obj.isActive);
 	SceneJson::Read(j, "isStatic", obj.isStatic);
 	SceneJson::Read(j, "tag", obj.tag);
+	SceneJson::Read(j, "prefab", obj.prefabSource);
+	SceneJson::Read(j, "prefabNode", obj.prefabNodeIndex);
+	SceneJson::Read(j, "prefabNodeKey", obj.prefabNodeKey);
+	obj.nestedPrefab.clear();
+	obj.nestedNodeKey = -1;
+	SceneJson::Read(j, "nestedPrefab", obj.nestedPrefab);
+	SceneJson::Read(j, "nestedNode", obj.nestedNodeKey);
+	if (std::string guid; !obj.prefabSource.empty() && SceneJson::Read(j, "prefabGuid", guid)) {
+		const std::string current = AssetDb().PathForGuid(guid);
+		const std::string file = std::filesystem::path(current).filename().string();
+		if (file.size() > 12 && file.ends_with(".prefab.json")) obj.prefabSource = file.substr(0, file.size() - 12);
+	}
+	obj.prefabOverrides.clear();
+	if (const Json* overrides = SceneJson::Find(j, "prefabOverrides"); overrides && overrides->is_array()) {
+		for (const Json& key : *overrides) {
+			if (key.is_string()) obj.prefabOverrides.push_back(key.get<std::string>());
+		}
+	}
 	SceneJson::Read(j, "layer", obj.layer);
 	obj.layer &= 31u;
 	SceneJson::Read(j, "collisionMask", obj.collisionMask);
@@ -788,6 +832,8 @@ void EditorSuite::ReadGameObjectJson(const void* json, GameObject& obj)
 
 bool EditorSuite::SaveScene(const std::string& filePath)
 {
+	// Every save path (Ctrl+S, File > Save, the close prompt) writes the open prefab instead of a scene
+	if (prefabMode_.active && (filePath.empty() || filePath == currentScenePath_)) return SavePrefabMode();
 	std::string targetPath = filePath.empty() ? currentScenePath_ : filePath;
 	if (targetPath.empty()) {
 		showSaveSceneAsModal_ = true;
@@ -806,6 +852,8 @@ bool EditorSuite::SaveScene(const std::string& filePath)
 	file.close();
 
 	isSceneDirty_ = false;
+	DiscardAutoSave(currentScenePath_); // an untitled scene saved for the first time leaves its copy behind otherwise
+	DiscardAutoSave(targetPath);
 	currentScenePath_ = targetPath;
 	currentSceneName_ = SceneNameFromPath(p);
 	LogMessage(std::format("[Scene] Saved scene to: {}", targetPath), 0);
@@ -814,6 +862,7 @@ bool EditorSuite::SaveScene(const std::string& filePath)
 
 bool EditorSuite::LoadScene(const std::string& filePath)
 {
+	ClosePrefabMode();
 	if (sceneState_ != EditorSceneState::Edit && !isStandaloneGameMode_) {
 		StopPlayMode();
 	}
@@ -826,13 +875,17 @@ bool EditorSuite::LoadScene(const std::string& filePath)
 	file.close();
 
 	if (!DeserializeSceneFromString(buffer.str())) return false;
+	CollectTerrainGarbage(); // the new scene may use some of them: those stay
 
 	currentScenePath_ = filePath;
 	currentSceneName_ = SceneNameFromPath(filePath);
 	isSceneDirty_ = false;
 
+	// Linked prefab instances pick up prefab edits made since this scene was saved
+	if (sceneState_ == EditorSceneState::Edit && !IsStandaloneMode() && !PrefabInstanceRoots("").empty()) SyncLinkedPrefabs();
 	ResetUndoHistory();
 	isSceneDirty_ = false;
+	CheckForAutoSave(filePath);
 
 	LogMessage(std::format("[Scene] Loaded scene from: {} ({} objects)", filePath, gameObjects_.size()), 0);
 	return true;
@@ -840,6 +893,9 @@ bool EditorSuite::LoadScene(const std::string& filePath)
 
 void EditorSuite::NewScene()
 {
+	ClosePrefabMode();
+	gameObjects_.clear(); // nothing of the old scene uses its terrain bakes any more
+	CollectTerrainGarbage();
 	if (sceneState_ != EditorSceneState::Edit) {
 		StopPlayMode();
 	}
@@ -849,6 +905,7 @@ void EditorSuite::NewScene()
 	ResetScriptRuntimeState();
 	UIRenderer::GetInstance()->Clear();
 	pendingDuplicateIndex_ = -1;
+	extraSelection_.clear();
 	gameObjects_.clear();
 	currentSceneName_ = "SampleScene";
 	currentScenePath_ = (GetScenesDirectory() / "SampleScene.scene.json").string();
@@ -1000,6 +1057,20 @@ void EditorSuite::PushUndoSnapshot()
 	if (current.settings != undoBaseline_.settings) {
 		cmd.settingsBefore = undoBaseline_.settings;
 		cmd.settingsAfter = current.settings;
+	}
+	if (!suppressOverrideRecording_) {
+		for (auto& change : cmd.changes) {
+			if (change.before.empty() || change.after.empty()) continue;
+			const GameObject* obj = FindGameObjectById(change.id, false);
+			if (!obj || obj->prefabSource.empty()) continue;
+			const size_t before = obj->prefabOverrides.size();
+			RecordPrefabOverrides(change.id, change.before, change.after);
+			if (obj->prefabOverrides.size() == before) continue;
+			SceneJson::Json o = SceneJson::Json::object();
+			WriteGameObjectJson(*obj, &o);
+			change.after = DumpForUndo(o);
+			current.objects[change.id] = change.after;
+		}
 	}
 	if (cmd.changes.empty() && cmd.settingsBefore.empty()) {
 		return; // nothing changed

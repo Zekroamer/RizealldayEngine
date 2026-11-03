@@ -21,7 +21,7 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 			if (ImGui::BeginTabItem(TrId("Inspector"))) {
 				rightPanelTab_ = 0;
 				if (selectedObjectIndex_ < 0 || selectedObjectIndex_ >= static_cast<int>(gameObjects_.size())) {
-					ImGui::TextDisabled("No GameObject Selected");
+					ImGui::TextDisabled(Tr("No GameObject Selected"));
 					ImGui::Separator();
 					DrawSkyboxSettingsUI();
 					DrawPostProcessSettingsUI();
@@ -55,7 +55,7 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 					PushUndoSnapshot();
 				}
 				ImGui::SameLine();
-				if (ImGui::Checkbox("Static", &obj.isStatic)) {
+				if (ImGui::Checkbox(TrId("Static"), &obj.isStatic)) {
 					isSceneDirty_ = true;
 					PushUndoSnapshot();
 				}
@@ -64,17 +64,17 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 				{
 					char tagBuf[64]{};
 					strncpy_s(tagBuf, obj.tag.c_str(), sizeof(tagBuf) - 1);
-					if (ImGui::InputText("Tag", tagBuf, sizeof(tagBuf))) {
+					if (ImGui::InputText(TrId("Tag"), tagBuf, sizeof(tagBuf))) {
 						obj.tag = tagBuf;
 						isSceneDirty_ = true;
 					}
 					if (ImGui::IsItemDeactivatedAfterEdit()) {
 						PushUndoSnapshot();
 					}
-					ImGui::SetItemTooltip("Free-form tag scripts can compare (e.g. \"Enemy\")");
+					ImGui::SetItemTooltip(Tr("Free-form tag scripts can compare (e.g. \"Enemy\")"));
 
 					const uint32_t layer = obj.layer & 31u;
-					if (ImGui::BeginCombo("Layer", GetCollisionLayerName(layer).c_str())) {
+					if (ImGui::BeginCombo(TrId("Layer"), GetCollisionLayerName(layer).c_str())) {
 						for (uint32_t i = 0; i < 32; ++i) {
 							if (ImGui::Selectable(GetCollisionLayerName(i).c_str(), i == layer)) {
 								obj.layer = i;
@@ -99,9 +99,9 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 							}
 						}
 					}
-					if (ImGui::BeginCombo("Collides With", maskPreview.c_str())) {
-						if (ImGui::Selectable("Everything")) { obj.collisionMask = 0xFFFFFFFFu; isSceneDirty_ = true; PushUndoSnapshot(); }
-						if (ImGui::Selectable("Nothing")) { obj.collisionMask = 0u; isSceneDirty_ = true; PushUndoSnapshot(); }
+					if (ImGui::BeginCombo(TrId("Collides With"), maskPreview.c_str())) {
+						if (ImGui::Selectable(TrId("Everything"))) { obj.collisionMask = 0xFFFFFFFFu; isSceneDirty_ = true; PushUndoSnapshot(); }
+						if (ImGui::Selectable(TrId("Nothing"))) { obj.collisionMask = 0u; isSceneDirty_ = true; PushUndoSnapshot(); }
 						ImGui::Separator();
 						for (uint32_t i = 0; i < 32; ++i) {
 							bool on = (obj.collisionMask & (1u << i)) != 0;
@@ -118,19 +118,19 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 
 				// 1. TRANSFORM COMPONENT (Always Present)
 				if (ImGui::CollapsingHeader(TrId("Transform"), ImGuiTreeNodeFlags_DefaultOpen)) {
-					DrawVec3Control("Position", obj.translation, 0.0f);
+					DrawVec3Control(TrId("Position"), obj.translation, 0.0f);
 					ImGui::SetItemTooltip("%s", Tr("World position (X, Y, Z)"));
 
-					if (DrawVec3Control("Rotation", obj.rotation, 0.0f)) {
+					if (DrawVec3Control(TrId("Rotation"), obj.rotation, 0.0f)) {
 						obj.rotationQuat = Quaternion::FromEuler(obj.rotation);
 					}
 					ImGui::SetItemTooltip("%s", Tr("Euler rotation in radians (X, Y, Z)"));
 
-					DrawVec3Control("Scale", obj.scale, 1.0f);
+					DrawVec3Control(TrId("Scale"), obj.scale, 1.0f);
 					ImGui::SetItemTooltip("%s", Tr("Local scale vector (X, Y, Z)"));
 
 					// Debug-only readouts stay out of the way unless expanded
-					if (ImGui::TreeNodeEx("Debug##TransformDebug", ImGuiTreeNodeFlags_SpanAvailWidth)) {
+					if (ImGui::TreeNodeEx(TrId("Debug##TransformDebug"), ImGuiTreeNodeFlags_SpanAvailWidth)) {
 						float qVal[4] = { obj.rotationQuat.x, obj.rotationQuat.y, obj.rotationQuat.z, obj.rotationQuat.w };
 						ImGui::InputFloat4("Quaternion", qVal, "%.4f", ImGuiInputTextFlags_ReadOnly);
 						ImGui::SetItemTooltip("%s", Tr("Live unit quaternion (X, Y, Z, W)"));
@@ -147,6 +147,10 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 					}
 				}
 
+				DrawPrefabLinkInspector(obj);
+				if (!extraSelection_.empty()) {
+					ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), Tr("%d objects selected: the Inspector edits the first, the gizmo moves all."), static_cast<int>(SelectedIds().size()));
+				}
 				// 2..9. Built-in and data components, in registry order (EditorSuite_Components.cpp)
 				DrawComponentInspectors(obj);
 
@@ -175,16 +179,16 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 					if (open) {
 						ImGui::Indent(8.0f);
 						auto& sc = obj.scripts[sIdx];
-						ImGui::Text("Script Class: %s", sc.className.c_str());
+						ImGui::Text(Tr("Script Class: %s"), sc.className.c_str());
 						bool isReg = scriptModule_.IsRegistered(sc.className);
 						if (sc.isCompiling || (isBuildingScripts_.load() && !isReg)) {
-							ImGui::TextColored(ImVec4(0.35f, 0.85f, 1.0f, 1.0f), "Status: Compiling...");
+							ImGui::TextColored(ImVec4(0.35f, 0.85f, 1.0f, 1.0f), Tr("Status: Compiling..."));
 						} else if (!isReg || sc.isMissingScript) {
-							ImGui::TextColored(ImVec4(1.0f, 0.40f, 0.25f, 1.0f), "Status: Missing Script (Click [ Build Scripts ] or fix class)");
+							ImGui::TextColored(ImVec4(1.0f, 0.40f, 0.25f, 1.0f), Tr("Status: Missing Script (Click [ Build Scripts ] or fix class)"));
 						} else if (sceneState_ == EditorSceneState::Play || sceneState_ == EditorSceneState::Pause) {
-							ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.0f), "Status: Active (Running in Play Mode)");
+							ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.0f), Tr("Status: Active (Running in Play Mode)"));
 						} else {
-							ImGui::TextDisabled("Status: Ready (GameScripts.dll)");
+							ImGui::TextDisabled(Tr("Status: Ready (GameScripts.dll)"));
 						}
 
 						// [ Open Script ] and [ .h ] buttons on the same line, plus [ Remove ]
@@ -194,14 +198,14 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 							std::filesystem::path cppPath = ResolveGameScriptsDir() / "Scripts" / (sc.className + ".cpp");
 							OpenFileInVisualStudio(cppPath);
 						}
-						ImGui::SetItemTooltip("Open %s.cpp in Visual Studio", sc.className.c_str());
+						ImGui::SetItemTooltip(Tr("Open %s.cpp in Visual Studio"), sc.className.c_str());
 
 						ImGui::SameLine();
 						if (ImGui::Button(TrId("[ .h ]"), ImVec2(45.0f, 24.0f))) {
 							std::filesystem::path hPath = ResolveGameScriptsDir() / "Scripts" / (sc.className + ".h");
 							OpenFileInVisualStudio(hPath);
 						}
-						ImGui::SetItemTooltip("Open %s.h in Visual Studio", sc.className.c_str());
+						ImGui::SetItemTooltip(Tr("Open %s.h in Visual Studio"), sc.className.c_str());
 
 						ImGui::SameLine();
 						if (ImGui::Button(TrId("Remove"), ImVec2(75.0f, 24.0f))) {
@@ -215,7 +219,7 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 							if (fieldCount > 0) {
 								ImGui::Spacing();
 								ImGui::Separator();
-								ImGui::TextDisabled("Exposed Fields:");
+								ImGui::TextDisabled(Tr("Exposed Fields:"));
 								for (int fIdx = 0; fIdx < fieldCount; ++fIdx) {
 									ScriptFieldInfo info{};
 									if (!scriptModule_.GetFieldInfo(sc.instance.get(), fIdx, info) || !info.dataPtr || !info.name || info.name[0] == '\0') continue;
@@ -326,7 +330,7 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 					if (ImGui::BeginMenu(TrId("Script"))) {
 						const auto& registeredScripts = scriptModule_.GetRegisteredNames();
 						if (registeredScripts.empty()) {
-							ImGui::TextDisabled("No registered scripts in GameScripts.dll");
+							ImGui::TextDisabled(Tr("No registered scripts in GameScripts.dll"));
 						} else {
 							for (const auto& scriptName : registeredScripts) {
 								if (ImGui::MenuItem(scriptName.c_str())) {
@@ -388,28 +392,28 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 			if (ImGui::BeginTabItem(TrId("Details"), nullptr, detailsTabFlags)) {
 				focusDetailsTab_ = false;
 				rightPanelTab_ = 1;
-				ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "Asset & Scene Details");
+				ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), Tr("Asset & Scene Details"));
 				ImGui::Separator();
 
 				if (!selectedAssetPath_.empty() && std::filesystem::exists(selectedAssetPath_) && !std::filesystem::is_directory(selectedAssetPath_)) {
 					std::string ext = selectedAssetPath_.extension().string();
 					std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
-					ImGui::Text("Selected Asset: %s", selectedAssetPath_.filename().string().c_str());
-					ImGui::TextDisabled("Path: %s", selectedAssetPath_.string().c_str());
+					ImGui::Text(Tr("Selected Asset: %s"), selectedAssetPath_.filename().string().c_str());
+					ImGui::TextDisabled(Tr("Path: %s"), selectedAssetPath_.string().c_str());
 
 					try {
 						auto sizeBytes = std::filesystem::file_size(selectedAssetPath_);
 						if (sizeBytes < 1024) {
-							ImGui::Text("File Size: %llu Bytes (%.2f KB)", static_cast<unsigned long long>(sizeBytes), sizeBytes / 1024.0f);
+							ImGui::Text(Tr("File Size: %llu Bytes (%.2f KB)"), static_cast<unsigned long long>(sizeBytes), sizeBytes / 1024.0f);
 						} else {
-							ImGui::Text("File Size: %.2f KB (%llu Bytes)", sizeBytes / 1024.0f, static_cast<unsigned long long>(sizeBytes));
+							ImGui::Text(Tr("File Size: %.2f KB (%llu Bytes)"), sizeBytes / 1024.0f, static_cast<unsigned long long>(sizeBytes));
 						}
 					} catch (...) {}
 
 					if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".dds") {
 						ImGui::Separator();
-						ImGui::Text("2D Texture Preview:");
+						ImGui::Text(Tr("2D Texture Preview:"));
 						if (currentPreviewTextureHandle_ == 0 && currentPreviewAssetPath_ != selectedAssetPath_.string()) {
 							SelectAssetForPreview(selectedAssetPath_);
 						}
@@ -438,18 +442,18 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 						}
 					} else if (ext == ".obj" || ext == ".fbx" || ext == ".gltf" || ext == ".glb") {
 						ImGui::Separator();
-						ImGui::Text("3D Model Preview (Assimp):");
+						ImGui::Text(Tr("3D Model Preview (Assimp):"));
 						if (!previewModel_ && currentPreviewAssetPath_ != selectedAssetPath_.string()) {
 							SelectAssetForPreview(selectedAssetPath_);
 						}
-						ImGui::Text("Format: %s", ext.c_str());
-						ImGui::Text("Vertices: %u  |  Triangles: %u", previewVertexCount_, previewTriangleCount_);
+						ImGui::Text(Tr("Format: %s"), ext.c_str());
+						ImGui::Text(Tr("Vertices: %u  |  Triangles: %u"), previewVertexCount_, previewTriangleCount_);
 						if (previewModel_) {
 							ImGui::Image(
 								ImTextureRef((ImTextureID)modelPreviewRT_.GetSrvGPUHandle().ptr),
 								ImVec2(180.0f, 180.0f));
 						} else {
-							ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f), "Unable to parse 3D geometry.");
+							ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f), Tr("Unable to parse 3D geometry."));
 						}
 						if (ImGui::Button(TrId("[ Spawn 3D Model in Scene ]"), ImVec2(-1.0f, 26.0f))) {
 							auto& obj = CreateGameObject(selectedAssetPath_.stem().string(), GameObjectType::Cube);
@@ -465,7 +469,7 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 						}
 					} else if (ext == ".wav" || ext == ".mp3" || ext == ".m4a" || ext == ".wma") {
 						ImGui::Separator();
-						ImGui::Text("Audio Clip Preview (XAudio2 + Media Foundation):");
+						ImGui::Text(Tr("Audio Clip Preview (XAudio2 + Media Foundation):"));
 						if (ImGui::Button(TrId("[ > Play Audio Clip ]"), ImVec2(-1.0f, 26.0f))) {
 							uint32_t sh = Audio::GetInstance()->LoadAudio(selectedAssetPath_.string());
 							Audio::GetInstance()->PlayAudio(sh, false, 1.0f);
@@ -484,22 +488,22 @@ void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
 						}
 					} else if (ext == ".cpp" || ext == ".h" || ext == ".hpp") {
 						ImGui::Separator();
-						ImGui::Text("C++ Script Source File:");
+						ImGui::Text(Tr("C++ Script Source File:"));
 						if (ImGui::Button(TrId("[ Open in Visual Studio ]"), ImVec2(-1.0f, 26.0f))) {
 							OpenFileInVisualStudio(selectedAssetPath_);
 						}
 					}
 					ImGui::Separator();
 				} else {
-					ImGui::TextDisabled("Select a texture (.png, .jpg, .dds) or 3D model (.obj, .fbx, .gltf) in the Project browser to inspect.");
+					ImGui::TextDisabled(Tr("Select a texture (.png, .jpg, .dds) or 3D model (.obj, .fbx, .gltf) in the Project browser to inspect."));
 					ImGui::Separator();
 				}
 
-				ImGui::Text("Total GameObjects: %zu", gameObjects_.size());
-				ImGui::Text("Active Cameras: %s", gameCamera_ ? "1" : "0");
-				ImGui::Text("Lighting: %s", enableLighting_ ? "Enabled" : "Disabled");
-				ImGui::Checkbox("Frustum Culling", &enableFrustumCulling_);
-				ImGui::Text("Frustum Culling Stats: %d Visible / %d Culled", lastVisibleObjects_, lastCulledObjects_);
+				ImGui::Text(Tr("Total GameObjects: %zu"), gameObjects_.size());
+				ImGui::Text(Tr("Active Cameras: %s"), gameCamera_ ? "1" : "0");
+				ImGui::Text(Tr("Lighting: %s"), enableLighting_ ? "Enabled" : "Disabled");
+				ImGui::Checkbox(TrId("Frustum Culling"), &enableFrustumCulling_);
+				ImGui::Text(Tr("Frustum Culling Stats: %d Visible / %d Culled"), lastVisibleObjects_, lastCulledObjects_);
 
 				ImGui::EndTabItem();
 			} else {
@@ -525,7 +529,8 @@ bool EditorSuite::DrawVec3Control(const std::string& label, Vector3& values, flo
 		ImGui::TableNextRow();
 
 		ImGui::TableNextColumn();
-		ImGui::TextUnformatted(label.c_str());
+		const std::string_view shown = Localization::VisibleLabel(label); // the whole label stays the ID
+		ImGui::TextUnformatted(shown.data(), shown.data() + shown.size());
 
 		ImGui::TableNextColumn();
 		float availWidth = ImGui::GetContentRegionAvail().x;

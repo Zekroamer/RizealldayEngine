@@ -1,4 +1,4 @@
-#include "GpuParticle.hlsli"
+﻿#include "GpuParticle.hlsli"
 
 struct Particle
 {
@@ -8,6 +8,16 @@ struct Particle
     float life;
 };
 StructuredBuffer<Particle> gParticles : register(t0);
+
+// Same formula as GpuParticleKey in GpuParticles.h
+float4 Key(float t, float4 start, float4 middle, float4 end)
+{
+    if (gMiddleTime < 0.0f)
+    {
+        return lerp(start, end, t);
+    }
+    return t < gMiddleTime ? lerp(start, middle, t / gMiddleTime) : lerp(middle, end, (t - gMiddleTime) / (1.0f - gMiddleTime));
+}
 
 GpuParticleVSOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
 {
@@ -26,9 +36,9 @@ GpuParticleVSOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_Insta
         return output;
     }
     const float t = p.age / p.life;
-    const float size = lerp(gSizeStart, gSizeEnd, t);
+    const float size = Key(t, gSizeStart.xxxx, gSizeMiddle.xxxx, gSizeEnd.xxxx).x;
     const float3 world = p.position + (gCameraRight * corner.x + gCameraUp * corner.y) * size * 0.5f;
     output.position = mul(float4(world, 1.0f), gViewProjection);
-    output.color = lerp(gColorStart, gColorEnd, t);
+    output.color = Key(t, gColorStart, gColorMiddle, gColorEnd);
     return output;
 }
