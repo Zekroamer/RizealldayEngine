@@ -863,7 +863,16 @@ TEST_CASE(Update, ApplyReplacesOnlyEngineFolders)
 	}
 
 	std::string error;
-	CHECK_MSG(EngineUpdate::ApplyPackage(package, install, &error), error);
+	{
+		// Another program reads engine.json without delete sharing: it cannot be renamed, but it can be overwritten
+		HANDLE reader = CreateFileW((install / "engine.json").c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+		CHECK(reader != INVALID_HANDLE_VALUE);
+		CHECK_MSG(EngineUpdate::ApplyPackage(package, install, &error), error);
+		if (reader != INVALID_HANDLE_VALUE) CloseHandle(reader);
+		const auto manifest = EngineUpdate::FindPackage(install);
+		CHECK_MSG(manifest && manifest->version == "9.0.0", "a held engine.json is overwritten in place");
+		CHECK(!fs::exists(install / "engine.json.new"));
+	}
 	CHECK(fs::exists(install / "Editor" / "new.txt"));
 	CHECK(!fs::exists(install / "Editor" / "old.txt"));
 	CHECK_MSG(fs::exists(install / "Editor" / "imgui.ini"), "the docking layout survives an update");

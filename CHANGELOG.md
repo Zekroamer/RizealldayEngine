@@ -2,6 +2,11 @@
 
 ## [Belum dirilis]
 
+## [2.4.2] — 2026-11-04
+
+### Perbaikan
+- Update engine tidak lagi gagal di tengah jalan saat `engine.json` sedang dibaca program lain (antivirus, indexer): tiap file ditunggu sebentar, lalu ditimpa langsung bila tidak bisa diganti nama. Pesan error kini menyebut bila sebagian update sudah terpasang.
+
 ## [2.4.1] — 2026-11-04
 
 ### Fitur Baru

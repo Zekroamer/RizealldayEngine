@@ -40,6 +40,18 @@ namespace {
 		if (argv) LocalFree(argv);
 		return value;
 	}
+
+	// Antivirus scanners and the search indexer hold a file for a moment: retry for about 5 s
+	bool RenameWithRetry(const fs::path& from, const fs::path& to, std::error_code& ec)
+	{
+		for (int attempt = 0; attempt < 20; ++attempt) {
+			if (attempt > 0) std::this_thread::sleep_for(std::chrono::milliseconds(250));
+			ec.clear();
+			fs::rename(from, to, ec);
+			if (!ec) return true;
+		}
+		return false;
+	}
 }
 
 namespace EngineUpdate {
@@ -198,19 +210,25 @@ bool ApplyPackage(const fs::path& packageRoot, const fs::path& installRoot, std:
 		const fs::path old = installRoot / (name + ".old");
 		fs::remove_all(old, ec);
 		ec.clear();
-		if (fs::exists(target, ec)) {
-			fs::rename(target, old, ec);
-			if (ec) {
-				staged.erase(staged.begin(), staged.begin() + static_cast<std::ptrdiff_t>(i)); // already installed ones stay
-				return fail("Could not replace " + name + " (is a file in it still open?): " + ec.message());
+		const auto partly = [&](const std::string& what) {
+			staged.erase(staged.begin(), staged.begin() + static_cast<std::ptrdiff_t>(i)); // already installed ones stay
+			return fail(what + ": " + ec.message() + (i > 0 ? "\nThe entries before it are already updated; run the update again." : ""));
+		};
+		if (fs::exists(target, ec) && !RenameWithRetry(target, old, ec)) {
+			// A reader without delete sharing blocks the rename of a single file but not writing it
+			std::error_code copyEc;
+			if (fs::is_regular_file(target, copyEc) && fs::copy_file(installRoot / (name + ".new"), target, fs::copy_options::overwrite_existing, copyEc)) {
+				fs::remove(installRoot / (name + ".new"), copyEc);
+				ec.clear();
+				continue;
 			}
+			return partly("Could not replace " + name + " (is a file in it still open?)");
 		}
-		fs::rename(installRoot / (name + ".new"), target, ec);
+		RenameWithRetry(installRoot / (name + ".new"), target, ec);
 		if (ec) {
 			std::error_code rec;
 			fs::rename(old, target, rec); // put the old one back
-			staged.erase(staged.begin(), staged.begin() + static_cast<std::ptrdiff_t>(i));
-			return fail("Could not install " + name + ": " + ec.message());
+			return partly("Could not install " + name);
 		}
 		fs::remove_all(old, ec);
 		ec.clear();
@@ -267,7 +285,7 @@ int RunApplyUpdateMode()
 	}
 	if (!ok) {
 		const std::wstring message = L"The engine update could not be installed.\n\n" + fs::path(error).wstring() +
-			L"\n\nThe previous version was kept. Close every program that uses the engine folder and try again.";
+			L"\n\nClose every program that uses the engine folder and install the update again.";
 		MessageBoxW(nullptr, message.c_str(), L"Rizeallday Engine Update", MB_OK | MB_ICONERROR);
 		return 1;
 	}
