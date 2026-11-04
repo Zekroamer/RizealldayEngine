@@ -213,6 +213,7 @@ void EditorSuite::WriteGameObjectJson(const GameObject& obj, void* outJson) cons
 	o["nearClip"] = Num(obj.nearClip);
 	o["farClip"] = Num(obj.farClip);
 	o["isOrthographic"] = obj.isOrthographic;
+	o["orthoSize"] = Num(obj.orthoSize);
 
 	// Light
 	o["hasLight"] = obj.hasLight;
@@ -664,6 +665,7 @@ void EditorSuite::ReadGameObjectJson(const void* json, GameObject& obj)
 	SceneJson::Read(j, "nearClip", obj.nearClip);
 	SceneJson::Read(j, "farClip", obj.farClip);
 	SceneJson::Read(j, "isOrthographic", obj.isOrthographic);
+	SceneJson::Read(j, "orthoSize", obj.orthoSize);
 
 	// Light
 	SceneJson::Read(j, "hasLight", obj.hasLight);

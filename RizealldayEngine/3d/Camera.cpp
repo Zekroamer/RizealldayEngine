@@ -1,6 +1,7 @@
 ﻿#include "3d/Camera.h"
 #include "math/MathUtil.h"
 #include "base/DirectXCommon.h"
+#include <algorithm>
 
 DirectXCommon* Camera::sDxCommon_ = nullptr;
 CameraForGPU Camera::sDefaultData_ = { { 0.0f, 0.0f, -10.0f }, 0.0f };
@@ -39,9 +40,18 @@ D3D12_GPU_VIRTUAL_ADDRESS Camera::GetGPUVirtualAddress() const {
     return uploadedAddress_;
 }
 
+Matrix4x4 Camera::MakeProjection() const {
+    if (!orthographic) {
+        return Mathematics::MakePerspectiveFovMatrix(fovY, aspectRatio, nearClip, farClip);
+    }
+    const float halfH = (std::max)(orthoSize, 0.01f);
+    const float halfW = halfH * aspectRatio;
+    return Mathematics::MakeOrthographicMatrix(-halfW, halfH, halfW, -halfH, nearClip, farClip);
+}
+
 void Camera::Initialize() {
     matView_ = Mathematics::MakeIdentity4x4();
-    matProjection_ = Mathematics::MakePerspectiveFovMatrix(fovY, aspectRatio, nearClip, farClip);
+    matProjection_ = MakeProjection();
     matViewProjection_ = Mathematics::Multiply(matView_, matProjection_);
     data_.worldPosition = translation;
     data_.pad = 0.0f;
@@ -51,7 +61,7 @@ void Camera::Initialize() {
 void Camera::Update() {
     Matrix4x4 cameraWorldMatrix = Mathematics::MakeAffineMatrix({1.0f, 1.0f, 1.0f}, rotation, translation);
     matView_ = Mathematics::Inverse(cameraWorldMatrix);
-    matProjection_ = Mathematics::MakePerspectiveFovMatrix(fovY, aspectRatio, nearClip, farClip);
+    matProjection_ = MakeProjection();
     matViewProjection_ = Mathematics::Multiply(matView_, matProjection_);
     data_.worldPosition = translation;
     data_.pad = 0.0f;

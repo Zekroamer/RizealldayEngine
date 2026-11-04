@@ -1214,6 +1214,60 @@ TEST_CASE(Scripting, MouseRayHitsGroundPlane)
 	CHECK(!EditorSuite::ScreenRayToPlaneY(viewProj, 0.0f, 0.0f, 100.0f, hit));
 }
 
+TEST_CASE(Render, OrthographicCameraKeepsSizeAndMouseRay)
+{
+	// Isometric camera: 40 degrees down, turned 45 degrees, size 5 (10 units visible vertically)
+	Camera cam;
+	cam.orthographic = true;
+	cam.orthoSize = 5.0f;
+	cam.aspectRatio = 2.0f;
+	cam.rotation = { 0.698f, 0.785f, 0.0f };
+	cam.translation = { -10.0f, 12.0f, -10.0f };
+	cam.Update();
+	CHECK_NEAR(cam.GetProjectionMatrix().m[3][3], 1.0f, 1e-6f); // no perspective divide
+
+	// The same offset across the screen at any distance: things do not shrink far away
+	const Matrix4x4 camWorld = Mathematics::MakeAffineMatrix({ 1.0f, 1.0f, 1.0f }, cam.rotation, cam.translation);
+	// Row-vector convention: rows 0..2 of the world matrix are the camera's right / up / forward
+	const Vector3 right = { camWorld.m[0][0], camWorld.m[0][1], camWorld.m[0][2] };
+	const Vector3 up = { camWorld.m[1][0], camWorld.m[1][1], camWorld.m[1][2] };
+	const Vector3 forward = { camWorld.m[2][0], camWorld.m[2][1], camWorld.m[2][2] };
+	for (const float depth : { 5.0f, 40.0f }) {
+		const Vector3 base = cam.translation + forward * depth;
+		const Vector3 ndcR = Mathematics::Transform(base + right * 5.0f, cam.GetViewProjectionMatrix());
+		const Vector3 ndcU = Mathematics::Transform(base + up * 5.0f, cam.GetViewProjectionMatrix());
+		CHECK_NEAR(ndcR.x, 0.5f, 1e-4f); // half width = 5 * aspect = 10
+		CHECK_NEAR(ndcU.y, 1.0f, 1e-4f); // the top edge
+	}
+
+	// The mouse ray of an orthographic camera still finds the ground point under the cursor
+	const Vector3 targets[] = { { 0.0f, 0.0f, 0.0f }, { 3.0f, 0.0f, -2.0f }, { -1.0f, 0.0f, 4.0f } };
+	for (const Vector3& target : targets) {
+		const Vector3 ndc = Mathematics::Transform(target, cam.GetViewProjectionMatrix());
+		REQUIRE(std::fabs(ndc.x) <= 1.0f && std::fabs(ndc.y) <= 1.0f);
+		Vector3 hit{};
+		REQUIRE(EditorSuite::ScreenRayToPlaneY(cam.GetViewProjectionMatrix(), ndc.x, ndc.y, 0.0f, hit));
+		CHECK_NEAR(hit.x, target.x, 1e-3f);
+		CHECK_NEAR(hit.z, target.z, 1e-3f);
+	}
+
+	// Saved with the scene and reachable from scripts
+	GameObject& camObj = s.CreateCube("Iso Camera", { 0.0f, 10.0f, 0.0f });
+	camObj.hasCamera = true;
+	const uint32_t camId = camObj.id;
+	EngineAPI& api = A::Api(s);
+	ScriptCameraData data{};
+	REQUIRE(api.getCamera(api.hostContext, camId, &data));
+	data.orthographic = true;
+	data.orthoSize = 7.5f;
+	REQUIRE(api.setCamera(api.hostContext, camId, &data));
+	REQUIRE(s.DeserializeSceneFromString(s.SerializeSceneToString()));
+	const GameObject* loaded = s.FindGameObjectById(camId, false);
+	REQUIRE(loaded != nullptr);
+	CHECK(loaded->isOrthographic);
+	CHECK_NEAR(loaded->orthoSize, 7.5f, 1e-6f);
+}
+
 TEST_CASE(Scripting, TimeScaleScalesGameTime)
 {
 	EngineAPI& api = A::Api(s);

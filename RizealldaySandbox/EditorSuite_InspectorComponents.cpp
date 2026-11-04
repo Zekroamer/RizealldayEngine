@@ -296,7 +296,14 @@ void EditorSuite::DrawCameraComponentInspector(GameObject& obj)
 #ifdef USE_IMGUI
 	if (DrawComponentHeader("Camera", ComponentKind::Camera)) {
 		if (ImGui::Checkbox(TrId("Enabled##Cam"), &obj.cameraEnabled)) { isSceneDirty_ = true; PushUndoSnapshot(); }
-		if (ImGui::SliderFloat(TrId("Field of View"), &obj.fov, 10.0f, 150.0f, "%.1f deg")) isSceneDirty_ = true;
+		if (ImGui::Checkbox(TrId("Orthographic"), &obj.isOrthographic)) { isSceneDirty_ = true; PushUndoSnapshot(); }
+		ImGui::SetItemTooltip("%s", Tr("No perspective: far objects keep their size (isometric look)"));
+		if (obj.isOrthographic) {
+			if (ImGui::DragFloat(TrId("Size"), &obj.orthoSize, 0.1f, 0.1f, 500.0f, "%.2f")) isSceneDirty_ = true;
+			ImGui::SetItemTooltip("%s", Tr("Half of the visible height in world units"));
+		} else {
+			if (ImGui::SliderFloat(TrId("Field of View"), &obj.fov, 10.0f, 150.0f, "%.1f deg")) isSceneDirty_ = true;
+		}
 		if (ImGui::IsItemDeactivatedAfterEdit()) PushUndoSnapshot();
 		if (ImGui::DragFloat(TrId("Near Clip"), &obj.nearClip, 0.01f, 0.001f, 10.0f)) isSceneDirty_ = true;
 		if (ImGui::IsItemDeactivatedAfterEdit()) PushUndoSnapshot();

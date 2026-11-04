@@ -71,6 +71,7 @@ GameObject::GameObject(const GameObject& other) {
 	nearClip = other.nearClip;
 	farClip = other.farClip;
 	isOrthographic = other.isOrthographic;
+	orthoSize = other.orthoSize;
 	hasLight = other.hasLight;
 	lightEnabled = other.lightEnabled;
 	lightType = other.lightType;
@@ -214,6 +215,7 @@ GameObject& GameObject::operator=(const GameObject& other) {
 		nearClip = other.nearClip;
 		farClip = other.farClip;
 		isOrthographic = other.isOrthographic;
+		orthoSize = other.orthoSize;
 		hasLight = other.hasLight;
 		lightEnabled = other.lightEnabled;
 		lightType = other.lightType;
@@ -833,6 +835,8 @@ void EditorSuite::Update(float deltaTime, Input* input)
 				gameCamera_->fovY = obj.fov * 3.14159265f / 180.0f;
 				gameCamera_->nearClip = obj.nearClip;
 				gameCamera_->farClip = obj.farClip;
+				gameCamera_->orthographic = obj.isOrthographic;
+				gameCamera_->orthoSize = obj.orthoSize;
 				gameCamera_->Update();
 			}
 			break;

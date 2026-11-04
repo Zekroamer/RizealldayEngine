@@ -177,6 +177,7 @@ struct ScriptCameraData {
 	float nearClip = 0.1f;
 	float farClip = 1000.0f;
 	bool orthographic = false;
+	float orthoSize = 10.0f;     // orthographic: half the visible height in world units
 };
 
 /// Mixer groups for SetBusVolume / ScriptAudioParams
@@ -398,7 +399,7 @@ struct EngineAPI {
 /// Engine <-> GameScripts.dll compatibility check. Bump kScriptApiVersion when the meaning of the API changes;
 /// layout changes of EngineAPI / ScriptGameObjectView / ScriptBase are caught automatically by the sizes.
 /// The fingerprint is defined at the end of this header (it needs the complete ScriptBase).
-constexpr uint32_t kScriptApiVersion = 13; // 4: Animator, 5: ShakeCamera / Hitstop / input actions, 6: MoveCharacter, 7: FindPath, 8: KeepAcrossScenes, 9: material outline, 10: camera input + projection + prewarm + post-processing, 11: animation layers + bones + IK + ragdoll, 12: audio buses + pitch + 3D + components by name, 13: fog in ScriptPostProcess
+constexpr uint32_t kScriptApiVersion = 14; // 4: Animator, 5: ShakeCamera / Hitstop / input actions, 6: MoveCharacter, 7: FindPath, 8: KeepAcrossScenes, 9: material outline, 10: camera input + projection + prewarm + post-processing, 11: animation layers + bones + IK + ragdoll, 12: audio buses + pitch + 3D + components by name, 13: fog in ScriptPostProcess, 14: orthographic camera size
 
 /// Size of the UI canvas used by the UI* helpers (stretched over the game view)
 constexpr float kUICanvasWidth = 1280.0f;

@@ -37,8 +37,12 @@ public:
 	float aspectRatio = 1280.0f / 720.0f;
 	float nearClip = 0.1f;
 	float farClip = 1000.0f;
+	bool orthographic = false;
+	float orthoSize = 10.0f; // half the visible height in world units (orthographic only)
 
 private:
+	Matrix4x4 MakeProjection() const;
+
 	static DirectXCommon* sDxCommon_;
 	static CameraForGPU sDefaultData_;
 	static uint64_t sDefaultUploadFrame_;

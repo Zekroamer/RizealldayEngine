@@ -1121,6 +1121,7 @@ void EditorSuite::SetupEngineAPIExtensions()
 		out->nearClip = obj->nearClip;
 		out->farClip = obj->farClip;
 		out->orthographic = obj->isOrthographic;
+		out->orthoSize = obj->orthoSize;
 		return true;
 	};
 	engineApi_.setCamera = [](void* ctx, uint32_t id, const ScriptCameraData* in) -> bool {
@@ -1130,6 +1131,7 @@ void EditorSuite::SetupEngineAPIExtensions()
 		obj->nearClip = (std::max)(0.001f, in->nearClip);
 		obj->farClip = (std::max)(obj->nearClip + 0.01f, in->farClip);
 		obj->isOrthographic = in->orthographic;
+		obj->orthoSize = (std::max)(0.01f, in->orthoSize);
 		return true;
 	};
 }

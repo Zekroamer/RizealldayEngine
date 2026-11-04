@@ -2,6 +2,11 @@
 
 ## [Belum dirilis]
 
+## [2.5.0] — 2026-11-05
+
+### Fitur Baru
+- **Kamera orthographic**: komponen Camera punya centang *Orthographic* + *Size* (setengah tinggi area yang terlihat). Cocok untuk tampilan isometric. Script: `ScriptCameraData::orthoSize`. API script naik ke versi 14, jadi rebuild script project setelah update.
+
 ## [2.4.3] — 2026-11-04
 
 ### Perbaikan

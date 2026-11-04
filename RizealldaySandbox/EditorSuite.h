@@ -193,6 +193,7 @@ struct GameObject {
 	float nearClip = 0.1f;
 	float farClip = 1000.0f;
 	bool isOrthographic = false;
+	float orthoSize = 10.0f; // half the visible height (orthographic)
 
 	// Light Component
 	bool hasLight = false;
