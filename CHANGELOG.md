@@ -2,6 +2,14 @@
 
 ## [Belum dirilis]
 
+## [2.4.1] — 2026-11-04
+
+### Fitur Baru
+- **Warna material dari file model**: model low-poly tanpa tekstur (glTF, FBX, OBJ) kini tampil dengan warna tiap bagiannya. Material Color di Inspector tetap dikalikan ke semuanya, jadi mudah dipakai untuk mewarnai varian (mis. zombie kehijauan).
+
+### Catatan
+- Karakter FBX hasil ekspor Blender dengan skala unit cm/m yang tidak konsisten bisa tampil pecah. Pakai versi glTF-nya (FBX dari Mixamo aman).
+
 ## [2.4.0] — 2026-11-04
 
 
