@@ -219,9 +219,11 @@ void EditorSuite::UpdateAnimations(float deltaTime, bool runStateMachines)
 			const auto updateBlend = [&](const AnimState& state) {
 				std::vector<AnimationPlayer::Track::BlendClip>& clips = player.Current().blend;
 				if (clips.size() != state.blendClips.size()) return;
-				const AnimParameter* parameter = controller->FindParameter(state.blendParameter);
-				const float value = runStateMachines ? animator->runtime.GetValue(state.blendParameter) : (parameter ? parameter->defaultValue : 0.0f);
-				state.BlendWeights(value, blendWeights_);
+				const auto valueOf = [&](const std::string& name) {
+					const AnimParameter* parameter = controller->FindParameter(name);
+					return runStateMachines ? animator->runtime.GetValue(name) : (parameter ? parameter->defaultValue : 0.0f);
+				};
+				state.BlendWeights(valueOf(state.blendParameter), state.IsBlend2D() ? valueOf(state.blendParameterY) : 0.0f, blendWeights_);
 				for (size_t i = 0; i < clips.size(); ++i) clips[i].weight = blendWeights_[i];
 			};
 			if (runStateMachines) {

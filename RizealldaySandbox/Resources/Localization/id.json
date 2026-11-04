@@ -762,5 +762,7 @@
 	"Paste Copied Component": "Tempel Komponen Tersalin",
 	"Focus in Scene": "Fokus di Scene",
 	"Open Prefab": "Buka Prefab",
-	"Rewind timeline cursor to 0.00 s": "Putar ulang kursor timeline ke 0.00 dtk"
+	"Rewind timeline cursor to 0.00 s": "Putar ulang kursor timeline ke 0.00 dtk",
+	"Parameter Y (2D)": "Parameter Y (2D)",
+	"2D: e.g. moveX / moveY. Idle at (0, 0), forward (0, 1), back (0, -1), left (-1, 0), right (1, 0).": "2D: misalnya moveX / moveY. Idle di (0, 0), maju (0, 1), mundur (0, -1), kiri (-1, 0), kanan (1, 0)."
 }

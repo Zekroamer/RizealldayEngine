@@ -2,6 +2,8 @@
 
 ## [Belum dirilis]
 
+## [2.4.0] — 2026-11-04
+
 
 ### Perbaikan
 - Menyeret sumbu Z gizmo tidak lagi melempar objek jauh; Ctrl+Z / Delete saat mengetik di field tidak lagi mengubah scene; Ctrl+Shift+Z tidak lagi menjalankan Undo dan Redo sekaligus.
@@ -18,6 +20,7 @@
 - Override prefab kini per field: mengubah `lifetime` sebuah Trail atau satu sumbu skala hanya mengunci field itu, field lain tetap mengikuti prefab.
 
 ### Fitur Baru
+- **Blend tree 2D** di Animator: isi Parameter Y (mis. moveX / moveY) dan posisi tiap klip untuk gerakan delapan arah.
 - **Gizmo rotasi ala Blender**: cincin per sumbu; saat diseret tampil juring arah putaran, panah, dan sudut dalam derajat.
 - **Gizmo**: mode Local/World, Snap (atau tahan Ctrl), F untuk fokus kamera ke objek terpilih.
 - **Override prefab**: garis biru di Inspector untuk field yang di-override, klik kanan > Revert Override.

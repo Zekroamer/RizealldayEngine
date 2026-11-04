@@ -551,6 +551,11 @@ void EditorSuite::DrawAnimatorSidePanel(AnimatorController& c, AnimatorComponent
 			ImGui::TextDisabled("%s", Tr("Mixes clips by a float parameter, e.g. speed: idle at 0, walk at 2, run at 5."));
 			std::string parameter = s->blendParameter;
 			if (InputString(TrId("Parameter##Blend"), parameter)) { s->blendParameter = parameter; animatorDirty_ = true; }
+			std::string parameterY = s->blendParameterY;
+			if (InputString(TrId("Parameter Y (2D)##Blend"), parameterY)) { s->blendParameterY = parameterY; animatorDirty_ = true; }
+			if (s->IsBlend2D()) {
+				ImGui::TextDisabled("%s", Tr("2D: e.g. moveX / moveY. Idle at (0, 0), forward (0, 1), back (0, -1), left (-1, 0), right (1, 0)."));
+			}
 			int removeClip = -1;
 			for (int i = 0; i < static_cast<int>(s->blendClips.size()); ++i) {
 				AnimBlendClip& clip = s->blendClips[i];
@@ -566,7 +571,16 @@ void EditorSuite::DrawAnimatorSidePanel(AnimatorController& c, AnimatorComponent
 				}
 				std::string name = clip.clipName;
 				if (InputString(TrId("Clip Name##Blend"), name)) { clip.clipName = name; animatorDirty_ = true; }
-				edited(ImGui::DragFloat(TrId("Threshold"), &clip.threshold, 0.05f));
+				if (s->IsBlend2D()) {
+					float blendPosition[2] = { clip.threshold, clip.thresholdY };
+					if (ImGui::DragFloat2(TrId("Position##Blend"), blendPosition, 0.05f)) {
+						clip.threshold = blendPosition[0];
+						clip.thresholdY = blendPosition[1];
+						animatorDirty_ = true;
+					}
+				} else {
+					edited(ImGui::DragFloat(TrId("Threshold"), &clip.threshold, 0.05f));
+				}
 				if (ImGui::SmallButton(TrId("Remove Clip"))) removeClip = i;
 				ImGui::Separator();
 				ImGui::PopID();

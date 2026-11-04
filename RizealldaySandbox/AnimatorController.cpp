@@ -1,6 +1,7 @@
 ﻿#include "AnimatorController.h"
 #include "SceneJson.h"
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 
 using SceneJson::Json;
@@ -9,10 +10,44 @@ using SceneJson::Arr;
 
 // ---- AnimatorController ----
 
-void AnimState::BlendWeights(float value, std::vector<float>& outWeights) const
+void AnimState::BlendWeights(float x, float y, std::vector<float>& outWeights) const
 {
 	outWeights.assign(blendClips.size(), 0.0f);
 	if (blendClips.empty()) return;
+	if (IsBlend2D()) {
+		// Gradient band (freeform cartesian): clip i's influence fades to 0 on the way to every other clip j
+		float sum = 0.0f;
+		for (size_t i = 0; i < blendClips.size(); ++i) {
+			const float pix = x - blendClips[i].threshold;
+			const float piy = y - blendClips[i].thresholdY;
+			float h = 1.0f;
+			for (size_t j = 0; j < blendClips.size(); ++j) {
+				if (j == i) continue;
+				const float ijx = blendClips[j].threshold - blendClips[i].threshold;
+				const float ijy = blendClips[j].thresholdY - blendClips[i].thresholdY;
+				const float lengthSq = ijx * ijx + ijy * ijy;
+				if (lengthSq < 1e-8f) continue; // duplicate position
+				h = (std::min)(h, 1.0f - (pix * ijx + piy * ijy) / lengthSq);
+			}
+			outWeights[i] = (std::max)(h, 0.0f);
+			sum += outWeights[i];
+		}
+		if (sum > 1e-6f) {
+			for (float& w : outWeights) w /= sum;
+			return;
+		}
+		// Every band is 0 (duplicate positions only): the nearest clip plays alone
+		size_t nearest = 0;
+		float best = FLT_MAX;
+		for (size_t i = 0; i < blendClips.size(); ++i) {
+			const float dx = x - blendClips[i].threshold, dy = y - blendClips[i].thresholdY;
+			if (dx * dx + dy * dy < best) { best = dx * dx + dy * dy; nearest = i; }
+		}
+		outWeights.assign(blendClips.size(), 0.0f);
+		outWeights[nearest] = 1.0f;
+		return;
+	}
+	const float value = x;
 	int below = -1;
 	int above = -1;
 	for (int i = 0; i < static_cast<int>(blendClips.size()); ++i) {
@@ -110,8 +145,10 @@ std::string AnimatorController::ToJson() const
 			Json clips = Json::array();
 			for (const AnimBlendClip& c : s.blendClips) {
 				clips.push_back({ { "clipModel", c.clipModel }, { "clipName", c.clipName }, { "clipIndex", c.clipIndex }, { "threshold", Num(c.threshold) } });
+				if (s.IsBlend2D()) clips.back()["thresholdY"] = Num(c.thresholdY);
 			}
 			js["blendParameter"] = s.blendParameter;
+			if (s.IsBlend2D()) js["blendParameterY"] = s.blendParameterY;
 			js["blendClips"] = std::move(clips);
 		}
 		states_.push_back(std::move(js));
@@ -176,6 +213,7 @@ std::optional<AnimatorController> AnimatorController::FromJson(const std::string
 			SceneJson::Read(js, "loop", s.loop);
 			SceneJson::Read(js, "position", s.position);
 			SceneJson::Read(js, "blendParameter", s.blendParameter);
+			SceneJson::Read(js, "blendParameterY", s.blendParameterY);
 			if (const Json* clips = SceneJson::Find(js, "blendClips"); clips && clips->is_array()) {
 				for (const Json& jc : *clips) {
 					AnimBlendClip c;
@@ -183,6 +221,7 @@ std::optional<AnimatorController> AnimatorController::FromJson(const std::string
 					SceneJson::Read(jc, "clipName", c.clipName);
 					SceneJson::Read(jc, "clipIndex", c.clipIndex);
 					SceneJson::Read(jc, "threshold", c.threshold);
+					SceneJson::Read(jc, "thresholdY", c.thresholdY);
 					s.blendClips.push_back(std::move(c));
 				}
 			}

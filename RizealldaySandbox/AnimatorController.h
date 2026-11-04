@@ -48,6 +48,7 @@ struct AnimBlendClip {
 	std::string clipName;
 	int clipIndex = 0;
 	float threshold = 0.0f; // value of the blend parameter where this clip plays alone
+	float thresholdY = 0.0f; // 2D trees only: position = (threshold, thresholdY)
 };
 
 struct AnimState {
@@ -61,10 +62,14 @@ struct AnimState {
 	std::vector<AnimEvent> events;
 	Vector2 position;      // Animator window, canvas space
 	std::string blendParameter;          // float parameter choosing the mix
-	std::vector<AnimBlendClip> blendClips; // not empty = 1D blend tree; the clip fields above are not used
+	std::string blendParameterY;         // set = 2D blend tree (x = blendParameter, y = this)
+	std::vector<AnimBlendClip> blendClips; // not empty = blend tree; the clip fields above are not used
 
-	/// One weight per blend clip for this parameter value: the two clips around it mix, the others are 0
-	void BlendWeights(float value, std::vector<float>& outWeights) const;
+	bool IsBlend2D() const { return !blendParameterY.empty(); }
+	/// One weight per blend clip, summing to 1. 1D: the two clips around `value` mix, the others are 0.
+	/// 2D: gradient-band interpolation over the clip positions (a clip's own position = that clip alone).
+	void BlendWeights(float value, std::vector<float>& outWeights) const { BlendWeights(value, 0.0f, outWeights); }
+	void BlendWeights(float x, float y, std::vector<float>& outWeights) const;
 };
 
 struct AnimTransition {

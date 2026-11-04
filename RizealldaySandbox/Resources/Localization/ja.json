@@ -762,5 +762,7 @@
 	"Paste Copied Component": "コピーしたコンポーネントを貼り付け",
 	"Focus in Scene": "シーンでフォーカス",
 	"Open Prefab": "プレハブを開く",
-	"Rewind timeline cursor to 0.00 s": "タイムライン位置を 0.00 秒に戻す"
+	"Rewind timeline cursor to 0.00 s": "タイムライン位置を 0.00 秒に戻す",
+	"Parameter Y (2D)": "パラメーター Y (2D)",
+	"2D: e.g. moveX / moveY. Idle at (0, 0), forward (0, 1), back (0, -1), left (-1, 0), right (1, 0).": "2D: 例 moveX / moveY。待機 (0, 0)、前 (0, 1)、後ろ (0, -1)、左 (-1, 0)、右 (1, 0)。"
 }

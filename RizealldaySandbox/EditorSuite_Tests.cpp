@@ -4716,6 +4716,58 @@ TEST_CASE(Animation, BlendWeightsMixTheTwoNearestClips)
 	REQUIRE(loaded->states[0].blendClips.size() == 3);
 	CHECK(loaded->states[0].blendClips[2].clipName == "Run");
 	CHECK_NEAR(loaded->states[0].blendClips[2].threshold, 6.0f, 1e-5f);
+	CHECK(loaded->states[0].blendParameterY.empty());
+	CHECK(controller.ToJson().find("blendParameterY") == std::string::npos); // 1D files stay as they were
+}
+
+TEST_CASE(Animation, BlendWeights2DMixTheClipsAroundThePoint)
+{
+	AnimState state;
+	state.blendParameter = "moveX";
+	state.blendParameterY = "moveY";
+	// Idle in the centre, four directions around it (strafe set)
+	state.blendClips = { { "", "Idle", 0, 0.0f, 0.0f }, { "", "Forward", 0, 0.0f, 1.0f }, { "", "Back", 0, 0.0f, -1.0f },
+		{ "", "Left", 0, -1.0f, 0.0f }, { "", "Right", 0, 1.0f, 0.0f } };
+	std::vector<float> w;
+	const auto sum = [&] { float s = 0.0f; for (float v : w) s += v; return s; };
+
+	state.BlendWeights(0.0f, 0.0f, w);
+	CHECK_NEAR(w[0], 1.0f, 1e-5f);
+	state.BlendWeights(0.0f, 1.0f, w);
+	CHECK_NEAR(w[1], 1.0f, 1e-5f);
+	CHECK_NEAR(sum(), 1.0f, 1e-5f);
+	state.BlendWeights(-1.0f, 0.0f, w);
+	CHECK_NEAR(w[3], 1.0f, 1e-5f);
+
+	// Halfway forward: only Idle and Forward
+	state.BlendWeights(0.0f, 0.5f, w);
+	CHECK_NEAR(w[0], 0.5f, 1e-5f);
+	CHECK_NEAR(w[1], 0.5f, 1e-5f);
+	CHECK_NEAR(w[2] + w[3] + w[4], 0.0f, 1e-5f);
+
+	// Diagonal forward-right: Forward and Right share equally, Back and Left stay out
+	state.BlendWeights(0.7f, 0.7f, w);
+	CHECK_NEAR(sum(), 1.0f, 1e-5f);
+	CHECK_NEAR(w[1], w[4], 1e-5f);
+	CHECK(w[1] > 0.3f);
+	CHECK_NEAR(w[2] + w[3], 0.0f, 1e-5f);
+
+	// Far outside the set: still a valid mix
+	state.BlendWeights(5.0f, -5.0f, w);
+	CHECK_NEAR(sum(), 1.0f, 1e-5f);
+
+	AnimatorController controller;
+	AnimState& saved = controller.AddState("Strafe", { 0.0f, 0.0f });
+	saved.blendParameter = state.blendParameter;
+	saved.blendParameterY = state.blendParameterY;
+	saved.blendClips = state.blendClips;
+	const auto loaded = AnimatorController::FromJson(controller.ToJson());
+	REQUIRE(loaded.has_value());
+	REQUIRE(loaded->states.size() == 1);
+	CHECK(loaded->states[0].IsBlend2D());
+	CHECK(loaded->states[0].blendParameterY == "moveY");
+	REQUIRE(loaded->states[0].blendClips.size() == 5);
+	CHECK_NEAR(loaded->states[0].blendClips[2].thresholdY, -1.0f, 1e-5f);
 }
 
 TEST_CASE(Animation, BlendTreePoseLiesBetweenItsClips)
