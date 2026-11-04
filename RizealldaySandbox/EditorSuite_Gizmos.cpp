@@ -20,6 +20,29 @@ float EditorSuite::ProjectGizmoDrag(const ImVec2& mouseDelta, const ImVec2& scre
 	return along / (std::max)(length, 20.0f) * probeMeters;
 }
 
+float EditorSuite::GizmoSweepAngle(const ImVec2& center, const ImVec2& from, const ImVec2& to)
+{
+	const float ax = from.x - center.x, ay = center.y - from.y; // y up, so counter-clockwise on screen is positive
+	const float bx = to.x - center.x, by = center.y - to.y;
+	if ((ax == 0.0f && ay == 0.0f) || (bx == 0.0f && by == 0.0f)) return 0.0f;
+	return std::atan2(ax * by - ay * bx, ax * bx + ay * by); // signed angle between them, -pi..pi
+}
+
+Quaternion EditorSuite::RotateAboutAxis(const Quaternion& start, const Vector3& axis, float angle)
+{
+	return Quaternion::Normalize(Quaternion::Multiply(Quaternion::FromAxisAngle(axis, angle), start));
+}
+
+float EditorSuite::GizmoTurnAngle(const Vector3& center, const Vector3& worldAxis, bool snap) const
+{
+	// Left-handed space: looking along the axis (it points away from the camera), a counter-clockwise sweep is a positive turn
+	const Vector3 toCamera = editorCamera_.translation - center;
+	const float facing = (worldAxis.x * toCamera.x + worldAxis.y * toCamera.y + worldAxis.z * toCamera.z) >= 0.0f ? -1.0f : 1.0f;
+	float angle = gizmoRotateSweep_ * facing;
+	if (snap) angle = SnapValue(angle, gizmoRotateSnapDeg_ * (3.1415926535f / 180.0f));
+	return angle;
+}
+
 void EditorSuite::GetGizmoAxes(const GameObject& obj, Vector3& outAxisX, Vector3& outAxisY, Vector3& outAxisZ) const
 {
 	if (!gizmoLocalSpace_ && currentGizmo_ != GizmoType::Scale && currentGizmo_ != GizmoType::Bounds) {
@@ -325,6 +348,23 @@ void EditorSuite::DrawTransformGizmo(const ImVec2& vpPos, const ImVec2& vpSize)
 	ImGuiIO& io = ImGui::GetIO();
 	ImVec2 mousePos = io.MousePos;
 
+	// Rotate: one ring per axis, in the plane that axis is normal to (like Blender); the grabbed ring turns the object
+	const bool rotateMode = currentGizmo_ == GizmoType::Rotate;
+	std::vector<ImVec2> rings[3];
+	if (rotateMode) {
+		const float radius = axisLength / (std::max)({ lenX, lenY, lenZ, 1.0f }); // about axisLength pixels on screen
+		const Vector3 planes[3][2] = { { axisY, axisZ }, { axisZ, axisX }, { axisX, axisY } };
+		for (int a = 0; a < 3; ++a) {
+			for (int i = 0; i <= 64; ++i) {
+				const float t = 6.2831853f * static_cast<float>(i) / 64.0f;
+				const Vector3 p = selWorldPos + planes[a][0] * (std::cos(t) * radius) + planes[a][1] * (std::sin(t) * radius);
+				ImVec2 screen{};
+				float depth = 0.0f;
+				if (WorldToScreen(p, editorCamera_, vpPos, vpSize, screen, depth)) rings[a].push_back(screen);
+			}
+		}
+	}
+
 	auto DistToSegment = [](const ImVec2& p, const ImVec2& a, const ImVec2& b) -> float {
 		float l2 = (b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y);
 		if (l2 < 0.001f) return std::sqrt((p.x - a.x) * (p.x - a.x) + (p.y - a.y) * (p.y - a.y));
@@ -335,7 +375,18 @@ void EditorSuite::DrawTransformGizmo(const ImVec2& vpPos, const ImVec2& vpSize)
 
 	if (!isDraggingGizmo_) {
 		activeGizmoAxis_ = GizmoAxis::None;
-		if (DistToSegment(mousePos, originScreen, tipX) < 8.0f) activeGizmoAxis_ = GizmoAxis::X;
+		if (rotateMode) {
+			float nearest = 7.0f;
+			for (int a = 0; a < 3; ++a) {
+				for (size_t i = 1; i < rings[a].size(); ++i) {
+					const float d = DistToSegment(mousePos, rings[a][i - 1], rings[a][i]);
+					if (d < nearest) {
+						nearest = d;
+						activeGizmoAxis_ = a == 0 ? GizmoAxis::X : a == 1 ? GizmoAxis::Y : GizmoAxis::Z;
+					}
+				}
+			}
+		} else if (DistToSegment(mousePos, originScreen, tipX) < 8.0f) activeGizmoAxis_ = GizmoAxis::X;
 		else if (DistToSegment(mousePos, originScreen, tipY) < 8.0f) activeGizmoAxis_ = GizmoAxis::Y;
 		else if (DistToSegment(mousePos, originScreen, tipZ) < 8.0f) activeGizmoAxis_ = GizmoAxis::Z;
 
@@ -346,6 +397,9 @@ void EditorSuite::DrawTransformGizmo(const ImVec2& vpPos, const ImVec2& vpSize)
 			gizmoDragStartAxis_ = (activeGizmoAxis_ == GizmoAxis::X) ? rawDirX : (activeGizmoAxis_ == GizmoAxis::Y) ? rawDirY : rawDirZ;
 			gizmoStartTranslation_ = sel.translation;
 			gizmoStartRotation_ = sel.rotation;
+			gizmoStartRotationQuat_ = sel.rotationQuat;
+			gizmoRotatePrevMouse_ = mousePos;
+			gizmoRotateSweep_ = 0.0f;
 			gizmoStartScale_ = sel.scale;
 			gizmoStartLocalOffset_ = sel.localOffset;
 		}
@@ -389,14 +443,18 @@ void EditorSuite::DrawTransformGizmo(const ImVec2& vpPos, const ImVec2& vpSize)
 					sel.translation = gizmoStartTranslation_ + localDelta;
 				}
 			} else if (currentGizmo_ == GizmoType::Rotate) {
-				float angleRad = ((activeGizmoAxis_ == GizmoAxis::X) ? -mouseDelta.y : mouseDelta.x) * 0.015f;
-				if (snap) {
-					angleRad = SnapValue(angleRad, gizmoRotateSnapDeg_ * (3.1415926535f / 180.0f));
+				// The angle swept around the centre, added up frame by frame so turns past 180 degrees keep going
+				gizmoRotateSweep_ += GizmoSweepAngle(originScreen, gizmoRotatePrevMouse_, mousePos);
+				gizmoRotatePrevMouse_ = mousePos;
+				const float angleRad = GizmoTurnAngle(selWorldPos, activeWorldAxis, snap);
+				Vector3 axis = activeWorldAxis;
+				if (sel.parentId != -1) {
+					if (const GameObject* parentObj = FindGameObjectById(static_cast<uint32_t>(sel.parentId), false)) {
+						axis = TransformUtil::TransformDirection(axis, Mathematics::Inverse(parentObj->worldMatrix));
+					}
 				}
-				if (activeGizmoAxis_ == GizmoAxis::X) sel.rotation.x = gizmoStartRotation_.x + angleRad;
-				else if (activeGizmoAxis_ == GizmoAxis::Y) sel.rotation.y = gizmoStartRotation_.y + angleRad;
-				else if (activeGizmoAxis_ == GizmoAxis::Z) sel.rotation.z = gizmoStartRotation_.z + angleRad;
-				sel.rotationQuat = Quaternion::FromEuler(sel.rotation);
+				sel.rotationQuat = RotateAboutAxis(gizmoStartRotationQuat_, axis, angleRad);
+				sel.rotation = sel.rotationQuat.ToEuler();
 			} else if (currentGizmo_ == GizmoType::Scale || currentGizmo_ == GizmoType::Bounds) {
 				float delta = ProjectGizmoDrag(mouseDelta, activeRawDir, 1.0f);
 				if (snap) delta = SnapValue(delta, gizmoScaleSnap_);
@@ -412,6 +470,50 @@ void EditorSuite::DrawTransformGizmo(const ImVec2& vpPos, const ImVec2& vpSize)
 			isSceneDirty_ = true;
 			PushUndoSnapshot();
 		}
+	}
+
+	if (rotateMode) {
+		const ImU32 ringColors[3] = { IM_COL32(230, 50, 50, 255), IM_COL32(50, 220, 60, 255), IM_COL32(50, 110, 240, 255) };
+		const GizmoAxis ringAxes[3] = { GizmoAxis::X, GizmoAxis::Y, GizmoAxis::Z };
+		for (int a = 0; a < 3; ++a) {
+			if (rings[a].size() < 2) continue;
+			const bool active = activeGizmoAxis_ == ringAxes[a];
+			if (isDraggingGizmo_ && !active) continue; // like Blender: only the ring being turned while dragging
+			drawList->AddPolyline(rings[a].data(), static_cast<int>(rings[a].size()), active ? IM_COL32(255, 230, 50, 255) : ringColors[a], ImDrawFlags_None, active ? 3.0f : 2.0f);
+		}
+		if (isDraggingGizmo_ && activeGizmoAxis_ != GizmoAxis::None) {
+			// The swept slice: from where the drag began, around the centre, to the mouse, with an arrow for the direction
+			const ImVec2 from(gizmoDragStartMouse_.x - originScreen.x, gizmoDragStartMouse_.y - originScreen.y);
+			const float radius = (std::max)(std::sqrt(from.x * from.x + from.y * from.y), 24.0f);
+			const float startAngle = std::atan2(-from.y, from.x);
+			const float sweep = gizmoRotateSweep_;
+			const int segments = std::clamp(static_cast<int>(std::abs(sweep) * 24.0f), 2, 240);
+			std::vector<ImVec2> arc;
+			for (int i = 0; i <= segments; ++i) {
+				const float t = startAngle + sweep * static_cast<float>(i) / static_cast<float>(segments);
+				arc.push_back(ImVec2(originScreen.x + std::cos(t) * radius, originScreen.y - std::sin(t) * radius));
+			}
+			const ImU32 fill = IM_COL32(255, 230, 50, 55);
+			const ImU32 edge = IM_COL32(255, 230, 50, 230);
+			for (int i = 1; i <= segments; ++i) drawList->AddTriangleFilled(originScreen, arc[i - 1], arc[i], fill);
+			drawList->AddPolyline(arc.data(), static_cast<int>(arc.size()), edge, ImDrawFlags_None, 2.0f);
+			drawList->AddLine(originScreen, arc.front(), edge, 1.5f);
+			drawList->AddLine(originScreen, arc.back(), edge, 2.0f);
+			if (std::abs(sweep) > 0.02f) {
+				const float endAngle = startAngle + sweep;
+				const float turn = sweep > 0.0f ? 1.0f : -1.0f; // tangent of the arc in the turning direction
+				const ImVec2 tangent(-std::sin(endAngle) * turn, -std::cos(endAngle) * turn);
+				const ImVec2 normal(std::cos(endAngle), -std::sin(endAngle));
+				const ImVec2 tip = arc.back();
+				drawList->AddTriangleFilled(ImVec2(tip.x + tangent.x * 12.0f, tip.y + tangent.y * 12.0f),
+					ImVec2(tip.x + normal.x * 6.0f, tip.y + normal.y * 6.0f), ImVec2(tip.x - normal.x * 6.0f, tip.y - normal.y * 6.0f), edge);
+			}
+			const Vector3 worldAxis = activeGizmoAxis_ == GizmoAxis::X ? axisX : activeGizmoAxis_ == GizmoAxis::Y ? axisY : axisZ;
+			const std::string label = std::format("{:.1f}\u00B0", GizmoTurnAngle(selWorldPos, worldAxis, gizmoSnapEnabled_ || io.KeyCtrl) * (180.0f / 3.1415926535f));
+			drawList->AddText(ImVec2(mousePos.x + 16.0f, mousePos.y - 6.0f), IM_COL32(255, 255, 255, 255), label.c_str());
+		}
+		drawList->AddCircleFilled(originScreen, 3.0f, IM_COL32(255, 255, 255, 200));
+		return;
 	}
 
 	ImU32 colX = (activeGizmoAxis_ == GizmoAxis::X) ? IM_COL32(255, 230, 50, 255) : IM_COL32(230, 50, 50, 255);

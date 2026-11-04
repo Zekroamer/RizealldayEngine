@@ -521,6 +521,11 @@ public:
 	Vector3 GetWorldPositionOf(const GameObject& obj) const;
 	// Gizmo math, snapping, local/world axes, and camera framing (EditorSuite_Gizmos.cpp)
 	static float SnapValue(float value, float step);
+	/// Signed angle (radians) from `from` to `to` around `center` on screen; counter-clockwise is positive
+	static float GizmoSweepAngle(const ImVec2& center, const ImVec2& from, const ImVec2& to);
+	/// start turned by angle about axis (in the space start is expressed in)
+	static Quaternion RotateAboutAxis(const Quaternion& start, const Vector3& axis, float angle);
+	float GizmoTurnAngle(const Vector3& center, const Vector3& worldAxis, bool snap) const;
 	static float ProjectGizmoDrag(const ImVec2& mouseDelta, const ImVec2& screenAxisFromOrigin, float probeMeters = 1.0f);
 	void GetGizmoAxes(const GameObject& obj, Vector3& outAxisX, Vector3& outAxisY, Vector3& outAxisZ) const;
 	bool FocusSelectedObject();
@@ -1251,6 +1256,9 @@ private:
 	bool isDraggingGizmo_ = false;
 	ImVec2 gizmoDragStartMouse_{};
 	ImVec2 gizmoDragStartAxis_{}; // screen direction of the dragged axis when the drag began
+	Quaternion gizmoStartRotationQuat_ = Quaternion::Identity();
+	ImVec2 gizmoRotatePrevMouse_{};
+	float gizmoRotateSweep_ = 0.0f; // radians swept around the centre since the rotate drag began
 	Vector3 gizmoStartTranslation_{};
 	Vector3 gizmoStartRotation_{};
 	Vector3 gizmoStartScale_{};

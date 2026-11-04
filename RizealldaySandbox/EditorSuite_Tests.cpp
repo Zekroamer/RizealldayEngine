@@ -61,6 +61,7 @@ struct EditorSuiteTestAccess {
 	static uint32_t MusicVoice(const EditorSuite& s) { return s.musicVoice_; }
 	static int TimelineEvents(const EditorSuite& s) { return s.timelineEventsFired_; }
 	static Camera& EditorCam(EditorSuite& s) { return s.editorCamera_; }
+	static float& RotateSweep(EditorSuite& s) { return s.gizmoRotateSweep_; }
 	static int CulledObjects(const EditorSuite& s) { return s.lastCulledObjects_; }
 	static int IndexOf(EditorSuite& s, uint32_t id) { return s.FindGameObjectIndexById(id); }
 	static int Primary(const EditorSuite& s) { return s.selectedObjectIndex_; }
@@ -7498,6 +7499,37 @@ TEST_CASE(EditorUX, GizmoProjectionSnappingLocalAxesAndFocus)
 	CHECK(std::abs(EditorSuite::ProjectGizmoDrag(ImVec2(100.0f, 30.0f), ImVec2(50.0f, 0.0f), 1.0f) - 2.0f) < 1e-4f);
 	// If the camera faces the opposite side so +X projects to (-40, 0) pixels, dragging (+80, 0) moves -2.0 meters (never inverted!).
 	CHECK(std::abs(EditorSuite::ProjectGizmoDrag(ImVec2(80.0f, 0.0f), ImVec2(-40.0f, 0.0f), 1.0f) - (-2.0f)) < 1e-4f);
+	// Rotate ring: the sweep around the centre is counter-clockwise positive on screen (y grows downwards)
+	CHECK_NEAR(EditorSuite::GizmoSweepAngle(ImVec2(0.0f, 0.0f), ImVec2(10.0f, 0.0f), ImVec2(0.0f, -10.0f)), 1.5707963f, 1e-4f);
+	CHECK_NEAR(EditorSuite::GizmoSweepAngle(ImVec2(0.0f, 0.0f), ImVec2(10.0f, 0.0f), ImVec2(0.0f, 10.0f)), -1.5707963f, 1e-4f);
+	CHECK_NEAR(EditorSuite::GizmoSweepAngle(ImVec2(5.0f, 5.0f), ImVec2(4.0f, 15.0f), ImVec2(6.0f, 15.0f)), 0.1993f, 1e-3f); // across the -y seam
+	CHECK(EditorSuite::GizmoSweepAngle(ImVec2(0.0f, 0.0f), ImVec2(0.0f, 0.0f), ImVec2(5.0f, 5.0f)) == 0.0f); // on the centre: no turn
+	// The turn is about the given (parent space) axis: a direction lying on that axis stays where it was
+	{
+		const Quaternion start = Quaternion::FromAxisAngle({ 0.0f, 1.0f, 0.0f }, 1.5707963f);
+		const Quaternion turned = EditorSuite::RotateAboutAxis(start, { 1.0f, 0.0f, 0.0f }, 1.5707963f);
+		const Vector3 forward = TransformUtil::TransformDirection({ 0.0f, 0.0f, 1.0f }, start.ToRotationMatrix4x4());
+		const Vector3 forwardAfter = TransformUtil::TransformDirection({ 0.0f, 0.0f, 1.0f }, turned.ToRotationMatrix4x4());
+		CHECK(std::abs(std::abs(forward.x) - 1.0f) < 1e-4f); // the yaw put local +Z on the world X axis
+		CHECK_NEAR(forwardAfter.x, forward.x, 1e-4f);
+		CHECK_NEAR(forwardAfter.y, forward.y, 1e-4f);
+		CHECK_NEAR(forwardAfter.z, forward.z, 1e-4f);
+		CHECK_NEAR(EditorSuite::RotateAboutAxis(Quaternion::Identity(), { 0.0f, 1.0f, 0.0f }, 0.5f).ToEuler().y, 0.5f, 1e-4f);
+	}
+	// The object turns the way the mouse went: camera looking down +Z, a counter-clockwise sweep from the +X side to the top
+	// must carry local +X up the screen (world +Y). The engine is left-handed, so that is a positive turn about +Z.
+	{
+		A::EditorCam(s).translation = { 0.0f, 0.0f, -10.0f };
+		A::EditorCam(s).rotation = { 0.0f, 0.0f, 0.0f };
+		A::RotateSweep(s) = 1.5707963f;
+		for (const Vector3 axis : { Vector3{ 0.0f, 0.0f, 1.0f }, Vector3{ 0.0f, 0.0f, -1.0f } }) { // either end of the axis may face the camera
+			const float angle = s.GizmoTurnAngle({ 0.0f, 0.0f, 0.0f }, axis, false);
+			const Quaternion turned = EditorSuite::RotateAboutAxis(Quaternion::Identity(), axis, angle);
+			const Vector3 x = TransformUtil::TransformDirection({ 1.0f, 0.0f, 0.0f }, turned.ToRotationMatrix4x4());
+			CHECK_MSG(x.y > 0.99f, std::format("+X went to ({:.2f}, {:.2f}, {:.2f})", x.x, x.y, x.z));
+		}
+		A::RotateSweep(s) = 0.0f;
+	}
 	// An axis that points almost at the camera is a few pixels long: a 100 px drag must not throw the object tens of metres
 	CHECK(std::abs(EditorSuite::ProjectGizmoDrag(ImVec2(-100.0f, -75.0f), ImVec2(-4.0f, -3.0f), 1.0f)) <= 6.5f);
 	CHECK(EditorSuite::ProjectGizmoDrag(ImVec2(-100.0f, -75.0f), ImVec2(-4.0f, -3.0f), 1.0f) > 0.0f); // still the dragged way

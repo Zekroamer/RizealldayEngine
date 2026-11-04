@@ -4,6 +4,7 @@
 
 
 ### Perbaikan
+- Menyeret sumbu Z gizmo tidak lagi melempar objek jauh; Ctrl+Z / Delete saat mengetik di field tidak lagi mengubah scene; Ctrl+Shift+Z tidak lagi menjalankan Undo dan Redo sekaligus.
 - Duplicate (dan Ctrl+D yang sebelumnya tidak berfungsi) kini menyalin seluruh hierarki dan semua objek yang terpilih; sebelumnya anak-anak objek hilang dari salinan.
 - Joint di dalam prefab tetap tersambung pada setiap instance; mengganti nama file prefab tidak lagi memutus link.
 - Rotasi di Timeline berputar lewat jalur terpendek; event pada detik 0 kini terpanggil.
@@ -17,6 +18,10 @@
 - Override prefab kini per field: mengubah `lifetime` sebuah Trail atau satu sumbu skala hanya mengunci field itu, field lain tetap mengikuti prefab.
 
 ### Fitur Baru
+- **Gizmo rotasi ala Blender**: cincin per sumbu; saat diseret tampil juring arah putaran, panah, dan sudut dalam derajat.
+- **Gizmo**: mode Local/World, Snap (atau tahan Ctrl), F untuk fokus kamera ke objek terpilih.
+- **Override prefab**: garis biru di Inspector untuk field yang di-override, klik kanan > Revert Override.
+- **Timeline**: nilai key bisa diketik langsung.
 - **Prefab tertaut**: instance mengingat prefab-nya. Inspector punya Apply (simpan ke prefab, perbarui semua instance), Revert, dan Unlink; membuka scene mengambil perubahan prefab terbaru. Posisi, rotasi, dan parent tiap instance tetap. Perubahan yang dibuat pada satu instance menjadi override: tetap saat prefab berubah, terdaftar di Inspector, dan bisa di-Revert satu per satu. Id objek anak tetap sama setelah sinkron, jadi referensi script ke anak tidak putus.
 - **Multi-select**: Ctrl+klik di Hierarchy; Delete menghapus semua, gizmo pindah menggeser semua.
 - **Editor dalam bahasa Jepang lengkap**: semua panel Inspector, modal, dan pesan status kini ikut Options > Language.
