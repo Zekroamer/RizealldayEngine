@@ -2,6 +2,11 @@
 
 ## [Belum dirilis]
 
+## [2.4.3] — 2026-11-04
+
+### Perbaikan
+- `SetRotation`, `SetPosition`, dan `SetScale` tidak lagi menimpa perubahan `self->translation` / `rotation` / `scale` yang dibuat script di frame yang sama (player bisa berputar tapi tidak berpindah). Rebuild script project setelah update.
+
 ## [2.4.2] — 2026-11-04
 
 ### Perbaikan

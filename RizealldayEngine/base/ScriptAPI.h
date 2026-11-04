@@ -539,6 +539,20 @@ public:
 		return false;
 	}
 
+	/// The owner's transform as the script sees it: the view holds edits made this frame
+	/// (e.g. self->translation += ...) that the engine object does not have yet
+	bool ReadOwnTransform(ScriptTransformData& t) const {
+		if (!GetTransform(ownerId_, t)) return false;
+		if (gameObject_) {
+			const auto* view = reinterpret_cast<const ScriptGameObjectView*>(gameObject_);
+			t.translation = view->translation;
+			t.rotation = view->rotation;
+			t.rotationQuat = view->rotationQuat;
+			t.scale = view->scale;
+		}
+		return true;
+	}
+
 	Vector3 GetPosition() const {
 		if (gameObject_) {
 			const auto* view = reinterpret_cast<const ScriptGameObjectView*>(gameObject_);
@@ -556,7 +570,7 @@ public:
 			view->dirtyFromScript = true;
 		}
 		ScriptTransformData t{};
-		if (GetTransform(ownerId_, t)) {
+		if (ReadOwnTransform(t)) {
 			t.translation = pos;
 			SetTransform(ownerId_, t);
 		}
@@ -580,7 +594,7 @@ public:
 			view->dirtyFromScript = true;
 		}
 		ScriptTransformData t{};
-		if (GetTransform(ownerId_, t)) {
+		if (ReadOwnTransform(t)) {
 			t.rotation = euler;
 			t.rotationQuat = Quaternion::FromEuler(euler);
 			SetTransform(ownerId_, t);
@@ -604,7 +618,7 @@ public:
 			view->dirtyFromScript = true;
 		}
 		ScriptTransformData t{};
-		if (GetTransform(ownerId_, t)) {
+		if (ReadOwnTransform(t)) {
 			t.scale = s;
 			SetTransform(ownerId_, t);
 		}

@@ -1519,6 +1519,32 @@ TEST_CASE(Character, ScriptMoveCharacterUsesSceneColliders)
 	CHECK(!api.moveCharacter(api.hostContext, 999999u, motion, 0.3f, &result)); // unknown object
 }
 
+TEST_CASE(ScriptAPI, SetRotationKeepsPositionEditedThisFrame)
+{
+	struct Mover : ScriptBase {
+		void Initialize() override {}
+		void Update(float) override {}
+	};
+	GameObject& hero = s.CreateCube("Hero", { 0.0f, 0.5f, 0.0f });
+	const uint32_t heroId = hero.id;
+	s.RefreshAllScriptObjectViews();
+	Mover script;
+	script.SetEngineAPI(&A::Api(s));
+	script.SetOwner(A::ViewFor(s, heroId), heroId);
+
+	// A typical player script: move through the view, then face the direction
+	A::ViewFor(s, heroId)->translation.x += 2.0f; // GetOwner() is the editor type on this side of the DLL
+	script.SetRotation({ 0.0f, 1.0f, 0.0f });
+	CHECK_NEAR(A::ViewFor(s, heroId)->translation.x, 2.0f, 1e-6f);
+	CHECK_NEAR(s.FindGameObjectById(heroId, false)->translation.x, 2.0f, 1e-6f);
+	CHECK_NEAR(s.FindGameObjectById(heroId, false)->rotation.y, 1.0f, 1e-6f);
+
+	A::ViewFor(s, heroId)->rotation.y = 0.5f;
+	script.SetScale({ 2.0f, 2.0f, 2.0f });
+	CHECK_NEAR(s.FindGameObjectById(heroId, false)->rotation.y, 0.5f, 1e-6f);
+	CHECK_NEAR(s.FindGameObjectById(heroId, false)->scale.x, 2.0f, 1e-6f);
+}
+
 TEST_CASE(Navigation, GridPathAvoidsWallsAndSmooths)
 {
 	NavGrid grid;
