@@ -17,6 +17,7 @@ struct MeshData {
 	std::vector<uint32_t> indices;
 	uint32_t textureHandle = 0;
 	MaterialMaps maps; // PBR maps found in the model file
+	Vector4 baseColor = { 1.0f, 1.0f, 1.0f, 1.0f }; // material colour from the file (untextured meshes only), times Material::color
 	Microsoft::WRL::ComPtr<ID3D12Resource> vertexBuffer;
 	Microsoft::WRL::ComPtr<ID3D12Resource> indexBuffer;
 	D3D12_VERTEX_BUFFER_VIEW vbView{};
@@ -86,7 +87,10 @@ public:
 	static Model* CreatePlane();
 	static Model* CreateQuad();
 	
-	void Draw(ID3D12GraphicsCommandList* cmdList, uint32_t overrideTextureHandle = 0, const MaterialMaps* maps = nullptr, UINT instanceCount = 1);
+	/// `material`: the bound one (root param 0). Given and the model has mesh colours, each mesh rebinds a copy tinted by MeshData::baseColor.
+	void Draw(ID3D12GraphicsCommandList* cmdList, uint32_t overrideTextureHandle = 0, const MaterialMaps* maps = nullptr, UINT instanceCount = 1, const Material* material = nullptr);
+	/// True when some mesh has a non-white MeshData::baseColor
+	bool HasMeshColors() const { return hasMeshColors_; }
 	// Vertices only, nothing bound: depth passes
 	void DrawGeometry(ID3D12GraphicsCommandList* cmdList, UINT instanceCount = 1);
 	const std::vector<MeshData>& GetMeshes() const { return meshes_; }
@@ -174,6 +178,7 @@ private:
 	void ComputeGlobalTransforms(const LocalPose& pose, std::vector<Matrix4x4>& outGlobals, const std::vector<std::pair<int, Matrix4x4>>* overrides = nullptr) const;
 	mutable std::vector<FlatNode> flatNodes_;
 	bool lockRootMotion_ = false;
+	bool hasMeshColors_ = false;
 	Vector3 localMin_ = { -0.5f, -0.5f, -0.5f };
 	Vector3 localMax_ = {  0.5f,  0.5f,  0.5f };
 	bool hasValidBounds_ = false;

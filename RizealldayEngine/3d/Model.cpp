@@ -585,6 +585,15 @@ void Model::LoadAssimpModel(const std::string& filePath) {
             meshData.maps.normal = loadMap({ aiTextureType_NORMALS, aiTextureType_NORMAL_CAMERA }, true);
             meshData.maps.orm = loadMap({ aiTextureType_UNKNOWN, aiTextureType_METALNESS }, true);
             meshData.maps.emissive = loadMap({ aiTextureType_EMISSIVE, aiTextureType_EMISSION_COLOR }, false);
+            // Flat-colour assets (glTF baseColorFactor, FBX/OBJ diffuse). Textured meshes keep white: their diffuse colour is
+            // usually an exporter placeholder (0.8). Assimp's own fallback material is skipped too.
+            if (meshData.textureHandle == 0 && std::string(material->GetName().C_Str()) != AI_DEFAULT_MATERIAL_NAME) {
+                aiColor4D color(1.0f, 1.0f, 1.0f, 1.0f);
+                if (material->Get(AI_MATKEY_BASE_COLOR, color) == AI_SUCCESS || material->Get(AI_MATKEY_COLOR_DIFFUSE, color) == AI_SUCCESS) {
+                    meshData.baseColor = { color.r, color.g, color.b, color.a };
+                    hasMeshColors_ = hasMeshColors_ || color.r != 1.0f || color.g != 1.0f || color.b != 1.0f || color.a != 1.0f;
+                }
+            }
         }
         if (meshData.textureHandle == 0) {
             meshData.textureHandle = TextureManager::GetInstance()->GetDefaultWhiteTexture();
@@ -800,7 +809,7 @@ void Model::DrawGeometry(ID3D12GraphicsCommandList* cmdList, UINT instanceCount)
     }
 }
 
-void Model::Draw(ID3D12GraphicsCommandList* cmdList, uint32_t overrideTextureHandle, const MaterialMaps* maps, UINT instanceCount) {
+void Model::Draw(ID3D12GraphicsCommandList* cmdList, uint32_t overrideTextureHandle, const MaterialMaps* maps, UINT instanceCount, const Material* material) {
     if (!cmdList || !sDxCommon_ || sDxCommon_->IsDeviceLost()) {
         return;
     }
@@ -827,6 +836,13 @@ void Model::Draw(ID3D12GraphicsCommandList* cmdList, uint32_t overrideTextureHan
         cmdList->SetGraphicsRootDescriptorTable(7, textures->GetGPUHandle(normal));
         cmdList->SetGraphicsRootDescriptorTable(8, textures->GetGPUHandle(orm));
         cmdList->SetGraphicsRootDescriptorTable(9, textures->GetGPUHandle(emissive));
+        if (material && hasMeshColors_) {
+            Material tinted = *material;
+            tinted.color = { tinted.color.x * mesh.baseColor.x, tinted.color.y * mesh.baseColor.y, tinted.color.z * mesh.baseColor.z, tinted.color.w * mesh.baseColor.w };
+            const D3D12_GPU_VIRTUAL_ADDRESS address = sDxCommon_->UploadConstants(tinted);
+            if (address == 0) continue;
+            cmdList->SetGraphicsRootConstantBufferView(0, address);
+        }
         cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         cmdList->IASetVertexBuffers(0, 1, &mesh.vbView);
         cmdList->IASetIndexBuffer(&mesh.ibView);

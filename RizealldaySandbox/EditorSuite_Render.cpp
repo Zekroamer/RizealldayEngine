@@ -467,7 +467,7 @@ void EditorSuite::RenderScene3D(ID3D12GraphicsCommandList* cmdList, Camera& came
 		cmdList->SetGraphicsRootConstantBufferView(0, materialAddr);
 		cmdList->SetGraphicsRootShaderResourceView(14, instanceAddr);
 		Object3d::BindSceneData(cmdList, &camera);
-		group.first->GetModel()->Draw(cmdList, group.first->GetTextureHandle(), &group.first->GetMaterialMaps(), static_cast<UINT>(group.matrices.size()));
+		group.first->GetModel()->Draw(cmdList, group.first->GetTextureHandle(), &group.first->GetMaterialMaps(), static_cast<UINT>(group.matrices.size()), group.first->GetMaterial());
 	}
 	for (Object3d* single : singles) single->Draw(cmdList);
 

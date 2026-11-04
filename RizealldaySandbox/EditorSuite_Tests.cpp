@@ -3391,6 +3391,34 @@ TEST_CASE(Animator, ComponentDrivesModelOnGameTime)
 // Asset import (copy into the project without Explorer)
 // ===========================================================================
 
+TEST_CASE(Assets, FlatColourModelKeepsItsMaterialColours)
+{
+	// Low-poly packs colour their parts with material colours instead of textures
+	namespace fs = std::filesystem;
+	const fs::path dir = A::TempRoot() / "MeshColours";
+	std::error_code ec;
+	fs::create_directories(dir, ec);
+	auto write = [](const fs::path& p, const std::string& text) { std::ofstream(p, std::ios::binary) << text; };
+	write(dir / "two.mtl", "newmtl Red\nKd 1 0 0\nnewmtl Blue\nKd 0 0 1\n");
+	write(dir / "two.obj", "mtllib two.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nusemtl Red\nf 1 2 3\nusemtl Blue\nf 1 3 4\n");
+	write(dir / "plain.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+
+	const auto two = Model::CreatePreviewFromFile((dir / "two.obj").string());
+	REQUIRE(two != nullptr);
+	CHECK(two->HasMeshColors());
+	bool red = false, blue = false;
+	for (const MeshData& mesh : two->GetMeshes()) {
+		red = red || (mesh.baseColor.x == 1.0f && mesh.baseColor.z == 0.0f);
+		blue = blue || (mesh.baseColor.x == 0.0f && mesh.baseColor.z == 1.0f);
+	}
+	CHECK(red && blue);
+
+	// No material in the file = assimp's default material: stays white, so old models look the same
+	const auto plain = Model::CreatePreviewFromFile((dir / "plain.obj").string());
+	REQUIRE(plain != nullptr);
+	CHECK(!plain->HasMeshColors());
+}
+
 TEST_CASE(Assets, ImportFilesCompanionsAndFolders)
 {
 	namespace fs = std::filesystem;
