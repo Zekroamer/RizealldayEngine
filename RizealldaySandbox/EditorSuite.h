@@ -679,7 +679,9 @@ public:
 	void RetireScriptView(uint32_t id);
 	void ClearRetiredScriptViews();
 
-	void TriggerScriptBuild();
+	/// fullRebuild = MSBuild /t:Rebuild (needed when old object files were built against another ScriptAPI.h)
+	void TriggerScriptBuild(bool fullRebuild = false);
+	static std::wstring ScriptBuildCommandLine(const std::filesystem::path& msbuildExe, const std::filesystem::path& vcxproj, bool fullRebuild);
 	void PollScriptSourceWatcher(float deltaTime);
 	/// Recompiles the Object3d shaders from `dir`; the old pipeline stays when anything fails (logged)
 	bool ReloadShaders(const std::filesystem::path& dir);
@@ -1348,6 +1350,8 @@ private:
 	bool autoBuildScripts_ = true;
 	std::atomic<bool> isBuildingScripts_{ false };
 	std::atomic<bool> queuedScriptRebuild_{ false };
+	std::atomic<bool> queuedFullRebuild_{ false };
+	bool apiRebuildTried_ = false; // one automatic full rebuild per API mismatch, so a broken SDK cannot loop
 	std::atomic<int> lastScriptBuildStatus_{ 0 }; // 0: Idle/Ready, 1: Succeeded, 2: Failed
 	std::thread scriptBuildThread_;
 	std::mutex buildLogMutex_;

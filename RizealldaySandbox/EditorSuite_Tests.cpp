@@ -920,6 +920,16 @@ TEST_CASE(Update, HiddenProcessDoesNotWaitForHelpersItLeftRunning)
 	CHECK_MSG(seconds < 4.0, std::to_string(seconds) + " s: waited for the helper that still holds the pipe");
 }
 
+TEST_CASE(Scripts, BuildCommandCanRebuildEverything)
+{
+	const std::wstring normal = EditorSuite::ScriptBuildCommandLine(L"C:\\VS\\MSBuild.exe", L"D:\\Game\\GameScripts\\GameScripts.vcxproj", false);
+	const std::wstring full = EditorSuite::ScriptBuildCommandLine(L"C:\\VS\\MSBuild.exe", L"D:\\Game\\GameScripts\\GameScripts.vcxproj", true);
+	CHECK(normal.find(L" /t:Build ") != std::wstring::npos);
+	CHECK(full.find(L" /t:Rebuild ") != std::wstring::npos); // after an engine update: no object file of the old ScriptAPI.h survives
+	CHECK(full.find(L"/nodeReuse:false") != std::wstring::npos);
+	CHECK(full.find(L"\"D:\\Game\\GameScripts\\GameScripts.vcxproj\"") != std::wstring::npos);
+}
+
 TEST_CASE(Update, DetectsEnginePackageZip)
 {
 	namespace fs = std::filesystem;

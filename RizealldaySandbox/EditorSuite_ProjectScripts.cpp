@@ -192,7 +192,9 @@ void EditorSuite::SyncScriptModuleWithProject()
 	// A fresh clone has no Library/; a DLL from an older engine version is refused. Both just need a build.
 	if ((loadFailed || !fs::exists(wanted, ec)) && !isRunningTests_) { // self-tests never start MSBuild
 		LogMessage("[Scripts] Building the project's scripts (GameScripts.dll)...", 0);
-		TriggerScriptBuild();
+		const bool staleObjects = loadFailed && scriptModule_.LastLoadWasApiMismatch();
+		if (staleObjects) apiRebuildTried_ = true;
+		TriggerScriptBuild(staleObjects);
 	}
 }
 

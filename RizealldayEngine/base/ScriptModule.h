@@ -56,6 +56,8 @@ public:
 	bool IsLoaded() const { return dllHandle_ != nullptr; }
 	/// Why the startup load failed (empty when it succeeded or no DLL exists yet)
 	const std::string& GetLastLoadError() const { return lastLoadError_; }
+	/// The last LoadShadowCopy refused the DLL because it was built against another ScriptAPI.h (stale objects: rebuild all)
+	bool LastLoadWasApiMismatch() const { return lastLoadApiMismatch_; }
 	uint32_t GetReloadCount() const { return shadowGeneration_; }
 	const std::filesystem::path& GetDllSourcePath() const { return dllSourcePath_; }
 	const std::filesystem::path& GetActiveShadowPath() const { return activeShadowPath_; }
@@ -93,6 +95,7 @@ private:
 
 	std::vector<std::string> registeredNames_;
 	std::string lastLoadError_;
+	bool lastLoadApiMismatch_ = false;
 	std::filesystem::path dllSourcePath_;
 	std::filesystem::path dllPathOverride_;
 	std::filesystem::path activeShadowPath_;

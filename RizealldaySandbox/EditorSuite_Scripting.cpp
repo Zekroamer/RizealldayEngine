@@ -853,8 +853,16 @@ void EditorSuite::HotReloadScripts()
 	std::string reloadError;
 	if (!scriptModule_.LoadShadowCopy(&reloadError)) {
 		LogMessage(std::format("[Scripts] Hot reload failed: {}", reloadError), 2);
+		// Typical after an engine update: the SDK headers keep their old dates, so an incremental build reuses
+		// object files from the previous ScriptAPI.h. Rebuilding everything once fixes it.
+		if (scriptModule_.LastLoadWasApiMismatch() && !apiRebuildTried_ && !isRunningTests_) {
+			apiRebuildTried_ = true;
+			LogMessage("[Scripts] Rebuilding all scripts against this engine version...", 1);
+			TriggerScriptBuild(true);
+		}
 		return;
 	}
+	apiRebuildTried_ = false;
 
 	RefreshAllScriptObjectViews();
 

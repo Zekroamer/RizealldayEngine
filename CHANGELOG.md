@@ -2,6 +2,11 @@
 
 ## [Belum dirilis]
 
+## [2.5.2] — 2026-11-06
+
+### Perbaikan
+- Setelah update engine, script tidak lagi ditolak dengan "built against a different engine version". Editor sekarang otomatis menjalankan **Rebuild** penuh satu kali bila DLL ditolak karena versi API berbeda. Export game selalu memakai Rebuild. Penyebabnya: header SDK hasil update membawa tanggal lama, jadi build incremental memakai ulang file `.obj` dari versi sebelumnya.
+
 ## [2.5.1] — 2026-11-06
 
 ### Perbaikan

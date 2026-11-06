@@ -113,6 +113,7 @@ void ScriptModule::Unload() {
 }
 
 bool ScriptModule::LoadShadowCopy(std::string* outErrorMsg) {
+	lastLoadApiMismatch_ = false;
 	Unload();
 
 	dllSourcePath_ = ResolveDllPath();
@@ -172,6 +173,7 @@ bool ScriptModule::LoadShadowCopy(std::string* outErrorMsg) {
 	auto fnFingerprint = reinterpret_cast<FnGetApiFingerprint>(GetProcAddress(dllHandle_, "GameScripts_GetApiFingerprint"));
 	const uint32_t dllFingerprint = fnFingerprint ? fnFingerprint() : 0u;
 	if (dllFingerprint != ScriptApiFingerprint()) {
+		lastLoadApiMismatch_ = true;
 		if (outErrorMsg) {
 			*outErrorMsg = std::format("GameScripts.dll was built against a different engine version (API fingerprint {:08X}, engine {:08X}). "
 				"Rebuild the whole solution so the engine and the scripts match.", dllFingerprint, ScriptApiFingerprint());

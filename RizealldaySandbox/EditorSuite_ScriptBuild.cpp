@@ -281,10 +281,17 @@ std::string EditorSuite::ResolveMsBuildExe()
 	return msbuildFallbackPathBuf_;
 }
 
-void EditorSuite::TriggerScriptBuild()
+std::wstring EditorSuite::ScriptBuildCommandLine(const std::filesystem::path& msbuildExe, const std::filesystem::path& vcxproj, bool fullRebuild)
+{
+	return L"\"" + msbuildExe.wstring() + L"\" \"" + vcxproj.wstring() + L"\" /t:" + (fullRebuild ? L"Rebuild" : L"Build")
+		+ L" /p:Configuration=Development /p:Platform=x64 /v:minimal /nologo /nodeReuse:false";
+}
+
+void EditorSuite::TriggerScriptBuild(bool fullRebuild)
 {
 	if (isBuildingScripts_.load()) {
 		queuedScriptRebuild_.store(true);
+		if (fullRebuild) queuedFullRebuild_.store(true);
 		LogMessage("[Scripts] Build already in progress; queued another rebuild when it finishes.", 0);
 		return;
 	}
@@ -310,9 +317,10 @@ void EditorSuite::TriggerScriptBuild()
 
 	isBuildingScripts_.store(true);
 	queuedScriptRebuild_.store(false);
-	LogMessage("[Scripts] Building GameScripts.vcxproj (Development|x64)...", 0);
+	LogMessage(fullRebuild ? "[Scripts] Rebuilding all of GameScripts.vcxproj (Development|x64)..." : "[Scripts] Building GameScripts.vcxproj (Development|x64)...", 0);
 
-	scriptBuildThread_ = std::thread([this, msbuildExe, vcxprojPath]() {
+	scriptBuildThread_ = std::thread([this, msbuildExe, vcxprojPath, fullRebuild]() {
+		bool full = fullRebuild;
 		bool runAgain = true;
 		while (runAgain) {
 			runAgain = false;
@@ -338,8 +346,7 @@ void EditorSuite::TriggerScriptBuild()
 			si.hStdError = wPipe;
 
 			PROCESS_INFORMATION pi{};
-			std::wstring cmdLine = L"\"" + std::filesystem::path(msbuildExe).wstring() + L"\" \""
-				+ vcxprojPath.wstring() + L"\" /t:Build /p:Configuration=Development /p:Platform=x64 /v:minimal /nologo";
+			std::wstring cmdLine = ScriptBuildCommandLine(msbuildExe, vcxprojPath, full);
 			std::vector<wchar_t> cmdBuf(cmdLine.begin(), cmdLine.end());
 			cmdBuf.push_back(L'\0');
 
@@ -423,6 +430,7 @@ void EditorSuite::TriggerScriptBuild()
 
 			if (queuedScriptRebuild_.exchange(false)) {
 				runAgain = true;
+				full = queuedFullRebuild_.exchange(false);
 			}
 		}
 

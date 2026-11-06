@@ -659,7 +659,8 @@ bool EditorSuite::BuildScriptsForExport(std::filesystem::path& outDll)
 	const fs::path output = vcxproj.parent_path().parent_path() / (ProjectScriptsDir().empty() ? "bin" : "Library") / "ScriptsExport";
 	fs::create_directories(output, ec);
 	const std::wstring outText = output.wstring();
-	const std::wstring cmd = L"\"" + fs::path(msbuild).wstring() + L"\" \"" + vcxproj.wstring() + L"\" /t:Build /p:Configuration=Release /p:Platform=x64"
+	// Rebuild: object files left from an older engine SDK would give a DLL the game refuses (API fingerprint)
+	const std::wstring cmd = L"\"" + fs::path(msbuild).wstring() + L"\" \"" + vcxproj.wstring() + L"\" /t:Rebuild /p:Configuration=Release /p:Platform=x64"
 		L" \"/p:OutDir=" + outText + L"\\\\\" \"/p:IntDir=" + outText + L"\\obj\\\\\" /m /v:minimal /nologo";
 	LogMessage("[Build] Compiling the scripts (Release)...", 0);
 	std::string log;
