@@ -462,29 +462,25 @@ void EditorSuite::DrawHierarchyPanel()
 
 		if (isEditingSceneName_) {
 			ImGui::SetNextItemWidth(-1.0f);
-			if (ImGui::InputText("##EditSceneName", sceneNameEditBuf_, sizeof(sceneNameEditBuf_), ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
-				currentSceneName_ = sceneNameEditBuf_;
-				isEditingSceneName_ = false;
-				isSceneDirty_ = true;
-				PushUndoSnapshot();
-			}
-			if (ImGui::IsItemDeactivatedAfterEdit()) {
-				currentSceneName_ = sceneNameEditBuf_;
-				isEditingSceneName_ = false;
-				isSceneDirty_ = true;
-				PushUndoSnapshot();
-			}
+			if (focusSceneNameEdit_) { ImGui::SetKeyboardFocusHere(); focusSceneNameEdit_ = false; } // typing right away must not trigger tool shortcuts
+			const bool entered = ImGui::InputText("##EditSceneName", sceneNameEditBuf_, sizeof(sceneNameEditBuf_), ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+			// Renames the scene file too, so Ctrl+S keeps the new name (a refused name keeps the old one and logs why)
+			if (entered || ImGui::IsItemDeactivatedAfterEdit()) RenameCurrentScene(sceneNameEditBuf_);
+			if (entered || ImGui::IsItemDeactivated()) isEditingSceneName_ = false;
 		} else {
-			bool nodeOpen = ImGui::TreeNodeEx("##SceneTreeHeader", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_SpanAvailWidth, "%s", sceneLabel.c_str());
+			// OpenOnArrow: the double-click that starts a rename must not also collapse the scene
+			bool nodeOpen = ImGui::TreeNodeEx("##SceneTreeHeader", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow, "%s", sceneLabel.c_str());
 
 			if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
 				isEditingSceneName_ = true;
+				focusSceneNameEdit_ = true;
 				strncpy_s(sceneNameEditBuf_, currentSceneName_.c_str(), sizeof(sceneNameEditBuf_) - 1);
 			}
 
 			if (ImGui::BeginPopupContextItem("SceneHeaderContext")) {
 				if (ImGui::MenuItem(TrId("Rename Scene"))) {
 					isEditingSceneName_ = true;
+					focusSceneNameEdit_ = true;
 					strncpy_s(sceneNameEditBuf_, currentSceneName_.c_str(), sizeof(sceneNameEditBuf_) - 1);
 				}
 				if (ImGui::MenuItem(TrId("Save Scene"), "Ctrl+S")) {

@@ -862,6 +862,48 @@ bool EditorSuite::SaveScene(const std::string& filePath)
 	return true;
 }
 
+bool EditorSuite::RenameCurrentScene(const std::string& newName)
+{
+	namespace fs = std::filesystem;
+	const size_t first = newName.find_first_not_of(" \t");
+	const std::string name = first == std::string::npos ? std::string() : newName.substr(first, newName.find_last_not_of(" \t") - first + 1);
+	if (name.empty() || name.find_first_of("\\/:*?\"<>|") != std::string::npos) {
+		LogMessage(std::format("[Scene] '{}' cannot be used as a scene name (empty, or contains \\ / : * ? \" < > |).", newName), 1);
+		return false;
+	}
+	if (name == currentSceneName_) return true;
+	if (sceneState_ != EditorSceneState::Edit || prefabMode_.active) {
+		LogMessage("[Scene] Stop Play mode and close Prefab Mode before renaming the scene.", 1);
+		return false;
+	}
+
+	// The scene name is its file name: SaveScene writes currentScenePath_ and reads the name back from it
+	const fs::path oldPath = currentScenePath_.empty() ? GetScenesDirectory() / (currentSceneName_ + ".scene.json") : fs::path(currentScenePath_);
+	const fs::path newPath = oldPath.parent_path() / (name + ".scene.json");
+	std::error_code ec;
+	if (fs::exists(newPath, ec)) {
+		LogMessage(std::format("[Scene] A scene named '{}' already exists in {}.", name, newPath.parent_path().string()), 1);
+		return false;
+	}
+	if (fs::exists(oldPath, ec)) {
+		if (!AssetDb().ToAssetPath(oldPath.string()).empty()) {
+			if (!MoveAssetAndUpdateReferences(oldPath.string(), newPath.string())) return false; // moves the .meta too, logs why it failed
+		} else {
+			// A scene outside a project's Assets folder: no GUID to keep, a plain rename
+			fs::rename(oldPath, newPath, ec);
+			if (ec) {
+				LogMessage(std::format("[Scene] Could not rename '{}': {}", oldPath.string(), ec.message()), 2);
+				return false;
+			}
+		}
+	}
+	currentScenePath_ = newPath.string();
+	strncpy_s(openScenePathBuf_, currentScenePath_.c_str(), sizeof(openScenePathBuf_) - 1);
+	currentSceneName_ = name;
+	LogMessage(std::format("[Scene] Renamed the scene to '{}'.", name), 0);
+	return true;
+}
+
 bool EditorSuite::LoadScene(const std::string& filePath)
 {
 	ClosePrefabMode();

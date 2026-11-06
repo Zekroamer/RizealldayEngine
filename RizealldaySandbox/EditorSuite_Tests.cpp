@@ -2898,6 +2898,48 @@ TEST_CASE(Assets, DuplicateMetaGetsNewGuid)
 	CHECK(copy != original);
 }
 
+TEST_CASE(Assets, RenamingTheSceneRenamesItsFileAndSurvivesSave)
+{
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "SceneRenameProject";
+	A::ProjectRoot(s) = root;
+	fs::create_directories(root / "Assets/Scenes");
+	const fs::path level1 = root / "Assets/Scenes/Level1.scene.json";
+	REQUIRE(s.SaveScene(level1.string()));
+	s.AssetDb().Refresh();
+	REQUIRE(fs::exists(root / "Assets/Scenes/Level1.scene.json.meta"));
+
+	// Hierarchy > Rename Scene, then Ctrl+S (SaveScene(currentScenePath_)): the new name sticks
+	REQUIRE(s.RenameCurrentScene("Boss Arena"));
+	CHECK(A::SceneName(s) == "Boss Arena");
+	CHECK(fs::exists(root / "Assets/Scenes/Boss Arena.scene.json"));
+	CHECK(fs::exists(root / "Assets/Scenes/Boss Arena.scene.json.meta")); // the GUID moves with it
+	CHECK(!fs::exists(level1));
+	REQUIRE(s.SaveScene(A::ScenePath(s)));
+	CHECK(A::SceneName(s) == "Boss Arena");
+	CHECK(fs::path(A::ScenePath(s)).filename() == "Boss Arena.scene.json");
+	CHECK(!fs::exists(level1));
+
+	// Refused: an existing scene's name, characters a file name cannot hold, an empty name
+	std::ofstream(root / "Assets/Scenes/Other.scene.json") << "{}";
+	CHECK(!s.RenameCurrentScene("Other"));
+	CHECK(!s.RenameCurrentScene("a/b"));
+	CHECK(!s.RenameCurrentScene("   "));
+	CHECK(A::SceneName(s) == "Boss Arena");
+	CHECK(fs::exists(root / "Assets/Scenes/Boss Arena.scene.json"));
+
+	// Renaming the open scene in the Project panel updates the Hierarchy header too
+	REQUIRE(s.MoveAssetAndUpdateReferences("Assets/Scenes/Boss Arena.scene.json", "Assets/Scenes/Final.scene.json"));
+	CHECK(A::SceneName(s) == "Final");
+
+	// A scene never saved has no file yet: the name only decides where Ctrl+S writes
+	s.NewScene();
+	REQUIRE(s.RenameCurrentScene("Fresh"));
+	CHECK(fs::path(A::ScenePath(s)).filename() == "Fresh.scene.json");
+	REQUIRE(s.SaveScene(A::ScenePath(s)));
+	CHECK(A::SceneName(s) == "Fresh");
+}
+
 TEST_CASE(Assets, GuidSurvivesRenameAndFolderMove)
 {
 	const std::filesystem::path root = A::TempRoot() / "AssetMoveProject";

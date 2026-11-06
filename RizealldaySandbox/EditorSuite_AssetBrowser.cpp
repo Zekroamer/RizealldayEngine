@@ -151,6 +151,7 @@ int EditorSuite::RepointAssetReferences(const std::string& from, const std::stri
 	if (repoint(currentScenePath_, moved)) {
 		currentScenePath_ = db.ToAbsolute(moved).string();
 		strncpy_s(openScenePathBuf_, currentScenePath_.c_str(), sizeof(openScenePathBuf_) - 1);
+		if (!prefabMode_.active) currentSceneName_ = SceneNameFromPath(currentScenePath_); // renamed in the Project panel: the Hierarchy header follows
 	}
 	if (repoint(buildStartupSceneBuf_, moved)) {
 		strncpy_s(buildStartupSceneBuf_, db.ToAbsolute(moved).string().c_str(), sizeof(buildStartupSceneBuf_) - 1);

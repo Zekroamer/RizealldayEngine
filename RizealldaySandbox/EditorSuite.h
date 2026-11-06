@@ -731,6 +731,8 @@ public:
 	void WriteSceneSettingsJson(void* outJson) const;
 	void ReadSceneSettingsJson(const void* json);
 	bool SaveScene(const std::string& filePath);
+	/// Hierarchy rename: renames the scene file (with its .meta) so Ctrl+S keeps the new name; an unsaved scene only changes where it will be saved
+	bool RenameCurrentScene(const std::string& newName);
 	bool LoadScene(const std::string& filePath);
 	void NewScene();
 	void DiscardUnsavedChanges();
@@ -1146,6 +1148,7 @@ private:
 	std::string currentScenePath_ = "Assets/Scenes/SampleScene.scene.json";
 	bool isSceneDirty_ = false;
 	bool isEditingSceneName_ = false;
+	bool focusSceneNameEdit_ = false; // the rename field takes the keyboard on its first frame
 	char sceneNameEditBuf_[128] = "SampleScene";
 
 	// Scene Modals
