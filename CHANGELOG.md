@@ -2,6 +2,8 @@
 
 ## [Belum dirilis]
 
+## [2.5.3] — 2026-11-07
+
 ### Perbaikan
 - Mengganti nama scene di Hierarchy lalu Ctrl+S tidak lagi mengembalikan nama lama: file scene (beserta `.meta`) ikut diganti namanya. Kotak nama langsung bisa diketik (huruf tidak lagi memicu shortcut tool), dan double-click tidak lagi menutup daftar objek.
 
