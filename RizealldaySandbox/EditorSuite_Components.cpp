@@ -437,6 +437,8 @@ bool EditorSuite::PasteComponent(GameObject& obj, const std::string& name)
 		obj.fov = scratch.fov;
 		obj.nearClip = scratch.nearClip;
 		obj.farClip = scratch.farClip;
+		obj.isOrthographic = scratch.isOrthographic;
+		obj.orthoSize = scratch.orthoSize;
 	} else if (targetName == "Light") {
 		obj.hasLight = true;
 		obj.lightColor = scratch.lightColor;

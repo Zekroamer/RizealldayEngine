@@ -1,5 +1,6 @@
 ﻿#pragma once
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -39,6 +40,11 @@ namespace EngineUpdate {
 
 	/// Runs a hidden console program (tar, git) and returns its exit code; -1 = it could not be started
 	int RunHiddenProcess(std::wstring cmdLine, const std::filesystem::path& workDir, std::string* output);
+
+	/// Reads a child's output pipe until the child exits (then drains what is left). Does not wait for the pipe
+	/// to close: helpers a build leaves running (mspdbsrv.exe, vctip.exe) inherit it and keep it open for hours.
+	/// `pipe` / `process` are Win32 HANDLEs.
+	void ReadOutputUntilExit(void* pipe, void* process, const std::function<void(const char* data, size_t size)>& sink);
 
 	/// Value after `name` on the command line, "" when missing (handles quoted paths)
 	std::wstring CommandLineValue(const std::wstring& name);

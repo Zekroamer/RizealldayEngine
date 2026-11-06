@@ -2,6 +2,14 @@
 
 ## [Belum dirilis]
 
+## [2.5.1] — 2026-11-06
+
+### Perbaikan
+- Build script tidak lagi tertahan di "Status: Compiling..." selamanya. Penyebabnya: program bantu Visual Studio (`mspdbsrv.exe`, `vctip.exe`) masih hidup setelah build selesai dan memegang output build. Akibatnya script baru tidak pernah di-load dan player tidak bergerak. Editor sekarang berhenti membaca output begitu MSBuild selesai (juga untuk export game dan git).
+
+### Perbaikan
+- Paste Component pada Camera kini ikut menyalin Orthographic dan Size; gizmo kamera orthographic digambar sebagai kotak seukuran area yang terlihat.
+
 ## [2.5.0] — 2026-11-05
 
 ### Fitur Baru

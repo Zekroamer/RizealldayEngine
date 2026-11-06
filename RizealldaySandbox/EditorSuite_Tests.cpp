@@ -908,6 +908,18 @@ TEST_CASE(Update, ApplyReplacesOnlyEngineFolders)
 	}
 }
 
+TEST_CASE(Update, HiddenProcessDoesNotWaitForHelpersItLeftRunning)
+{
+	// Like MSBuild leaving mspdbsrv.exe behind: cmd exits at once, but `start /b` gives ping the inherited output pipe
+	const auto start = std::chrono::steady_clock::now();
+	std::string output;
+	const int code = EngineUpdate::RunHiddenProcess(L"cmd.exe /c \"start /b ping -n 8 127.0.0.1 >nul & echo done\"", {}, &output);
+	const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+	CHECK(code == 0);
+	CHECK_MSG(output.find("done") != std::string::npos, output);
+	CHECK_MSG(seconds < 4.0, std::to_string(seconds) + " s: waited for the helper that still holds the pipe");
+}
+
 TEST_CASE(Update, DetectsEnginePackageZip)
 {
 	namespace fs = std::filesystem;
@@ -1266,6 +1278,16 @@ TEST_CASE(Render, OrthographicCameraKeepsSizeAndMouseRay)
 	REQUIRE(loaded != nullptr);
 	CHECK(loaded->isOrthographic);
 	CHECK_NEAR(loaded->orthoSize, 7.5f, 1e-6f);
+
+	// Copy / paste of the Camera component keeps the projection
+	const uint32_t otherId = s.CreateCube("Other Camera", { 5.0f, 10.0f, 0.0f }).id;
+	REQUIRE(s.CopyComponent(*s.FindGameObjectById(camId, false), "Camera"));
+	GameObject* other = s.FindGameObjectById(otherId, false);
+	REQUIRE(other != nullptr);
+	REQUIRE(s.PasteComponent(*other, "Camera"));
+	CHECK(other->hasCamera);
+	CHECK(other->isOrthographic);
+	CHECK_NEAR(other->orthoSize, 7.5f, 1e-6f);
 }
 
 TEST_CASE(Scripting, TimeScaleScalesGameTime)

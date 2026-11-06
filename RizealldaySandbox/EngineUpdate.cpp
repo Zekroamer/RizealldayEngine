@@ -61,6 +61,25 @@ std::wstring CommandLineValue(const std::wstring& name)
 	return ArgValue(name);
 }
 
+void ReadOutputUntilExit(void* pipe, void* process, const std::function<void(const char* data, size_t size)>& sink)
+{
+	char buf[4096];
+	bool exited = false;
+	for (;;) {
+		DWORD available = 0;
+		if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr)) break; // every writer closed it
+		if (available > 0) {
+			DWORD read = 0;
+			if (!ReadFile(pipe, buf, (std::min)(available, static_cast<DWORD>(sizeof(buf))), &read, nullptr) || read == 0) break;
+			sink(buf, read);
+			continue;
+		}
+		if (exited) break; // the child is gone and its output is drained
+		exited = WaitForSingleObject(process, 20) == WAIT_OBJECT_0;
+	}
+	WaitForSingleObject(process, INFINITE);
+}
+
 int RunHiddenProcess(std::wstring cmdLine, const fs::path& workDir, std::string* output)
 {
 	SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
@@ -82,12 +101,9 @@ int RunHiddenProcess(std::wstring cmdLine, const fs::path& workDir, std::string*
 		CloseHandle(readPipe);
 		return -1;
 	}
-	char buf[4096];
-	DWORD read = 0;
-	while (ReadFile(readPipe, buf, sizeof(buf), &read, nullptr) && read > 0) {
-		if (output) output->append(buf, read);
-	}
-	WaitForSingleObject(pi.hProcess, INFINITE);
+	ReadOutputUntilExit(readPipe, pi.hProcess, [output](const char* data, size_t size) {
+		if (output) output->append(data, size);
+	});
 	DWORD code = 1;
 	GetExitCodeProcess(pi.hProcess, &code);
 	CloseHandle(pi.hProcess);

@@ -1,4 +1,5 @@
 ﻿#include "EditorSuiteInternal.h"
+#include "EngineUpdate.h"
 
 namespace {
 	// Generated scripts start with a UTF-8 BOM (project rule), so Japanese comments read correctly in every tool
@@ -367,8 +368,6 @@ void EditorSuite::TriggerScriptBuild()
 			}
 
 			std::string pendingText;
-			char buffer[1024];
-			DWORD bytesRead = 0;
 			auto pushOutputLine = [this](std::string line) {
 				while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
 					line.pop_back();
@@ -386,16 +385,17 @@ void EditorSuite::TriggerScriptBuild()
 				pendingBuildLogs_.push_back({ "[MSBuild] " + line, logType });
 			};
 
-			while (ReadFile(rPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
-				buffer[bytesRead] = '\0';
-				pendingText.append(buffer, bytesRead);
+			// Not "read until EOF": mspdbsrv.exe / vctip.exe outlive MSBuild with the pipe inherited, so EOF may never
+			// come and the editor would show "Compiling..." forever
+			EngineUpdate::ReadOutputUntilExit(rPipe, pi.hProcess, [&](const char* data, size_t size) {
+				pendingText.append(data, size);
 				size_t newlinePos = 0;
 				while ((newlinePos = pendingText.find('\n')) != std::string::npos) {
 					std::string line = pendingText.substr(0, newlinePos);
 					pendingText.erase(0, newlinePos + 1);
 					pushOutputLine(std::move(line));
 				}
-			}
+			});
 			if (!pendingText.empty()) {
 				pushOutputLine(std::move(pendingText));
 			}

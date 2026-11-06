@@ -652,7 +652,8 @@ void EditorSuite::DrawCameraFrustum(const ImVec2& vpPos, const ImVec2& vpSize, c
 	Vector3 up = { 0.0f, 1.0f, 0.0f };
 
 	float dist = 4.0f;
-	float halfH = dist * std::tan(camObj.fov * 0.5f * 3.14159265f / 180.0f);
+	// Orthographic: a box as wide as the visible area; perspective: a pyramid from the lens
+	float halfH = camObj.isOrthographic ? camObj.orthoSize : dist * std::tan(camObj.fov * 0.5f * 3.14159265f / 180.0f);
 	float halfW = halfH * (16.0f / 9.0f);
 
 	Vector3 center = camWorldPos + (forward * dist);
@@ -666,7 +667,10 @@ void EditorSuite::DrawCameraFrustum(const ImVec2& vpPos, const ImVec2& vpSize, c
 	ImVec2 sc[4]; float sd[4];
 	for (int i = 0; i < 4; ++i) {
 		if (WorldToScreen(fCorners[i], editorCamera_, vpPos, vpSize, sc[i], sd[i])) {
-			drawList->AddLine(camPos, sc[i], IM_COL32(240, 240, 240, 160), 1.0f);
+			ImVec2 from = camPos;
+			float fromDepth = 0.0f;
+			if (camObj.isOrthographic && !WorldToScreen(fCorners[i] - (forward * dist), editorCamera_, vpPos, vpSize, from, fromDepth)) continue;
+			drawList->AddLine(from, sc[i], IM_COL32(240, 240, 240, 160), 1.0f);
 		}
 	}
 	for (int i = 0; i < 4; ++i) {
