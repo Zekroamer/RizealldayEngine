@@ -36,6 +36,7 @@ struct ComponentField {
 	float minValue = 0.0f; // Float / Int drag limits (min == max: unlimited)
 	float maxValue = 0.0f;
 	const char* tooltip = nullptr;
+	bool hidden = false;   // saved and reachable from scripts, but the Inspector leaves it to drawExtra
 };
 
 #define RIZE_FIELD(Type, member, fieldType, minV, maxV) \

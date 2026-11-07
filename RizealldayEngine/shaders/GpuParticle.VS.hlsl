@@ -33,6 +33,7 @@ GpuParticleVSOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_Insta
     {
         output.position = float4(0.0f, 0.0f, 0.0f, 0.0f); // clipped
         output.color = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        output.data = float4(0.0f, 0.0f, 0.0f, 0.0f);
         return output;
     }
     const float t = p.age / p.life;
@@ -61,5 +62,8 @@ GpuParticleVSOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_Insta
     const float3 world = p.position + (across * corner.x + along * (corner.y * stretchLength)) * size * 0.5f;
     output.position = mul(float4(world, 1.0f), gViewProjection);
     output.color = Key(t, gColorStart, gColorMiddle, gColorEnd);
+    // A new random number each time the slot is reused: its life is drawn at random on every spawn
+    const float random = frac(sin(p.life * 12.9898f + instanceId * 78.233f) * 43758.5453f);
+    output.data = float4(t, random, sqrt(dot(p.velocity, p.velocity)), 0.0f);
     return output;
 }

@@ -10,6 +10,8 @@
 #include "VfxComponents.h"
 #include "PostLooks.h"
 #include "EffectTiming.h"
+#include "NodeGraph.h"
+#include "GraphEditorModel.h"
 #include "Timeline.h"
 #include "Terrain.h"
 #include "3d/Camera.h"
@@ -292,6 +294,19 @@ struct GameObject {
 	bool isGrounded = false;
 };
 
+/// A material graph file turned into a particle pixel shader (EditorSuite::GetEffectMaterial)
+struct EffectMaterialEntry {
+	bool ok = false;                     // compiled: particles using it draw with it
+	uint64_t key = 0;                    // GpuParticles material key
+	std::vector<uint32_t> textureHandles; // per texture slot; 0 = the emitter's own texture
+	std::vector<GraphError> errors;      // why it is not ok (shown on the nodes in the graph editor)
+	std::string body;                    // the generated HLSL (trails build their own pipeline from it on first use)
+	std::vector<GraphParameter> parameters; // particle graphs: their parameters, in slot order
+	bool loaded = false;
+	std::filesystem::file_time_type writeTime{};
+	double lastCheck = -1.0;
+};
+
 class EditorSuite : public IScriptHost
 {
 public:
@@ -419,7 +434,12 @@ public:
 	void UpdateEffectPreview(float realDeltaTime);
 	void SetEffectPreviewMotion(EffectPreviewMotion motion, float radius, float cyclesPerSecond);
 	void DrawEffectEditorWindow();
-	void DrawEffects(ID3D12GraphicsCommandList* cmdList, const Camera& camera, RenderTexture& target);
+	/// Trails and GPU particles; onlyEffectRoot != 0 draws just that effect's layers (the Effect Editor's preview panel)
+	void DrawEffects(ID3D12GraphicsCommandList* cmdList, const Camera& camera, RenderTexture& target, uint32_t onlyEffectRoot = 0);
+	/// The Effect Editor shows the effect it previews in its own panel (shares the asset preview target, which a model
+	/// preview or the Material Graph's preview take first)
+	bool EffectPanelPreviewActive() const;
+	void RenderEffectPreview(ID3D12GraphicsCommandList* cmdList);
 	/// Decals, then the objects RenderScene3D held back (decalExcluded_). Call right after RenderScene3D.
 	void DrawDecals(ID3D12GraphicsCommandList* cmdList, const Camera& camera, RenderTexture& target);
 	/// Moving things (Rigidbody, skinned models) are drawn after the decals, so a mark on the floor never paints a character
@@ -627,6 +647,35 @@ public:
 	void ResetPrefabPools();
 	size_t GetPooledCount(const std::string& prefabName) const;
 	PostProcessSettings& PostSettings() { return postSettings_; }
+	/// The material graph at an "Assets/..." path, built and cached; rechecked when the file changes. nullptr for "".
+	const EffectMaterialEntry* GetEffectMaterial(const std::string& assetPath);
+	/// A particle graph (.vfxparticle.json) built into a compute shader, checked again twice a second like materials
+	const EffectMaterialEntry* GetParticleGraph(const std::string& assetPath);
+	/// A script's value for one parameter of the object's particle graph (until Stop / scene load). False when the
+	/// object has no GPU Particles with a graph that has this parameter.
+	bool SetEffectParameter(uint32_t objectId, const std::string& name, const Vector4& value);
+	/// A new particle graph from one of kParticleTemplates in Assets/Effects ("Fire 1" when "Fire" exists); "" without a project
+	std::string CreateParticleGraph(const std::string& name, const std::string& templateName);
+	/// Inspector rows of GPU Particles under its Graph field: status, one row per parameter, New Particle Graph...
+	void DrawParticleGraphRows(GameObject& obj, GpuParticlesComponent& particles);
+	// Material Graph window (EditorSuite_MaterialGraph.cpp)
+	/// A new material from one of kMaterialTemplates in Assets/Effects ("Fire 1" when "Fire" exists); "" without a project
+	std::string CreateEffectMaterial(const std::string& name, const std::string& templateName);
+	bool OpenMaterialGraph(const std::string& assetPath);
+	bool SaveMaterialGraph();
+	/// Puts the material on the selected object's GPU Particles (undoable)
+	bool AssignMaterialToSelection(const std::string& assetPath);
+	/// Sets a texture setting of a graph node and its GUID ("<param> Guid"), so a rename or move keeps it
+	void SetMaterialTexture(GraphNode& node, const std::string& param, const std::string& assetPath);
+	/// Texture settings follow their GUID to where the file is now (the graph file itself is not rewritten)
+	void ResolveGraphTextures(NodeGraph& graph);
+	void DrawMaterialGraphWindow();
+	/// Inspector row of GPU Particles / Trail: Edit Material, problems, New Material... (made from a template, given, opened)
+	void DrawMaterialRow(GameObject& obj, char* material, size_t capacity);
+	/// The Material Graph shows its material on a small cloud of particles (shares the asset preview target)
+	bool MaterialPreviewActive() const;
+	void SimulateMaterialPreview(ID3D12GraphicsCommandList* cmdList, double wallClock);
+	void RenderMaterialPreview(ID3D12GraphicsCommandList* cmdList);
 	const PostProcess& PostEffects() const { return postProcess_; }
 	// Script entry point: hidden instances go into the pool in ProcessPendingSpawns (no Initialize until they are spawned)
 	bool QueuePrefabPrewarm(const char* prefabName, int count);
@@ -1048,6 +1097,11 @@ private:
 		bool failed = false;
 	};
 	std::unordered_map<std::string, MaterialAssetEntry> materialAssets_; // by asset path; every object using one follows it
+	std::unordered_map<std::string, EffectMaterialEntry> effectMaterials_; // material graphs by asset path
+	std::unordered_map<std::string, EffectMaterialEntry> particleGraphs_;  // particle graphs by asset path
+	std::unordered_map<uint32_t, std::map<std::string, Vector4>> effectParameterOverrides_; // object id -> script values
+	/// Reads a graph file when it changed since the last look; false = nothing new (entry keeps its state or says why)
+	bool ReloadGraphFile(EffectMaterialEntry& entry, const std::string& assetPath, const char* label, NodeGraph& graph);
 	std::unordered_map<std::string, uint32_t> materialTextures_;
 	const PbrMaterialComponent* FindMaterialAsset(const std::string& assetPath);
 	bool WriteMaterialAssetFile(const std::string& assetPath, const PbrMaterialComponent& values);
@@ -1381,6 +1435,42 @@ private:
 	bool showAnimatorWindow_ = false;
 	bool showTimelineWindow_ = false;
 	bool showEffectEditor_ = false;
+	bool showMaterialGraph_ = false;
+	// A window with its own Delete / Undo / Duplicate keys (graph editors) was focused last frame:
+	// the scene's shortcuts stay quiet, or Delete in a graph would also delete the selected object
+	bool shortcutWindowFocused_ = false;
+	bool shortcutWindowFocusedNow_ = false;
+	GraphEditorModel materialEditor_;
+	std::string materialEditorPath_;
+	Vector2 materialGraphPan_{ 300.0f, 200.0f };
+	float materialGraphZoom_ = 1.0f;
+	Vector2 materialCanvasSize_{ 800.0f, 600.0f };
+	bool materialGraphFit_ = false;
+	uint32_t materialFocusNode_ = 0;
+	struct GraphLinkDrag {
+		uint32_t node = 0;
+		std::string pin;
+		bool fromOutput = false;
+		PinType type = PinType::Float;
+		bool active = false;
+	};
+	GraphLinkDrag materialLink_;
+	GraphLinkDrag materialPendingLink_; // a link dropped on empty space, waiting for the add-node menu
+	bool materialNodeDrag_ = false;
+	bool materialNodeMoved_ = false;
+	bool materialAddFocus_ = false;
+	bool materialValueEditing_ = false;
+	Vector2 materialAddAt_{ 0.0f, 0.0f };
+	char materialPaletteSearch_[64] = {};
+	char materialAddSearch_[64] = {};
+	uint64_t materialCodeRevision_ = ~0ull;
+	uint64_t materialPreviewKey_ = 1; // material shown by the preview; a change restarts it with a burst
+	bool materialPreviewStarted_ = false;
+	double materialPreviewLast_ = -1.0;
+	float materialPreviewCarry_ = 0.0f;
+	uint32_t materialPreviewCapacity_ = 160;
+	Camera materialPreviewCamera_{};
+	GeneratedGraphCode materialCode_;
 	uint32_t effectPreviewRoot_ = 0; // 0 = no preview
 	bool effectPreviewPlaying_ = false;
 	float effectPreviewSpeed_ = 1.0f;
@@ -1389,6 +1479,11 @@ private:
 	float effectPreviewRadius_ = 2.0f;
 	float effectPreviewCycles_ = 0.5f;
 	uint32_t effectEditorLayer_ = 0; // layer whose curves the Effect Editor shows
+	// Effect Editor preview panel: a camera orbiting the previewed effect (drag = turn, wheel = closer / farther)
+	float effectPanelYaw_ = 0.5f;
+	float effectPanelPitch_ = 0.3f;
+	float effectPanelDistance_ = 5.0f;
+	Camera effectPanelCamera_{};
 	void AdvanceEffectRoot(GameObject& root, float deltaTime, bool inPlay);
 	// Auto-save (EditorSuite_AutoSave.cpp)
 	bool autoSaveEnabled_ = true;

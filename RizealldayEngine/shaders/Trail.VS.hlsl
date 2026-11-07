@@ -2,6 +2,8 @@
 struct TrailConstants
 {
     float4x4 viewProjection;
+    float time; // materials
+    float3 pad;
 };
 ConstantBuffer<TrailConstants> gTrail : register(b0);
 

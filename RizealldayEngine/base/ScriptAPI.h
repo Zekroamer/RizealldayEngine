@@ -397,12 +397,14 @@ struct EngineAPI {
 	// Impact pulse and look presets (API v15)
 	void (*impactPulse)(void* ctx, float bloomBoost, float radialBlur, float shake, float seconds) = nullptr;
 	bool (*setLookPreset)(void* ctx, const char* name) = nullptr;
+	// Particle graph parameters (API v16)
+	bool (*setEffectParameter)(void* ctx, uint32_t id, const char* name, float x, float y, float z, float w) = nullptr;
 };
 
 /// Engine <-> GameScripts.dll compatibility check. Bump kScriptApiVersion when the meaning of the API changes;
 /// layout changes of EngineAPI / ScriptGameObjectView / ScriptBase are caught automatically by the sizes.
 /// The fingerprint is defined at the end of this header (it needs the complete ScriptBase).
-constexpr uint32_t kScriptApiVersion = 15; // 4: Animator, 5: ShakeCamera / Hitstop / input actions, 6: MoveCharacter, 7: FindPath, 8: KeepAcrossScenes, 9: material outline, 10: camera input + projection + prewarm + post-processing, 11: animation layers + bones + IK + ragdoll, 12: audio buses + pitch + 3D + components by name, 13: fog in ScriptPostProcess, 14: orthographic camera size, 15: impact pulse + look presets
+constexpr uint32_t kScriptApiVersion = 16; // 4: Animator, 5: ShakeCamera / Hitstop / input actions, 6: MoveCharacter, 7: FindPath, 8: KeepAcrossScenes, 9: material outline, 10: camera input + projection + prewarm + post-processing, 11: animation layers + bones + IK + ragdoll, 12: audio buses + pitch + 3D + components by name, 13: fog in ScriptPostProcess, 14: orthographic camera size, 15: impact pulse + look presets, 16: particle graph parameters
 
 /// Size of the UI canvas used by the UI* helpers (stretched over the game view)
 constexpr float kUICanvasWidth = 1280.0f;
@@ -1044,6 +1046,19 @@ public:
 	/// Turns continuous emission on/off ("Emitting" in the Inspector)
 	void SetParticlesEmitting(bool emitting, uint32_t id = 0) const {
 		if (engineApi_ && engineApi_->setParticlesEmitting) engineApi_->setParticlesEmitting(engineApi_->hostContext, ResolveId(id), emitting);
+	}
+	/// Changes a parameter of the object's particle graph (GPU Particles > Graph), e.g. "Strength" or "Tint".
+	/// A number fills every channel. Lasts until Stop or a scene load. False when the graph has no such parameter.
+	bool SetEffectParameter(const char* name, float value, uint32_t id = 0) const {
+		return SetEffectParameter(name, Vector4{ value, value, value, value }, id);
+	}
+	bool SetEffectParameter(const char* name, const Vector3& value, uint32_t id = 0) const {
+		return SetEffectParameter(name, Vector4{ value.x, value.y, value.z, 0.0f }, id);
+	}
+	/// Colours: (r, g, b, a)
+	bool SetEffectParameter(const char* name, const Vector4& value, uint32_t id = 0) const {
+		return engineApi_ && engineApi_->setEffectParameter && name &&
+			engineApi_->setEffectParameter(engineApi_->hostContext, ResolveId(id), name, value.x, value.y, value.z, value.w);
 	}
 	/// Despawn after a delay (bullet lifetime, effect cleanup). Despawn() / Destroy cancel the timer.
 	void DespawnAfter(float seconds, uint32_t id = 0) const {

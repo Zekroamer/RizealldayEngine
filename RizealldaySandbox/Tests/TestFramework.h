@@ -72,6 +72,9 @@ struct TestRegistrar {
 		}                                                                     \
 	} while (0)
 
+/// Same as REQUIRE with an extra explanation.
+#define REQUIRE_MSG(expr, text)                                                                  	do {                                                                                         		if (!(expr)) {                                                                           			ctx.Fail(__FILE__, __LINE__, std::string("REQUIRE(" #expr ") failed: ") + (text));    			return;                                                                              		}                                                                                        	} while (0)
+
 /// Float comparison with an absolute tolerance.
 #define CHECK_NEAR(a, b, eps)                                                                                  \
 	do {                                                                                                       \

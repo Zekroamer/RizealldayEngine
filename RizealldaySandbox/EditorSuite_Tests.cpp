@@ -8,6 +8,7 @@
 #include "PhysicsComponents.h"
 #include "render/LightClusters.h"
 #include "render/GpuParticles.h"
+#include "render/TrailRenderer.h"
 #include "render/DecalRenderer.h"
 #include "base/TextureManager.h"
 #include "SceneJson.h"
@@ -20,6 +21,9 @@
 #include "base/EngineVersion.h"
 #include "audio/Audio.h"
 #include "AutoSave.h"
+#include "NodeGraph.h"
+#include "GraphEditorModel.h"
+#include "base/DXCManager.h"
 #include <random>
 #include <set>
 
@@ -82,6 +86,7 @@ struct EditorSuiteTestAccess {
 		s.gameCamera_->rotation = rotation;
 		s.gameCamera_->Update();
 	}
+	static Camera& GameCamera(EditorSuite& s) { return *s.gameCamera_; }
 	static void AimAudioListener(EditorSuite& s, const Vector3& position, float yaw)
 	{
 		s.gameCamera_->translation = position;
@@ -99,6 +104,12 @@ struct EditorSuiteTestAccess {
 	}
 	static RenderTexture& GameViewRT(EditorSuite& s) { return s.gameViewRT_; }
 	static RenderTexture& EditViewRT(EditorSuite& s) { return s.editViewRT_; }
+	static GraphEditorModel& MaterialEditor(EditorSuite& s) { return s.materialEditor_; }
+	static void ForgetEffectMaterials(EditorSuite& s) { s.effectMaterials_.clear(); } // as after a restart
+	static RenderTexture& PreviewRT(EditorSuite& s) { return s.modelPreviewRT_; }
+	static void CloseMaterialGraph(EditorSuite& s) { s.materialEditorPath_.clear(); s.showMaterialGraph_ = false; }
+	static bool& ShowEffectEditor(EditorSuite& s) { return s.showEffectEditor_; }
+	static void Select(EditorSuite& s, uint32_t id) { s.selectedObjectIndex_ = s.FindGameObjectIndexById(id); s.extraSelection_.clear(); }
 	static bool& ScenePostPreview(EditorSuite& s) { return s.scenePostPreview_; }
 	static PostProcess& ScenePost(EditorSuite& s) { return s.scenePostProcess_; }
 	static void RunAudio(EditorSuite& s, float dt) { s.UpdateWorldMatrices(); s.UpdateAudio(dt); }
@@ -6856,6 +6867,1175 @@ TEST_CASE(Vfx, PooledEmittersKeepTheirBuffer)
 	s.QueueDeleteGameObjectById(id);
 	s.ProcessPendingDeletes();
 	A::State(s) = EditorSceneState::Edit;
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+namespace {
+	/// The real pixel shader of a particle material around a graph's code
+	std::string TestMaterialShader(const GeneratedGraphCode& code) { return GpuParticles::MaterialShaderSource(code.body); }
+	uint32_t Pin(NodeGraph& g, const char* type, float x = 0.0f) { return g.AddNode(type, x, 0.0f, NodeLibrary::Effects()); }
+}
+
+TEST_CASE(Graph, ConnectChecksTypesAndCycles)
+{
+	const NodeLibrary& lib = NodeLibrary::Effects();
+	NodeGraph g;
+	g.kind = GraphKind::Material;
+	const uint32_t color = Pin(g, "Color");
+	const uint32_t time = Pin(g, "Time");
+	const uint32_t add = Pin(g, "Add");
+	const uint32_t out = Pin(g, "Material Output");
+	REQUIRE(color != 0 && time != 0 && add != 0 && out != 0);
+	CHECK(g.AddNode("No Such Node", 0.0f, 0.0f, lib) == 0);
+
+	std::string why;
+	// "Any" pins take everything and become as wide as their widest input
+	CHECK(g.Connect(color, "RGB", add, "A", lib, &why));
+	CHECK(g.Connect(time, "Time", add, "B", lib, &why)); // a Float spreads over all channels
+	CHECK(ResolvedOutputType(g, add, "Result", lib) == PinType::Float3);
+	CHECK(g.Connect(add, "Result", out, "Emissive Color", lib, &why));
+
+	// Wrong shapes are refused with a reason a person understands
+	const uint32_t split = Pin(g, "Split");
+	CHECK(g.Connect(color, "RGBA", split, "Value", lib, &why));
+	const uint32_t combine = Pin(g, "Combine");
+	CHECK(g.Connect(split, "R", combine, "R", lib, &why));
+	const uint32_t cross = Pin(g, "Cross");
+	CHECK(!g.Connect(combine, "RG", cross, "A", lib, &why)); // a 2D value into a 3D input
+	CHECK_MSG(why.find("Float2") != std::string::npos && why.find("Float3") != std::string::npos, why);
+	CHECK(!g.Connect(add, "Result", add, "A", lib, &why)); // into itself
+	const uint32_t mul = Pin(g, "Multiply");
+	CHECK(g.Connect(add, "Result", mul, "A", lib, &why));
+	CHECK(!g.Connect(mul, "Result", add, "B", lib, &why)); // a loop
+	CHECK_MSG(why.find("loop") != std::string::npos, why);
+	CHECK(!g.Connect(color, "No Pin", add, "A", lib, &why));
+
+	// One link per input: a new one replaces the old one; removing a node removes its links
+	CHECK(g.Connect(time, "Time", add, "A", lib, &why));
+	size_t intoA = 0;
+	for (const GraphLink& l : g.links) intoA += (l.toNode == add && l.toPin == "A") ? 1u : 0u;
+	CHECK(intoA == 1u);
+	const size_t before = g.links.size();
+	g.RemoveNode(time);
+	CHECK(g.links.size() < before);
+	for (const GraphLink& l : g.links) CHECK(l.fromNode != time && l.toNode != time);
+	CHECK(g.Find(time) == nullptr);
+	g.Disconnect(out, "Emissive Color");
+	for (const GraphLink& l : g.links) CHECK(!(l.toNode == out && l.toPin == "Emissive Color"));
+}
+
+TEST_CASE(Graph, JsonRoundTripAndBadFiles)
+{
+	const NodeLibrary& lib = NodeLibrary::Effects();
+	NodeGraph g;
+	g.kind = GraphKind::Material;
+	const uint32_t color = g.AddNode("Color", 10.0f, 20.0f, lib);
+	const uint32_t out = g.AddNode("Material Output", 300.0f, 20.0f, lib);
+	g.FindMutable(color)->values["Color"] = { 0.25f, 0.5f, 0.75f, 1.0f };
+	g.FindMutable(out)->values["Opacity"] = { 0.3f, 0.0f, 0.0f, 0.0f };
+	std::string why;
+	REQUIRE(g.Connect(color, "RGB", out, "Emissive Color", lib, &why));
+
+	NodeGraph back;
+	REQUIRE(NodeGraph::FromJson(g.ToJson(), back, &why));
+	CHECK(back.kind == GraphKind::Material);
+	CHECK(back.nodes.size() == 2u && back.links.size() == 1u);
+	REQUIRE(back.Find(color) != nullptr);
+	CHECK_NEAR(back.Find(color)->x, 10.0f, 1e-6f);
+	CHECK_NEAR(back.Find(color)->values.at("Color").y, 0.5f, 1e-6f);
+	CHECK_NEAR(back.Find(out)->values.at("Opacity").x, 0.3f, 1e-6f);
+	CHECK(back.nextId == g.nextId);
+	CHECK(back.ToJson() == g.ToJson());
+
+	// Broken text: false with a reason, the graph untouched
+	NodeGraph untouched;
+	CHECK(!NodeGraph::FromJson("{ not json", untouched, &why));
+	CHECK(!why.empty());
+	CHECK(untouched.nodes.empty());
+	// A node type this build does not know survives loading and saving; the compiler reports it
+	std::string text = g.ToJson();
+	const size_t at = text.find("\"Color\"");
+	REQUIRE(at != std::string::npos);
+	text.replace(at, 7, "\"FutureNode\"");
+	NodeGraph future;
+	REQUIRE(NodeGraph::FromJson(text, future, &why));
+	CHECK(future.ToJson().find("FutureNode") != std::string::npos);
+	const GeneratedGraphCode code = GenerateGraphCode(future, lib, kDomainMaterial);
+	CHECK(!code.ok);
+	REQUIRE(!code.errors.empty());
+	CHECK(code.errors.front().nodeId == color);
+	// Links to missing nodes are dropped on load instead of breaking the graph
+	std::string dangling = g.ToJson();
+	const std::string fromKey = "\"from\": " + std::to_string(color);
+	const size_t f = dangling.find(fromKey);
+	REQUIRE(f != std::string::npos);
+	dangling.replace(f, fromKey.size(), "\"from\": 999");
+	NodeGraph cleaned;
+	REQUIRE(NodeGraph::FromJson(dangling, cleaned, &why));
+	CHECK(cleaned.links.empty());
+}
+
+TEST_CASE(Graph, CodegenOrdersNodesAndConvertsTypes)
+{
+	const NodeLibrary& lib = NodeLibrary::Effects();
+	NodeGraph g;
+	g.kind = GraphKind::Material;
+	std::string why;
+	const uint32_t time = Pin(g, "Time");
+	const uint32_t sine = Pin(g, "Sin");
+	const uint32_t color = Pin(g, "Color");
+	const uint32_t mul = Pin(g, "Multiply");
+	const uint32_t out = Pin(g, "Material Output");
+	const uint32_t unused = Pin(g, "Cos");
+	REQUIRE(g.Connect(time, "Time", sine, "Value", lib, &why));
+	REQUIRE(g.Connect(color, "RGB", mul, "A", lib, &why));
+	REQUIRE(g.Connect(sine, "Result", mul, "B", lib, &why));
+	REQUIRE(g.Connect(mul, "Result", out, "Emissive Color", lib, &why));
+	const GeneratedGraphCode code = GenerateGraphCode(g, lib, kDomainMaterial);
+	REQUIRE_MSG(code.ok, code.errors.empty() ? std::string() : code.errors.front().message);
+	const auto pos = [&](uint32_t id) { return code.body.find("// " + std::to_string(id) + " "); };
+	REQUIRE(pos(time) != std::string::npos && pos(sine) != std::string::npos && pos(mul) != std::string::npos && pos(out) != std::string::npos);
+	CHECK(pos(time) < pos(sine));
+	CHECK(pos(sine) < pos(mul));
+	CHECK(pos(color) < pos(mul));
+	CHECK(pos(mul) < pos(out));
+	CHECK(pos(unused) == std::string::npos); // not connected to the output: not generated
+	CHECK(code.body.find("float3(") != std::string::npos); // the Float from Sin spread to three channels
+
+	// No output node: one clear error
+	NodeGraph empty;
+	empty.kind = GraphKind::Material;
+	Pin(empty, "Time");
+	const GeneratedGraphCode none = GenerateGraphCode(empty, lib, kDomainMaterial);
+	CHECK(!none.ok);
+	REQUIRE(!none.errors.empty());
+	CHECK_MSG(none.errors.front().message.find("Material Output") != std::string::npos, none.errors.front().message);
+}
+
+TEST_CASE(Graph, EveryNodeCompilesToHlsl)
+{
+	// Each node, its inputs left at their defaults, feeds the output: the generated pixel shader must compile
+	const NodeLibrary& lib = NodeLibrary::Effects();
+	DXCManager* dxc = RizeEngine::GetDXCManager();
+	REQUIRE(dxc != nullptr);
+	int checked = 0;
+	for (const NodeDef& def : lib.All()) {
+		if (!(def.domains & kDomainMaterial) || def.isOutput) continue;
+		NodeGraph g;
+		g.kind = GraphKind::Material;
+		const uint32_t node = g.AddNode(def.type, 0.0f, 0.0f, lib);
+		const uint32_t out = g.AddNode("Material Output", 200.0f, 0.0f, lib);
+		std::string why;
+		bool linked = false;
+		for (const PinDef& pin : def.outputs) {
+			if (g.Connect(node, pin.name, out, "Opacity", lib, &why) || g.Connect(node, pin.name, out, "Emissive Color", lib, &why)) {
+				linked = true;
+				break;
+			}
+		}
+		CHECK_MSG(linked, def.type + ": no output reaches the Material Output");
+		const GeneratedGraphCode code = GenerateGraphCode(g, lib, kDomainMaterial);
+		CHECK_MSG(code.ok, def.type + ": " + (code.errors.empty() ? std::string() : code.errors.front().message));
+		std::string error;
+		const auto blob = dxc->TryCompileShaderSource(TestMaterialShader(code), L"GraphTest.PS.hlsl", L"ps_6_0", &error);
+		CHECK_MSG(blob != nullptr, def.type + ": " + error);
+		const auto trailBlob = dxc->TryCompileShaderSource(TrailRenderer::MaterialShaderSource(code.body), L"GraphTrailTest.PS.hlsl", L"ps_6_0", &error);
+		CHECK_MSG(trailBlob != nullptr, def.type + " (trail): " + error);
+		++checked;
+	}
+	CHECK(checked >= 20);
+
+	// Broken HLSL: an error message and no crash
+	std::string error;
+	CHECK(dxc->TryCompileShaderSource("float4 main() : SV_TARGET { return nope; }", L"Broken.PS.hlsl", L"ps_6_0", &error) == nullptr);
+	CHECK(error.find("nope") != std::string::npos);
+}
+
+TEST_CASE(Graph, EveryParticleNodeCompilesToHlsl)
+{
+	// Each Spawn / Update node, its inputs left at their defaults, feeds its stage's output: the emitter's compute shader must compile
+	const NodeLibrary& lib = NodeLibrary::Effects();
+	DXCManager* dxc = RizeEngine::GetDXCManager();
+	REQUIRE(dxc != nullptr);
+	struct Stage { uint32_t domain; const char* output; std::vector<const char*> pins; };
+	const Stage stages[] = {
+		{ kDomainParticleSpawn, "Spawn Output", { "Position", "Velocity", "Color", "Size", "Lifetime" } },
+		{ kDomainParticleUpdate, "Update Output", { "Velocity", "Color", "Size", "Kill" } },
+	};
+	int checked = 0;
+	for (const Stage& stage : stages) {
+		for (const NodeDef& def : lib.All()) {
+			if (!(def.domains & stage.domain) || def.isOutput) continue;
+			NodeGraph g;
+			g.kind = GraphKind::Particle;
+			g.parameters.push_back({ "Strength", PinType::Float, { 2.0f, 0.0f, 0.0f, 0.0f } });
+			const uint32_t node = g.AddNode(def.type, 0.0f, 0.0f, lib);
+			if (def.type == "Parameter") g.FindMutable(node)->texts["Name"] = "Strength";
+			const uint32_t out = g.AddNode(stage.output, 200.0f, 0.0f, lib);
+			std::string why;
+			bool linked = false;
+			for (const PinDef& pin : def.outputs) {
+				for (const char* target : stage.pins) {
+					if (!linked && g.Connect(node, pin.name, out, target, lib, &why)) linked = true;
+				}
+			}
+			CHECK_MSG(linked, def.type + ": no output reaches the " + stage.output);
+			const GeneratedGraphCode code = GenerateGraphCode(g, lib, stage.domain);
+			CHECK_MSG(code.ok, def.type + ": " + (code.errors.empty() ? std::string() : code.errors.front().message));
+			// The other stage left empty keeps its defaults
+			const std::string source = stage.domain == kDomainParticleSpawn ? GpuParticles::ParticleGraphShaderSource(code.body, "")
+				: GpuParticles::ParticleGraphShaderSource("", code.body);
+			std::string error;
+			const auto blob = dxc->TryCompileShaderSource(source, L"GraphTest.CS.hlsl", L"cs_6_0", &error);
+			CHECK_MSG(blob != nullptr, def.type + " (" + stage.output + "): " + error);
+			++checked;
+		}
+	}
+	CHECK(checked >= 40);
+
+	// Both stages empty: a graph that only has its two output nodes still makes a working shader
+	std::string error;
+	CHECK(dxc->TryCompileShaderSource(GpuParticles::ParticleGraphShaderSource("", ""), L"GraphEmpty.CS.hlsl", L"cs_6_0", &error) != nullptr);
+}
+
+TEST_CASE(Graph, MaterialNodesHaveFriendlyDefaults)
+{
+	const NodeLibrary& lib = NodeLibrary::Effects();
+	std::string why;
+	// Unconnected UV pins read the particle's own UV, unconnected Time pins the clock: a lone node already works
+	NodeGraph g;
+	g.kind = GraphKind::Material;
+	const uint32_t sample = g.AddNode("Texture Sample", 0.0f, 0.0f, lib);
+	const uint32_t panner = g.AddNode("Panner", -200.0f, 0.0f, lib);
+	const uint32_t out = g.AddNode("Material Output", 200.0f, 0.0f, lib);
+	REQUIRE(g.Connect(panner, "UV", sample, "UV", lib, &why));
+	REQUIRE(g.Connect(sample, "RGB", out, "Emissive Color", lib, &why));
+	GeneratedGraphCode code = GenerateGraphCode(g, lib, kDomainMaterial);
+	REQUIRE_MSG(code.ok, code.errors.empty() ? std::string() : code.errors.front().message);
+	CHECK(code.body.find("uv") != std::string::npos);
+	CHECK(code.body.find("gTime") != std::string::npos);
+	// No texture chosen = the GPU Particles component's own texture (slot 0)
+	REQUIRE(!code.textures.empty());
+	CHECK(code.textures[0].empty());
+	CHECK(code.body.find("gTexture0") != std::string::npos);
+
+	// A chosen texture gets its own slot; the same file twice shares one; a fifth file is too many
+	g.FindMutable(sample)->texts["Texture"] = "Assets/Textures/a.png";
+	code = GenerateGraphCode(g, lib, kDomainMaterial);
+	REQUIRE(code.ok);
+	REQUIRE(code.textures.size() == 2u);
+	CHECK(code.textures[1] == "Assets/Textures/a.png");
+	CHECK(code.body.find("gTexture1") != std::string::npos);
+	uint32_t previous = sample;
+	for (const char* file : { "Assets/Textures/a.png", "Assets/Textures/b.png", "Assets/Textures/c.png", "Assets/Textures/d.png" }) {
+		const uint32_t extra = g.AddNode("Texture Sample", 0.0f, 100.0f, lib);
+		g.FindMutable(extra)->texts["Texture"] = file;
+		const uint32_t add = g.AddNode("Add", 100.0f, 100.0f, lib);
+		REQUIRE(g.Connect(previous == sample ? sample : previous, previous == sample ? "RGB" : "Result", add, "A", lib, &why));
+		REQUIRE(g.Connect(extra, "RGB", add, "B", lib, &why));
+		previous = add;
+	}
+	REQUIRE(g.Connect(previous, "Result", out, "Emissive Color", lib, &why));
+	code = GenerateGraphCode(g, lib, kDomainMaterial);
+	CHECK(!code.ok);
+	bool tooMany = false;
+	for (const GraphError& e : code.errors) tooMany |= e.message.find("4") != std::string::npos;
+	CHECK(tooMany);
+
+	// Particle-only inputs are refused in other graphs with a reason
+	NodeGraph particle;
+	particle.kind = GraphKind::Particle;
+	CHECK(lib.Find("Particle Age") != nullptr);
+	CHECK((lib.Find("Particle Age")->domains & kDomainMaterial) != 0);
+	CHECK((lib.Find("Texture Sample")->domains & kDomainParticleUpdate) == 0);
+}
+
+namespace {
+	/// Writes a material graph file into the test project's Assets and returns its "Assets/..." path
+	std::string WriteMaterial(EditorSuite& s, const std::string& name, const NodeGraph& graph)
+	{
+		const std::filesystem::path dir = A::ProjectRoot(s) / "Assets" / "Effects";
+		std::filesystem::create_directories(dir);
+		std::ofstream(dir / (name + ".vfxmat.json")) << graph.ToJson();
+		return "Assets/Effects/" + name + ".vfxmat.json";
+	}
+}
+
+TEST_CASE(Vfx, MaterialGraphsShadeParticles)
+{
+	const NodeLibrary& lib = NodeLibrary::Effects();
+	A::ProjectRoot(s) = A::TempRoot() / "MaterialProject";
+	std::string why;
+
+	// Red: whatever the particle's own colour, the material makes it red
+	NodeGraph red;
+	red.kind = GraphKind::Material;
+	const uint32_t color = red.AddNode("Color", 0.0f, 0.0f, lib);
+	red.FindMutable(color)->values["Color"] = { 1.0f, 0.0f, 0.0f, 1.0f };
+	const uint32_t redOut = red.AddNode("Material Output", 200.0f, 0.0f, lib);
+	REQUIRE(red.Connect(color, "RGB", redOut, "Emissive Color", lib, &why));
+	const std::string redPath = WriteMaterial(s, "Red", red);
+
+	// Appears late: invisible for the first half of each particle's life
+	NodeGraph late;
+	late.kind = GraphKind::Material;
+	const uint32_t age = late.AddNode("Particle Age", 0.0f, 0.0f, lib);
+	const uint32_t step = late.AddNode("Step", 100.0f, 0.0f, lib);
+	const uint32_t lateOut = late.AddNode("Material Output", 200.0f, 0.0f, lib);
+	REQUIRE(late.Connect(age, "Age", step, "Value", lib, &why));
+	REQUIRE(late.Connect(step, "Result", lateOut, "Opacity", lib, &why));
+	const std::string latePath = WriteMaterial(s, "Late", late);
+
+	// Broken: a node this build does not know
+	std::string brokenText = red.ToJson();
+	brokenText.replace(brokenText.find("\"Color\""), 7, "\"FutureNode\"");
+	std::filesystem::create_directories(A::ProjectRoot(s) / "Assets" / "Effects");
+	std::ofstream(A::ProjectRoot(s) / "Assets" / "Effects" / "Broken.vfxmat.json") << brokenText;
+	const std::string brokenPath = "Assets/Effects/Broken.vfxmat.json";
+
+	A::AimAudioListener(s, { 0.0f, 0.0f, -20.0f }, 0.0f);
+	s.UpdateWorldMatrices();
+	A::State(s) = EditorSceneState::Play;
+	A::GameTime(s) = 0.0;
+	GpuParticles::GetInstance()->Clear();
+	CaptureGameViewSignature(s);
+	const std::vector<float> empty = CaptureGameViewSignature(s);
+	double clock = 0.0;
+	const auto shoot = [&](const std::string& material, double seconds) {
+		GameObject& obj = s.CreateGameObject("Material Test", GameObjectType::Empty);
+		const uint32_t id = obj.id;
+		s.AddComponentByName(obj, kGpuParticlesComponent);
+		auto* p = obj.components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+		std::vector<float> picture;
+		if (p) {
+			p->emitting = false;
+			p->burst = 400;
+			p->capacity = 400;
+			p->lifeMin = p->lifeMax = 2.0f;
+			p->speedMin = p->speedMax = 0.0f;
+			p->shape = static_cast<int>(GpuParticleShape::Box);
+			p->boxExtents = { 3.0f, 2.0f, 0.1f };
+			p->sizeStart = p->sizeEnd = 0.6f;
+			p->colorStart = p->colorEnd = { 0.02f, 0.02f, 0.25f, 1.0f }; // dark blue: stands out on any sky
+			p->intensity = 1.0f;
+			p->additive = false; // stacked additive red turns white through the tone mapping
+			strcpy_s(p->material, material.c_str());
+			s.UpdateWorldMatrices();
+			CaptureGameViewSignature(s);
+			for (double t = 0.0; t < seconds; t += 0.05) {
+				clock += 0.05;
+				A::GameTime(s) = clock;
+				picture = CaptureGameViewSignature(s);
+			}
+		}
+		s.QueueDeleteGameObjectById(id);
+		s.ProcessPendingDeletes();
+		return picture;
+	};
+	const std::vector<float> plain = shoot("", 0.1);
+	CHECK_MSG(LargestSignatureDifference(empty, plain) > 30.0f, std::format("plain particles {:.0f}", LargestSignatureDifference(empty, plain)));
+	// Red: where the particles cover the sky the most, red rises above green (the dark blue particles have no red)
+	const std::vector<float> redPicture = shoot(redPath, 0.1);
+	size_t covered = 0;
+	float bestDrop = -1.0e9f;
+	for (size_t i = 0; i + 2 < redPicture.size() && i + 2 < empty.size(); i += 3) {
+		const float drop = (empty[i + 1] - redPicture[i + 1]) + (empty[i + 2] - redPicture[i + 2]);
+		if (drop > bestDrop) {
+			bestDrop = drop;
+			covered = i;
+		}
+	}
+	CHECK_MSG(bestDrop > 40.0f && redPicture[covered] > redPicture[covered + 1] + 60.0f,
+		std::format("red material: {:.0f},{:.0f},{:.0f} over sky {:.0f},{:.0f},{:.0f}", redPicture[covered], redPicture[covered + 1], redPicture[covered + 2], empty[covered], empty[covered + 1], empty[covered + 2]));
+	REQUIRE(s.GetEffectMaterial(redPath) != nullptr);
+	CHECK(s.GetEffectMaterial(redPath)->ok);
+
+	const std::vector<float> early = shoot(latePath, 0.2);  // a tenth of their life
+	const std::vector<float> later = shoot(latePath, 1.5);  // three quarters
+	CHECK_MSG(LargestSignatureDifference(empty, early) < 8.0f, std::format("young particles visible {:.0f}", LargestSignatureDifference(empty, early)));
+	CHECK_MSG(LargestSignatureDifference(empty, later) > 30.0f, std::format("old particles hidden {:.0f}", LargestSignatureDifference(empty, later)));
+
+	// A broken material reports why and the particles still draw (texture x colour)
+	const std::vector<float> fallback = shoot(brokenPath, 0.1);
+	CHECK(LargestSignatureDifference(empty, fallback) > 30.0f);
+	const EffectMaterialEntry* broken = s.GetEffectMaterial(brokenPath);
+	REQUIRE(broken != nullptr);
+	CHECK(!broken->ok);
+	CHECK(!broken->errors.empty());
+	CHECK(s.GetEffectMaterial("Assets/Effects/Missing.vfxmat.json") == nullptr || !s.GetEffectMaterial("Assets/Effects/Missing.vfxmat.json")->ok);
+
+	A::State(s) = EditorSceneState::Edit;
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+namespace {
+	std::string WriteParticleGraph(EditorSuite& s, const std::string& name, const NodeGraph& graph)
+	{
+		const std::filesystem::path dir = A::ProjectRoot(s) / "Assets" / "Effects";
+		std::filesystem::create_directories(dir);
+		std::ofstream(dir / (name + ".vfxparticle.json")) << graph.ToJson();
+		return "Assets/Effects/" + name + ".vfxparticle.json";
+	}
+
+	/// A particle graph for the screen tests: dark blue particles that stand still in a flat box around the emitter
+	/// and live 3 s. `update` connects what it adds to the Update Output (spawnOut / updateOut are the output nodes).
+	NodeGraph TestParticleGraph(const Vector3& boxSize, const std::function<void(NodeGraph&, uint32_t spawnOut, uint32_t updateOut)>& update = {})
+	{
+		const NodeLibrary& lib = NodeLibrary::Effects();
+		NodeGraph g;
+		g.kind = GraphKind::Particle;
+		const uint32_t box = g.AddNode("Box Shape", 0.0f, 0.0f, lib);
+		g.FindMutable(box)->values["Size"] = { boxSize.x, boxSize.y, boxSize.z, 0.0f };
+		const uint32_t still = g.AddNode("Vector3", 0.0f, 100.0f, lib);
+		g.FindMutable(still)->values["Value"] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		const uint32_t spawnOut = g.AddNode("Spawn Output", 200.0f, 0.0f, lib);
+		GraphNode* spawn = g.FindMutable(spawnOut);
+		spawn->values["Lifetime"] = { 3.0f, 3.0f, 3.0f, 3.0f };
+		spawn->values["Color"] = { 0.02f, 0.02f, 0.25f, 1.0f };
+		spawn->values["Size"] = { 0.6f, 0.6f, 0.6f, 0.6f };
+		std::string why;
+		g.Connect(box, "Position", spawnOut, "Position", lib, &why);
+		g.Connect(still, "Value", spawnOut, "Velocity", lib, &why);
+		const uint32_t updateOut = g.AddNode("Update Output", 200.0f, 300.0f, lib);
+		if (update) update(g, spawnOut, updateOut);
+		return g;
+	}
+
+	/// Where the particles are on screen: the centre of the signature cells that changed against `empty`
+	/// (in cells, y grows downwards) and how much changed in all
+	struct ScreenBlob {
+		float x = 0.0f, y = 0.0f, weight = 0.0f;
+	};
+	ScreenBlob BlobOf(const std::vector<float>& empty, const std::vector<float>& picture)
+	{
+		ScreenBlob blob;
+		constexpr size_t kColumns = 16;
+		for (size_t cell = 0; cell * 3 + 2 < picture.size() && cell * 3 + 2 < empty.size(); ++cell) {
+			float diff = 0.0f;
+			for (size_t c = 0; c < 3; ++c) diff += std::abs(picture[cell * 3 + c] - empty[cell * 3 + c]);
+			if (diff < 15.0f) continue;
+			blob.x += static_cast<float>(cell % kColumns) * diff;
+			blob.y += static_cast<float>(cell / kColumns) * diff;
+			blob.weight += diff;
+		}
+		if (blob.weight > 0.0f) {
+			blob.x /= blob.weight;
+			blob.y /= blob.weight;
+		}
+		return blob;
+	}
+
+	/// The game camera 20 units in front of the origin with the default lens (earlier tests may leave another one)
+	void AimParticleTestCamera(EditorSuite& s)
+	{
+		Camera& camera = A::GameCamera(s);
+		camera.fovY = 0.45f;
+		camera.orthographic = false;
+		A::AimAudioListener(s, { 0.0f, 0.0f, -20.0f }, 0.0f);
+	}
+
+	/// Runs one GPU Particles object with `graphPath` at `position` for `seconds` of Play and returns the last picture
+	std::vector<float> ShootParticleGraph(EditorSuite& s, const std::string& graphPath, const Vector3& position, double seconds, double& clock,
+		const std::function<void(GameObject&)>& setup = {})
+	{
+		GameObject& obj = s.CreateGameObject("Graph Test", GameObjectType::Empty);
+		const uint32_t id = obj.id;
+		obj.translation = position;
+		s.AddComponentByName(obj, kGpuParticlesComponent);
+		std::vector<float> picture;
+		if (auto* p = obj.components.Get<GpuParticlesComponent>(kGpuParticlesComponent)) {
+			p->emitting = false;
+			p->burst = 300;
+			p->capacity = 300;
+			p->additive = false;
+			strcpy_s(p->graph, graphPath.c_str());
+			if (setup) setup(obj);
+			s.UpdateWorldMatrices();
+			CaptureGameViewSignature(s);
+			for (double t = 0.0; t < seconds; t += 0.05) {
+				clock += 0.05;
+				A::GameTime(s) = clock;
+				picture = CaptureGameViewSignature(s);
+			}
+		}
+		s.QueueDeleteGameObjectById(id);
+		s.ProcessPendingDeletes();
+		return picture;
+	}
+}
+
+TEST_CASE(Vfx, ParticleGraphsMoveParticles)
+{
+	const NodeLibrary& lib = NodeLibrary::Effects();
+	A::ProjectRoot(s) = A::TempRoot() / "ParticleGraphProject";
+	std::string why;
+	const std::string stillPath = WriteParticleGraph(s, "Still", TestParticleGraph({ 4.0f, 1.0f, 0.2f }));
+	const std::string fallPath = WriteParticleGraph(s, "Fall", TestParticleGraph({ 4.0f, 1.0f, 0.2f }, [&](NodeGraph& g, uint32_t, uint32_t updateOut) {
+		const uint32_t gravity = g.AddNode("Gravity", 0.0f, 300.0f, lib);
+		g.Connect(gravity, "Velocity", updateOut, "Velocity", lib, &why);
+	}));
+
+	AimParticleTestCamera(s);
+	s.UpdateWorldMatrices();
+	A::State(s) = EditorSceneState::Play;
+	A::GameTime(s) = 0.0;
+	GpuParticles::GetInstance()->Clear();
+	CaptureGameViewSignature(s);
+	const std::vector<float> empty = CaptureGameViewSignature(s);
+	double clock = 0.0;
+
+	// Without forces the graph's particles stay where Spawn put them: a box around the emitter
+	const ScreenBlob still = BlobOf(empty, ShootParticleGraph(s, stillPath, { 0.0f, 2.0f, 0.0f }, 0.6, clock));
+	CHECK_MSG(still.weight > 200.0f, std::format("graph particles visible {:.0f}", still.weight));
+	REQUIRE(s.GetParticleGraph(stillPath) != nullptr);
+	CHECK(s.GetParticleGraph(stillPath)->ok);
+	// Gravity pulls them down the screen
+	const ScreenBlob fall = BlobOf(empty, ShootParticleGraph(s, fallPath, { 0.0f, 2.0f, 0.0f }, 0.6, clock));
+	CHECK_MSG(fall.weight > 50.0f && fall.y > still.y + 1.0f, std::format("gravity: y {:.2f} -> {:.2f} (weight {:.0f})", still.y, fall.y, fall.weight));
+
+	A::State(s) = EditorSceneState::Edit;
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+TEST_CASE(Vfx, ParticleGraphForcesKillAndOverLife)
+{
+	const NodeLibrary& lib = NodeLibrary::Effects();
+	A::ProjectRoot(s) = A::TempRoot() / "ParticleGraphProject2";
+	std::string why;
+	const Vector3 smallBox{ 1.0f, 1.0f, 0.2f };
+	const std::string stillPath = WriteParticleGraph(s, "Still", TestParticleGraph(smallBox));
+	// Vortex around the view axis through the world origin: particles to the right of it are carried upwards
+	const std::string vortexPath = WriteParticleGraph(s, "Vortex", TestParticleGraph(smallBox, [&](NodeGraph& g, uint32_t, uint32_t updateOut) {
+		const uint32_t vortex = g.AddNode("Vortex", 0.0f, 300.0f, lib);
+		const uint32_t center = g.AddNode("Vector3", -200.0f, 300.0f, lib);
+		g.FindMutable(center)->values["Value"] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		g.FindMutable(vortex)->values["Axis"] = { 0.0f, 0.0f, 1.0f, 0.0f };
+		g.FindMutable(vortex)->values["Spin"] = { 2.0f, 2.0f, 2.0f, 2.0f };
+		g.Connect(center, "Value", vortex, "Center", lib, &why);
+		g.Connect(vortex, "Velocity", updateOut, "Velocity", lib, &why);
+	}));
+	// Kill once a third of the life is over (Step: Particle Age >= 0.3)
+	const std::string killPath = WriteParticleGraph(s, "Kill", TestParticleGraph(smallBox, [&](NodeGraph& g, uint32_t, uint32_t updateOut) {
+		const uint32_t age = g.AddNode("Particle Age", 0.0f, 300.0f, lib);
+		const uint32_t step = g.AddNode("Step", 100.0f, 300.0f, lib);
+		g.FindMutable(step)->values["Edge"] = { 0.3f, 0.3f, 0.3f, 0.3f };
+		g.Connect(age, "Age", step, "Value", lib, &why);
+		g.Connect(step, "Result", updateOut, "Kill", lib, &why);
+	}));
+	// Size over life: tiny when born, big later
+	const std::string growPath = WriteParticleGraph(s, "Grow", TestParticleGraph(smallBox, [&](NodeGraph& g, uint32_t, uint32_t updateOut) {
+		const uint32_t curve = g.AddNode("Curve", 0.0f, 300.0f, lib);
+		WriteGraphKeys(*g.FindMutable(curve), "Curve", { { 0.0f, { 0.05f, 0, 0, 0 } }, { 0.5f, { 1.5f, 0, 0, 0 } }, { 1.0f, { 1.5f, 0, 0, 0 } } });
+		g.Connect(curve, "Value", updateOut, "Size", lib, &why);
+	}));
+	// Colour over life: red when born, green at half its life
+	const std::string tintPath = WriteParticleGraph(s, "Tint", TestParticleGraph({ 3.0f, 2.0f, 0.2f }, [&](NodeGraph& g, uint32_t, uint32_t updateOut) {
+		const uint32_t gradient = g.AddNode("Gradient", 0.0f, 300.0f, lib);
+		WriteGraphKeys(*g.FindMutable(gradient), "Gradient", { { 0.0f, { 0.6f, 0.0f, 0.0f, 1.0f } }, { 0.5f, { 0.0f, 0.6f, 0.0f, 1.0f } }, { 1.0f, { 0.0f, 0.6f, 0.0f, 1.0f } } });
+		g.Connect(gradient, "RGBA", updateOut, "Color", lib, &why);
+	}));
+
+	AimParticleTestCamera(s);
+	s.UpdateWorldMatrices();
+	A::State(s) = EditorSceneState::Play;
+	A::GameTime(s) = 0.0;
+	GpuParticles::GetInstance()->Clear();
+	CaptureGameViewSignature(s);
+	const std::vector<float> empty = CaptureGameViewSignature(s);
+	double clock = 0.0;
+	const Vector3 right{ 3.0f, 1.0f, 0.0f };
+
+	const ScreenBlob still = BlobOf(empty, ShootParticleGraph(s, stillPath, right, 0.8, clock));
+	CHECK_MSG(still.weight > 50.0f, std::format("still particles visible {:.0f}", still.weight));
+	const ScreenBlob vortex = BlobOf(empty, ShootParticleGraph(s, vortexPath, right, 0.8, clock));
+	CHECK_MSG(vortex.weight > 50.0f && vortex.y < still.y - 0.7f, std::format("vortex: y {:.2f} -> {:.2f}, x {:.2f} -> {:.2f}", still.y, vortex.y, still.x, vortex.x));
+
+	// Kill: alive at a tenth of their life, gone after half of it
+	const ScreenBlob young = BlobOf(empty, ShootParticleGraph(s, killPath, right, 0.2, clock));
+	const ScreenBlob killed = BlobOf(empty, ShootParticleGraph(s, killPath, right, 1.5, clock));
+	CHECK_MSG(young.weight > 50.0f && killed.weight < young.weight * 0.1f, std::format("kill: {:.0f} -> {:.0f}", young.weight, killed.weight));
+
+	// Curve: the same particles cover much more of the screen later in their life
+	const ScreenBlob tiny = BlobOf(empty, ShootParticleGraph(s, growPath, right, 0.1, clock));
+	const ScreenBlob big = BlobOf(empty, ShootParticleGraph(s, growPath, right, 1.6, clock));
+	CHECK_MSG(big.weight > tiny.weight * 2.0f + 50.0f, std::format("curve: {:.0f} -> {:.0f}", tiny.weight, big.weight));
+
+	// Gradient: red at first, green later, in the cell the particles cover the most
+	const auto mostCovered = [&](const std::vector<float>& picture) {
+		size_t best = 0;
+		float bestDiff = -1.0f;
+		for (size_t i = 0; i + 2 < picture.size() && i + 2 < empty.size(); i += 3) {
+			const float diff = std::abs(picture[i] - empty[i]) + std::abs(picture[i + 1] - empty[i + 1]) + std::abs(picture[i + 2] - empty[i + 2]);
+			if (diff > bestDiff) {
+				bestDiff = diff;
+				best = i;
+			}
+		}
+		return best;
+	};
+	const std::vector<float> born = ShootParticleGraph(s, tintPath, { 0.0f, 1.0f, 0.0f }, 0.1, clock);
+	const std::vector<float> aged = ShootParticleGraph(s, tintPath, { 0.0f, 1.0f, 0.0f }, 1.8, clock);
+	REQUIRE(!born.empty() && !aged.empty());
+	const size_t a = mostCovered(born), b = mostCovered(aged);
+	CHECK_MSG(born[a] > born[a + 1] + 30.0f, std::format("young: r {:.0f} g {:.0f}", born[a], born[a + 1]));
+	CHECK_MSG(aged[b + 1] > aged[b] + 30.0f, std::format("old: r {:.0f} g {:.0f}", aged[b], aged[b + 1]));
+
+	A::State(s) = EditorSceneState::Edit;
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+TEST_CASE(Graph, ParticleParametersSaveAndResolve)
+{
+	const NodeLibrary& lib = NodeLibrary::Effects();
+	NodeGraph g;
+	g.kind = GraphKind::Particle;
+	g.parameters.push_back({ "Pull", PinType::Float3, { 0.0f, -9.8f, 0.0f, 0.0f } });
+	g.parameters.push_back({ "Tint", PinType::Float4, { 1.0f, 0.5f, 0.0f, 1.0f } });
+	const uint32_t param = g.AddNode("Parameter", 0.0f, 0.0f, lib);
+	g.FindMutable(param)->texts["Name"] = "Tint";
+	const uint32_t out = g.AddNode("Spawn Output", 200.0f, 0.0f, lib);
+	std::string why;
+	REQUIRE(g.Connect(param, "Value", out, "Color", lib, &why));
+
+	// Saved with the graph, read back in the same order (the order is the GPU slot)
+	NodeGraph back;
+	REQUIRE(NodeGraph::FromJson(g.ToJson(), back, &why));
+	REQUIRE(back.parameters.size() == 2u);
+	CHECK(back.parameters[0].name == "Pull" && back.parameters[0].type == PinType::Float3);
+	CHECK_NEAR(back.parameters[0].value.y, -9.8f, 1e-5f);
+	CHECK(back.parameters[1].name == "Tint" && back.parameters[1].type == PinType::Float4);
+	GeneratedGraphCode code = GenerateGraphCode(back, lib, kDomainParticleSpawn);
+	REQUIRE_MSG(code.ok, code.errors.empty() ? std::string() : code.errors.front().message);
+	CHECK(code.body.find("gParams[1]") != std::string::npos);
+
+	// A deleted parameter is reported on the node that still reads it
+	back.parameters.erase(back.parameters.begin() + 1);
+	code = GenerateGraphCode(back, lib, kDomainParticleSpawn);
+	CHECK(!code.ok);
+	REQUIRE(!code.errors.empty());
+	CHECK(code.errors.front().nodeId == param);
+	CHECK(code.errors.front().message.find("Tint") != std::string::npos);
+
+	// Per-object values: written and read as text, unknown text ignored
+	const std::map<std::string, Vector4> values = ParseEffectParameterValues("Pull=0 9.8 0 0;broken;Tint=1 0 0 1");
+	REQUIRE(values.size() == 2u);
+	CHECK_NEAR(values.at("Pull").y, 9.8f, 1e-5f);
+	const std::map<std::string, Vector4> again = ParseEffectParameterValues(FormatEffectParameterValues(values).c_str());
+	CHECK(again.size() == 2u);
+	CHECK_NEAR(again.at("Tint").x, 1.0f, 1e-5f);
+}
+
+TEST_CASE(Vfx, ParticleGraphParametersFromObjectAndScript)
+{
+	const NodeLibrary& lib = NodeLibrary::Effects();
+	A::ProjectRoot(s) = A::TempRoot() / "ParticleParamProject";
+	std::string why;
+	// Gravity whose direction is the parameter "Pull" (default: down)
+	NodeGraph graph = TestParticleGraph({ 4.0f, 1.0f, 0.2f }, [&](NodeGraph& g, uint32_t, uint32_t updateOut) {
+		g.parameters.push_back({ "Pull", PinType::Float3, { 0.0f, -6.0f, 0.0f, 0.0f } });
+		const uint32_t param = g.AddNode("Parameter", -200.0f, 300.0f, lib);
+		g.FindMutable(param)->texts["Name"] = "Pull";
+		const uint32_t gravity = g.AddNode("Gravity", 0.0f, 300.0f, lib);
+		g.Connect(param, "Value", gravity, "Acceleration", lib, &why);
+		g.Connect(gravity, "Velocity", updateOut, "Velocity", lib, &why);
+	});
+	const std::string path = WriteParticleGraph(s, "Pull", graph);
+	const std::string stillPath = WriteParticleGraph(s, "Still", TestParticleGraph({ 4.0f, 1.0f, 0.2f }));
+
+	AimParticleTestCamera(s);
+	s.UpdateWorldMatrices();
+	A::State(s) = EditorSceneState::Play;
+	A::GameTime(s) = 0.0;
+	GpuParticles::GetInstance()->Clear();
+	CaptureGameViewSignature(s);
+	const std::vector<float> empty = CaptureGameViewSignature(s);
+	double clock = 0.0;
+	const Vector3 at{ 0.0f, 1.0f, 0.0f };
+
+	const ScreenBlob still = BlobOf(empty, ShootParticleGraph(s, stillPath, at, 0.6, clock));
+	const ScreenBlob down = BlobOf(empty, ShootParticleGraph(s, path, at, 0.6, clock));
+	CHECK_MSG(down.y > still.y + 0.7f, std::format("default pull: y {:.2f} -> {:.2f}", still.y, down.y));
+	// This object's own value: upwards
+	const ScreenBlob ownValue = BlobOf(empty, ShootParticleGraph(s, path, at, 0.6, clock, [](GameObject& obj) {
+		auto* p = obj.components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+		strcpy_s(p->parameters, "Pull=0 6 0 0");
+	}));
+	CHECK_MSG(ownValue.y < still.y - 0.7f, std::format("object value: y {:.2f} -> {:.2f}", still.y, ownValue.y));
+	// A script's value wins over the object's, through the script API; an unknown name or object is refused
+	EngineAPI& api = A::Api(s);
+	REQUIRE(api.setEffectParameter != nullptr);
+	bool refusedUnknown = false;
+	const ScreenBlob scripted = BlobOf(empty, ShootParticleGraph(s, path, at, 0.6, clock, [&](GameObject& obj) {
+		auto* p = obj.components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+		strcpy_s(p->parameters, "Pull=0 -6 0 0");
+		CHECK(api.setEffectParameter(api.hostContext, obj.id, "Pull", 0.0f, 6.0f, 0.0f, 0.0f));
+		refusedUnknown = !api.setEffectParameter(api.hostContext, obj.id, "Nope", 1.0f, 1.0f, 1.0f, 1.0f) &&
+			!api.setEffectParameter(api.hostContext, 987654u, "Pull", 1.0f, 1.0f, 1.0f, 1.0f) && !api.setEffectParameter(api.hostContext, obj.id, nullptr, 0, 0, 0, 0);
+	}));
+	CHECK_MSG(scripted.y < still.y - 0.7f, std::format("script value: y {:.2f} -> {:.2f}", still.y, scripted.y));
+	CHECK(refusedUnknown);
+
+	A::State(s) = EditorSceneState::Edit;
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+TEST_CASE(Graph, EditorModelUndoRedoAndAutoConnect)
+{
+	GraphEditorModel m;
+	m.Reset(MakeMaterialTemplate("Blank"));
+	CHECK(!m.CanUndo());
+	const uint32_t output = m.FindOutputNode();
+	REQUIRE(output != 0);
+
+	// Adding a node and undoing it
+	const uint32_t color = m.AddNode("Color", -300.0f, 0.0f);
+	REQUIRE(color != 0);
+	CHECK(m.dirty);
+	CHECK(m.CanUndo());
+	REQUIRE(m.Undo());
+	CHECK(m.graph.Find(color) == nullptr);
+	REQUIRE(m.Redo());
+	CHECK(m.graph.Find(color) != nullptr);
+
+	// Dropping a link on empty space and picking a node: the new node is connected to the first pin that fits
+	std::string why;
+	const uint32_t multiply = m.AddNodeConnected("Multiply", -100.0f, 0.0f, color, "RGB", true, &why);
+	REQUIRE_MSG(multiply != 0, why);
+	REQUIRE(m.graph.LinkInto(multiply, "A") != nullptr);
+	CHECK(m.graph.LinkInto(multiply, "A")->fromNode == color);
+	// ... and from an input backwards: the new node's first fitting output feeds it
+	const uint32_t time = m.AddNodeConnected("Time", -300.0f, 100.0f, multiply, "B", false, &why);
+	REQUIRE_MSG(time != 0, why);
+	CHECK(m.graph.LinkInto(multiply, "B") != nullptr && m.graph.LinkInto(multiply, "B")->fromNode == time);
+	// A node with nothing that fits is refused, and nothing is added
+	const size_t nodes = m.graph.nodes.size();
+	CHECK(m.AddNodeConnected("Time", 0.0f, 0.0f, color, "RGB", true, &why) == 0); // Time has no input to take a colour
+	CHECK(!why.empty());
+	CHECK(m.graph.nodes.size() == nodes);
+
+	// The output node cannot be deleted; other selected nodes can, with their links
+	m.selection = { output, time };
+	m.DeleteSelection();
+	CHECK(m.graph.Find(output) != nullptr);
+	CHECK(m.graph.Find(time) == nullptr);
+	CHECK(m.graph.LinkInto(multiply, "B") == nullptr);
+	REQUIRE(m.Undo());
+	CHECK(m.graph.Find(time) != nullptr);
+	CHECK(m.graph.LinkInto(multiply, "B") != nullptr);
+
+	// Duplicate copies the nodes, their values and the links between them, next to the originals
+	m.graph.FindMutable(color)->values["Color"] = { 0.1f, 0.2f, 0.3f, 1.0f };
+	m.Commit();
+	m.selection = { color, multiply };
+	const std::vector<uint32_t> copies = m.Duplicate();
+	REQUIRE(copies.size() == 2u);
+	const GraphNode* colorCopy = m.graph.Find(copies[0]);
+	REQUIRE(colorCopy != nullptr);
+	CHECK(colorCopy->type == "Color");
+	CHECK_NEAR(colorCopy->values.at("Color").z, 0.3f, 1e-6f);
+	CHECK(colorCopy->x > m.graph.Find(color)->x);
+	REQUIRE(m.graph.LinkInto(copies[1], "A") != nullptr);
+	CHECK(m.graph.LinkInto(copies[1], "A")->fromNode == copies[0]);
+	CHECK(m.selection == copies);
+
+	// A new edit after an undo forgets the redo
+	REQUIRE(m.Undo());
+	CHECK(m.CanRedo());
+	m.AddNode("Float", 0.0f, 300.0f);
+	CHECK(!m.CanRedo());
+}
+
+TEST_CASE(Graph, SearchFindsNodesByNameCategoryAndMeaning)
+{
+	const NodeLibrary& lib = NodeLibrary::Effects();
+	const auto names = [&](const std::string& query, const NodeSearchFilter& filter = {}) {
+		std::vector<std::string> out;
+		for (const NodeDef* def : SearchNodes(lib, query, kDomainMaterial, filter)) out.push_back(def->type);
+		return out;
+	};
+	const auto has = [](const std::vector<std::string>& list, const char* type) { return std::find(list.begin(), list.end(), type) != list.end(); };
+
+	const std::vector<std::string> all = names("");
+	CHECK(has(all, "Panner") && has(all, "Add"));
+	CHECK(!has(all, "Material Output")); // there is one already; it is never added from the menu
+	// The name first, then words from the description: "scroll" finds the Panner
+	CHECK(!names("pan").empty() && names("pan").front() == "Panner");
+	CHECK(has(names("scroll"), "Panner"));
+	CHECK(has(names("TEXTURE sample"), "Texture Sample"));
+	CHECK(names("zzzz nothing").empty());
+
+	// Dragged from a Float3 output: only nodes that can take it
+	NodeSearchFilter fromColor;
+	fromColor.fromOutput = PinType::Float3;
+	const std::vector<std::string> takesColor = names("", fromColor);
+	CHECK(has(takesColor, "Multiply"));
+	CHECK(has(takesColor, "Cross"));
+	CHECK(!has(takesColor, "Time")); // no inputs
+	CHECK(!has(takesColor, "UV"));
+	// Dragged from a Float2 input: only nodes that give something that fits
+	NodeSearchFilter intoUv;
+	intoUv.intoInput = PinType::Float2;
+	const std::vector<std::string> givesUv = names("", intoUv);
+	CHECK(has(givesUv, "Panner"));
+	CHECK(has(givesUv, "Time")); // a Float spreads
+}
+
+TEST_CASE(Graph, MaterialTemplatesCompile)
+{
+	DXCManager* dxc = RizeEngine::GetDXCManager();
+	REQUIRE(dxc != nullptr);
+	for (const char* name : kMaterialTemplates) {
+		const NodeGraph g = MakeMaterialTemplate(name);
+		CHECK_MSG(!g.nodes.empty(), name);
+		const GeneratedGraphCode code = GenerateGraphCode(g, NodeLibrary::Effects(), kDomainMaterial);
+		CHECK_MSG(code.ok, std::string(name) + ": " + (code.errors.empty() ? std::string() : code.errors.front().message));
+		std::string error;
+		CHECK_MSG(dxc->TryCompileShaderSource(GpuParticles::MaterialShaderSource(code.body), L"Template.PS.hlsl", L"ps_6_0", &error) != nullptr, std::string(name) + ": " + error);
+		// Nodes do not sit on top of each other
+		for (size_t i = 0; i < g.nodes.size(); ++i) {
+			for (size_t j = i + 1; j < g.nodes.size(); ++j) {
+				const float dx = std::abs(g.nodes[i].x - g.nodes[j].x), dy = std::abs(g.nodes[i].y - g.nodes[j].y);
+				CHECK_MSG(dx > 150.0f || dy > 60.0f, std::string(name) + ": " + g.nodes[i].type + " overlaps " + g.nodes[j].type);
+			}
+		}
+	}
+	CHECK(MakeMaterialTemplate("No Such Template").nodes.size() == 1u); // unknown: just the output (blank)
+}
+
+TEST_CASE(Graph, ParticleTemplatesCompile)
+{
+	DXCManager* dxc = RizeEngine::GetDXCManager();
+	REQUIRE(dxc != nullptr);
+	const NodeLibrary& lib = NodeLibrary::Effects();
+	for (const char* name : kParticleTemplates) {
+		const NodeGraph g = MakeParticleTemplate(name);
+		CHECK_MSG(g.kind == GraphKind::Particle, name);
+		const GeneratedGraphCode spawn = GenerateGraphCode(g, lib, kDomainParticleSpawn);
+		const GeneratedGraphCode update = GenerateGraphCode(g, lib, kDomainParticleUpdate);
+		CHECK_MSG(spawn.ok, std::string(name) + " spawn: " + (spawn.errors.empty() ? std::string() : spawn.errors.front().message));
+		CHECK_MSG(update.ok, std::string(name) + " update: " + (update.errors.empty() ? std::string() : update.errors.front().message));
+		std::string error;
+		CHECK_MSG(dxc->TryCompileShaderSource(GpuParticles::ParticleGraphShaderSource(spawn.body, update.body), L"Template.CS.hlsl", L"cs_6_0", &error) != nullptr, std::string(name) + ": " + error);
+		for (size_t i = 0; i < g.nodes.size(); ++i) {
+			for (size_t j = i + 1; j < g.nodes.size(); ++j) {
+				const float dx = std::abs(g.nodes[i].x - g.nodes[j].x), dy = std::abs(g.nodes[i].y - g.nodes[j].y);
+				CHECK_MSG(dx > 150.0f || dy > 60.0f, std::string(name) + ": " + g.nodes[i].type + " overlaps " + g.nodes[j].type);
+			}
+		}
+		// Every node of a template is used (reaches an output): nothing to puzzle over
+		CHECK_MSG(spawn.body.size() + update.body.size() > 0, name);
+	}
+	// Each template except Blank shows off a parameter the Inspector and scripts can change
+	CHECK(!MakeParticleTemplate("Fountain").parameters.empty());
+	CHECK(MakeParticleTemplate("No Such Template").nodes.size() == 2u); // unknown: the two outputs (blank)
+}
+
+TEST_CASE(Vfx, ParticleTemplatesMakeFilesThatPlay)
+{
+	A::ProjectRoot(s) = A::TempRoot() / "ParticleTemplateProject";
+	std::filesystem::remove_all(A::ProjectRoot(s) / "Assets" / "Effects");
+	const std::string path = s.CreateParticleGraph("Fountain", "Fountain");
+	CHECK(path == "Assets/Effects/Fountain.vfxparticle.json");
+	CHECK(s.CreateParticleGraph("Fountain", "Fountain") == "Assets/Effects/Fountain 1.vfxparticle.json"); // never overwrites
+	const EffectMaterialEntry* entry = s.GetParticleGraph(path);
+	REQUIRE(entry != nullptr);
+	CHECK_MSG(entry->ok, entry->errors.empty() ? std::string() : entry->errors.front().message);
+	CHECK(!entry->parameters.empty());
+
+	AimParticleTestCamera(s);
+	s.UpdateWorldMatrices();
+	A::State(s) = EditorSceneState::Play;
+	A::GameTime(s) = 0.0;
+	GpuParticles::GetInstance()->Clear();
+	CaptureGameViewSignature(s);
+	const std::vector<float> empty = CaptureGameViewSignature(s);
+	double clock = 0.0;
+	for (const char* name : kParticleTemplates) {
+		if (std::string_view(name) == "Blank") continue;
+		const std::string file = s.CreateParticleGraph(name, name);
+		REQUIRE(!file.empty());
+		const ScreenBlob blob = BlobOf(empty, ShootParticleGraph(s, file, { 0.0f, 0.0f, 0.0f }, 0.5, clock, [](GameObject& obj) {
+			auto* p = obj.components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+			p->emitting = true;
+			p->emitRate = 400.0f;
+			p->capacity = 2000;
+			p->additive = true;
+		}));
+		CHECK_MSG(blob.weight > 20.0f, std::format("{} shows nothing ({:.0f})", name, blob.weight));
+	}
+	A::State(s) = EditorSceneState::Edit;
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+TEST_CASE(Vfx, MaterialEditorCreatesOpensAndSaves)
+{
+	A::ProjectRoot(s) = A::TempRoot() / "MaterialEditorProject";
+	std::filesystem::remove_all(A::ProjectRoot(s) / "Assets" / "Effects");
+	const std::string path = s.CreateEffectMaterial("Fire", "Scrolling Fire");
+	CHECK(path == "Assets/Effects/Fire.vfxmat.json");
+	CHECK(std::filesystem::exists(A::ProjectRoot(s) / path));
+	CHECK(s.CreateEffectMaterial("Fire", "Scrolling Fire") == "Assets/Effects/Fire 1.vfxmat.json"); // never overwrites
+	REQUIRE(s.GetEffectMaterial(path) != nullptr);
+	CHECK(s.GetEffectMaterial(path)->ok);
+	const uint64_t before = s.GetEffectMaterial(path)->key;
+
+	// Open, change a value, save: the runtime picks it up at once
+	REQUIRE(s.OpenMaterialGraph(path));
+	GraphEditorModel& m = A::MaterialEditor(s);
+	uint32_t color = 0;
+	for (const GraphNode& n : m.graph.nodes) {
+		if (n.type == "Color") color = n.id;
+	}
+	REQUIRE(color != 0);
+	m.graph.FindMutable(color)->values["Color"] = { 0.0f, 3.0f, 0.0f, 1.0f };
+	m.Commit();
+	REQUIRE(s.SaveMaterialGraph());
+	CHECK(!m.dirty);
+	REQUIRE(s.GetEffectMaterial(path) != nullptr);
+	CHECK(s.GetEffectMaterial(path)->ok);
+	CHECK(s.GetEffectMaterial(path)->key != before);
+	CHECK(!s.OpenMaterialGraph("Assets/Effects/Missing.vfxmat.json"));
+
+	// Assigning to the selected GPU Particles
+	GameObject& obj = s.CreateGameObject("Fire Fx", GameObjectType::Empty);
+	REQUIRE(s.AddComponentByName(obj, kGpuParticlesComponent));
+	const uint32_t id = obj.id;
+	A::Select(s, id);
+	CHECK(s.AssignMaterialToSelection(path));
+	CHECK(std::string(s.FindGameObjectById(id, false)->components.Get<GpuParticlesComponent>(kGpuParticlesComponent)->material) == path);
+	s.QueueDeleteGameObjectById(id);
+	s.ProcessPendingDeletes();
+	// A trail takes it too; an object without either does not
+	GameObject& comet = s.CreateGameObject("Comet Fx", GameObjectType::Empty);
+	REQUIRE(s.AddComponentByName(comet, kTrailComponent));
+	const uint32_t cometId = comet.id;
+	A::Select(s, cometId);
+	CHECK(s.AssignMaterialToSelection(path));
+	CHECK(std::string(s.FindGameObjectById(cometId, false)->components.Get<TrailComponent>(kTrailComponent)->material) == path);
+	const uint32_t plain = s.CreateGameObject("Plain", GameObjectType::Empty).id;
+	A::Select(s, plain);
+	CHECK(!s.AssignMaterialToSelection(path));
+	s.QueueDeleteGameObjectById(cometId);
+	s.QueueDeleteGameObjectById(plain);
+	s.ProcessPendingDeletes();
+}
+
+TEST_CASE(Localization, GraphNodesAreTranslated)
+{
+	// Node names, categories, pins, settings, choices and help text all show in the graph editor
+	const std::filesystem::path file = "Resources/Localization/ja.json";
+	std::ifstream in(file);
+	REQUIRE(in.good());
+	const nlohmann::json ja = nlohmann::json::parse(in, nullptr, false);
+	REQUIRE(ja.is_object());
+	std::vector<std::string> missing;
+	const auto need = [&](const std::string& text) {
+		if (!text.empty() && !ja.contains(text) && std::find(missing.begin(), missing.end(), text) == missing.end()) missing.push_back(text);
+	};
+	for (const NodeDef& def : NodeLibrary::Effects().All()) {
+		need(def.type);
+		need(def.category);
+		need(def.tooltip);
+		for (const PinDef& pin : def.inputs) { need(pin.name); need(pin.tooltip); need(pin.defaultLabel); }
+		for (const PinDef& pin : def.outputs) { need(pin.name); need(pin.tooltip); }
+		for (const ParamDef& param : def.params) {
+			need(param.name);
+			need(param.tooltip);
+			for (const std::string& choice : param.choices) need(choice);
+		}
+	}
+	for (const char* name : kMaterialTemplates) need(name);
+	std::string list;
+	for (const std::string& m : missing) list += "\n  " + m;
+	CHECK_MSG(missing.empty(), std::to_string(missing.size()) + " without Japanese:" + list);
+}
+
+TEST_CASE(Vfx, MaterialGraphsShadeTrails)
+{
+	const NodeLibrary& lib = NodeLibrary::Effects();
+	A::ProjectRoot(s) = A::TempRoot() / "TrailMaterialProject";
+	NodeGraph red;
+	red.kind = GraphKind::Material;
+	const uint32_t color = red.AddNode("Color", 0.0f, 0.0f, lib);
+	red.FindMutable(color)->values["Color"] = { 1.0f, 0.0f, 0.0f, 1.0f };
+	const uint32_t out = red.AddNode("Material Output", 200.0f, 0.0f, lib);
+	std::string why;
+	REQUIRE(red.Connect(color, "RGB", out, "Emissive Color", lib, &why));
+	const std::string redPath = WriteMaterial(s, "RedTrail", red);
+
+	A::AimAudioListener(s, { 0.0f, 2.0f, -10.0f }, 0.0f);
+	A::State(s) = EditorSceneState::Play;
+	const std::vector<float> empty = CaptureGameViewSignature(s);
+	const auto draw = [&](const std::string& material) {
+		GameObject& obj = s.CreateGameObject("Comet", GameObjectType::Empty);
+		const uint32_t id = obj.id;
+		std::vector<float> picture;
+		if (s.AddComponentByName(obj, kTrailComponent)) {
+			auto* trail = s.FindGameObjectById(id, false)->components.Get<TrailComponent>(kTrailComponent);
+			trail->widthStart = trail->widthEnd = 3.0f;
+			trail->lifetime = 2.0f;
+			trail->intensity = 1.0f;
+			trail->additive = false;
+			trail->colorStart = trail->colorEnd = { 0.02f, 0.02f, 0.25f, 1.0f }; // dark blue: stands out on the sky
+			strcpy_s(trail->material, material.c_str());
+			for (int i = 0; i <= 8; ++i) {
+				s.FindGameObjectById(id, false)->translation = { -4.0f + i, 2.0f, 0.0f };
+				A::GameTime(s) = i * 0.02;
+				s.UpdateWorldMatrices();
+				s.UpdateTrails();
+			}
+			picture = CaptureGameViewSignature(s);
+		}
+		s.QueueDeleteGameObjectById(id);
+		s.ProcessPendingDeletes();
+		return picture;
+	};
+	// Where the trail covers the sky the most, a red material makes red rise above green
+	const auto coverage = [&](const std::vector<float>& picture) {
+		size_t best = 0;
+		float drop = -1.0e9f;
+		for (size_t i = 0; i + 2 < picture.size() && i + 2 < empty.size(); i += 3) {
+			const float d = (empty[i + 1] - picture[i + 1]) + (empty[i + 2] - picture[i + 2]);
+			if (d > drop) { drop = d; best = i; }
+		}
+		return std::pair<size_t, float>{ best, drop };
+	};
+	const std::vector<float> plain = draw("");
+	REQUIRE(!plain.empty());
+	const auto [plainCell, plainDrop] = coverage(plain);
+	CHECK_MSG(plainDrop > 40.0f && plain[plainCell] < plain[plainCell + 1] + 30.0f, std::format("plain trail {:.0f},{:.0f},{:.0f}", plain[plainCell], plain[plainCell + 1], plain[plainCell + 2]));
+	const std::vector<float> shaded = draw(redPath);
+	REQUIRE(!shaded.empty());
+	const auto [cell, drop] = coverage(shaded);
+	CHECK_MSG(drop > 40.0f && shaded[cell] > shaded[cell + 1] + 60.0f, std::format("red material trail {:.0f},{:.0f},{:.0f} over sky {:.0f},{:.0f},{:.0f}", shaded[cell], shaded[cell + 1], shaded[cell + 2], empty[cell], empty[cell + 1], empty[cell + 2]));
+	A::State(s) = EditorSceneState::Edit;
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+TEST_CASE(Vfx, MaterialTexturesSurviveAMove)
+{
+	const std::filesystem::path root = A::TempRoot() / "MaterialTextureProject";
+	std::filesystem::remove_all(root);
+	A::ProjectRoot(s) = root;
+	REQUIRE(PlaceTestTexture(root, "Assets/Textures/spark.png"));
+	s.AssetDb().Refresh();
+
+	// The editor stores the texture's GUID next to its path, like scenes do
+	NodeGraph g = MakeMaterialTemplate("Flipbook Smoke");
+	uint32_t sample = 0;
+	for (const GraphNode& n : g.nodes) {
+		if (n.type == "Texture Sample") sample = n.id;
+	}
+	REQUIRE(sample != 0);
+	s.SetMaterialTexture(*g.FindMutable(sample), "Texture", "Assets/Textures/spark.png");
+	CHECK(g.Find(sample)->texts.at("Texture") == "Assets/Textures/spark.png");
+	CHECK(!g.Find(sample)->texts.at("Texture Guid").empty());
+	const std::string path = WriteMaterial(s, "Spark", g);
+	A::ForgetEffectMaterials(s);
+	const EffectMaterialEntry* before = s.GetEffectMaterial(path);
+	REQUIRE(before != nullptr && before->ok);
+	REQUIRE(before->textureHandles.size() == 2u);
+	CHECK(before->textureHandles[1] != 0u);
+
+	// Renamed in the Project panel: the material still finds it (after a restart too)
+	REQUIRE(s.MoveAssetAndUpdateReferences("Assets/Textures/spark.png", "Assets/Textures/ember.png"));
+	A::ForgetEffectMaterials(s);
+	const EffectMaterialEntry* after = s.GetEffectMaterial(path);
+	REQUIRE(after != nullptr && after->ok);
+	REQUIRE(after->textureHandles.size() == 2u);
+	CHECK(after->textureHandles[1] != 0u);
+	// The graph editor shows the new name
+	REQUIRE(s.OpenMaterialGraph(path));
+	CHECK(A::MaterialEditor(s).graph.Find(sample)->texts.at("Texture") == "Assets/Textures/ember.png");
+	// Clearing the texture clears its GUID too
+	s.SetMaterialTexture(*A::MaterialEditor(s).graph.FindMutable(sample), "Texture", "");
+	CHECK(A::MaterialEditor(s).graph.Find(sample)->texts.at("Texture Guid").empty());
+}
+
+TEST_CASE(Vfx, MaterialPreviewShowsTheMaterial)
+{
+	const NodeLibrary& lib = NodeLibrary::Effects();
+	A::ProjectRoot(s) = A::TempRoot() / "MaterialPreviewProject";
+	const auto solid = [&](const char* name, Vector4 color) {
+		NodeGraph g;
+		g.kind = GraphKind::Material;
+		const uint32_t c = g.AddNode("Color", 0.0f, 0.0f, lib);
+		g.FindMutable(c)->values["Color"] = color;
+		const uint32_t out = g.AddNode("Material Output", 200.0f, 0.0f, lib);
+		std::string why;
+		g.Connect(c, "RGB", out, "Emissive Color", lib, &why);
+		return WriteMaterial(s, name, g);
+	};
+	const std::string red = solid("PreviewRed", { 1.0f, 0.0f, 0.0f, 1.0f });
+	const std::string blue = solid("PreviewBlue", { 0.0f, 0.0f, 1.0f, 1.0f });
+	// The cell where one channel stands out the most over another
+	const auto lead = [](const std::vector<float>& picture, int strong, int weak) {
+		float best = -255.0f;
+		for (size_t i = 0; i + 2 < picture.size(); i += 3) best = (std::max)(best, picture[i + strong] - picture[i + weak]);
+		return best;
+	};
+	const auto look = [&](const std::string& path) {
+		if (!s.OpenMaterialGraph(path)) return std::vector<float>{}; // REQUIRE cannot return from a lambda
+		std::vector<float> picture;
+		for (int i = 0; i < 6; ++i) picture = CaptureViewSignature(s, A::PreviewRT(s));
+		return picture;
+	};
+	const std::vector<float> redPicture = look(red);
+	REQUIRE(!redPicture.empty());
+	CHECK_MSG(lead(redPicture, 0, 1) > 60.0f, std::format("red preview: red over green by {:.0f}", lead(redPicture, 0, 1)));
+	const std::vector<float> bluePicture = look(blue);
+	REQUIRE(!bluePicture.empty());
+	CHECK_MSG(lead(bluePicture, 2, 0) > 60.0f, std::format("blue preview: blue over red by {:.0f}", lead(bluePicture, 2, 0)));
+	CHECK_MSG(lead(bluePicture, 0, 1) < 30.0f, "the red particles of the last material are gone");
+	A::CloseMaterialGraph(s);
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+TEST_CASE(Vfx, EffectEditorPreviewShowsTheEffect)
+{
+	A::State(s) = EditorSceneState::Edit;
+	A::CloseMaterialGraph(s); // the Material Graph's preview uses the same target and would win
+	GpuParticles::GetInstance()->Clear();
+	// Far from where the Scene camera looks: the panel finds the effect by itself
+	const uint32_t root = s.CreateEffectFromTemplate("Magic Aura", { 40.0f, 1.0f, 25.0f });
+	REQUIRE(root != 0);
+	// A green emitter at the same place that is not part of the effect: the panel leaves it out
+	GameObject& decoy = s.CreateGameObject("Not The Effect", GameObjectType::Empty);
+	const uint32_t decoyId = decoy.id;
+	decoy.translation = { 40.0f, 1.0f, 25.0f };
+	s.AddComponentByName(decoy, kGpuParticlesComponent);
+	if (auto* p = decoy.components.Get<GpuParticlesComponent>(kGpuParticlesComponent)) {
+		p->emitRate = 400.0f;
+		p->speedMin = p->speedMax = 0.5f;
+		p->sizeStart = p->sizeEnd = 1.0f;
+		p->colorStart = p->colorEnd = { 0.0f, 3.0f, 0.0f, 1.0f };
+	}
+	s.UpdateWorldMatrices();
+	const auto picture = [&] {
+		std::vector<float> last;
+		for (int i = 0; i < 8; ++i) last = CaptureViewSignature(s, A::PreviewRT(s));
+		return last;
+	};
+	const auto greenLead = [](const std::vector<float>& p) {
+		float best = -255.0f;
+		for (size_t i = 0; i + 2 < p.size(); i += 3) best = (std::max)(best, p[i + 1] - (std::max)(p[i], p[i + 2]));
+		return best;
+	};
+
+	A::ShowEffectEditor(s) = true;
+	s.StopEffectPreview();
+	const std::vector<float> idle = picture();
+	s.StartEffectPreview(root);
+	const std::vector<float> playing = picture();
+	REQUIRE(!playing.empty());
+	CHECK_MSG(LargestSignatureDifference(idle, playing) > 30.0f, std::format("the effect shows in the panel: {:.0f}", LargestSignatureDifference(idle, playing)));
+	CHECK_MSG(greenLead(playing) < 40.0f, std::format("the other emitter stays out: green lead {:.0f}", greenLead(playing)));
+	s.StopEffectPreview();
+
+	A::ShowEffectEditor(s) = false;
+	s.QueueDeleteGameObjectById(decoyId);
+	s.QueueDeleteGameObjectById(root);
+	s.ProcessPendingDeletes();
 	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
 }
 

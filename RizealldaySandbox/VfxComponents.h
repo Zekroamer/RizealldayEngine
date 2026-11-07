@@ -3,6 +3,8 @@
 #include "render/GpuParticles.h"
 #include "math/Matrix4x4.h"
 #include <cmath>
+#include <map>
+#include <sstream>
 #include <string>
 
 inline constexpr const char* kTrailComponent = "Trail";
@@ -29,6 +31,7 @@ struct TrailComponent {
 	bool additive = true;
 	bool emitting = true; // turn off to let the trail fade, e.g. at the end of a swing
 	char texture[260] = {}; // empty = soft edges; u runs along the trail (head 0, tail 1), v across it
+	char material[260] = {}; // a material graph (.vfxmat.json); Particle Age = place along the trail
 
 	TrailRibbon ribbon; // runtime, not saved
 	int effectGate = kEffectGateNone; // runtime
@@ -71,12 +74,46 @@ struct GpuParticlesComponent {
 	float stretchFactor = 0.0f; // > 0: streaks along the velocity (sparks, rain)
 	bool uprightBillboard = false; // quads stand on world Y (flames, grass) instead of facing the camera
 	int spawnBurst = 0;            // prefab instances fire this many when spawned or reused from the pool
+	char material[260] = {};       // a material graph (.vfxmat.json); empty = texture x colour
+	char graph[260] = {};          // a particle graph (.vfxparticle.json): replaces the settings above for how particles start and move
+	char parameters[512] = {};     // this object's values of the graph's parameters (FormatEffectParameterValues)
 
 	// Runtime, not saved
 	float emitCarry = 0.0f;
 	double lastTime = -1.0;
 	int effectGate = kEffectGateNone;
 };
+
+/// Per-object values of particle graph parameters, saved as "Name=x y z w;Other=x y z w"
+inline std::map<std::string, Vector4> ParseEffectParameterValues(const char* text)
+{
+	std::map<std::string, Vector4> values;
+	std::stringstream all(text ? text : "");
+	std::string entry;
+	while (std::getline(all, entry, ';')) {
+		const size_t equals = entry.find('=');
+		if (equals == std::string::npos || equals == 0) continue;
+		Vector4 v{ 0.0f, 0.0f, 0.0f, 0.0f };
+		std::stringstream numbers(entry.substr(equals + 1));
+		numbers >> v.x >> v.y >> v.z >> v.w;
+		values[entry.substr(0, equals)] = v;
+	}
+	return values;
+}
+
+/// Names with '=' or ';' cannot be stored and are skipped
+inline std::string FormatEffectParameterValues(const std::map<std::string, Vector4>& values)
+{
+	std::string text;
+	for (const auto& [name, v] : values) {
+		if (name.empty() || name.find_first_of("=;") != std::string::npos) continue;
+		std::ostringstream entry;
+		entry << name << '=' << v.x << ' ' << v.y << ' ' << v.z << ' ' << v.w;
+		if (!text.empty()) text += ';';
+		text += entry.str();
+	}
+	return text;
+}
 
 /// Shape, velocity mode and stretch of `p` in world space: box half-axes follow the object's rotation and
 /// per-axis scale, radii its largest scale. Unknown values (old files, scripts) fall back to a point emitter.

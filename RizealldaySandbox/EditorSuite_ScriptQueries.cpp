@@ -459,6 +459,7 @@ void EditorSuite::ResetScriptRuntimeState()
 	delayedDespawns_.clear();
 	pendingReparents_.clear();
 	pendingParticleBursts_.clear();
+	effectParameterOverrides_.clear();
 	if (musicVoice_ != 0) {
 		Audio::GetInstance()->StopAudio(musicVoice_);
 	}
@@ -1101,6 +1102,10 @@ void EditorSuite::SetupEngineAPIExtensions()
 		pulse.shake = shake;
 		pulse.seconds = seconds;
 		static_cast<EditorSuite*>(ctx)->TriggerImpactPulse(pulse); // ignores NaN / non-positive durations
+	};
+	engineApi_.setEffectParameter = [](void* ctx, uint32_t id, const char* name, float x, float y, float z, float w) -> bool {
+		if (!ctx || !name || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) || !std::isfinite(w)) return false;
+		return static_cast<EditorSuite*>(ctx)->SetEffectParameter(id, name, { x, y, z, w });
 	};
 	engineApi_.setLookPreset = [](void* ctx, const char* name) -> bool {
 		return ctx && name && ApplyPostLookPreset(static_cast<EditorSuite*>(ctx)->postSettings_, name);

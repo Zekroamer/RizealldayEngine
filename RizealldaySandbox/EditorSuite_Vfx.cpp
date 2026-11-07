@@ -44,7 +44,7 @@ namespace {
 
 void EditorSuite::RegisterVfxComponents()
 {
-	RegisterDataComponent<TrailComponent>(kTrailComponent, "Rendering", {
+	ComponentInfo& trail = RegisterDataComponent<TrailComponent>(kTrailComponent, "Rendering", {
 		RIZE_FIELD(TrailComponent, lifetime, ComponentFieldType::Float, 0.01f, 30.0f),
 		RIZE_FIELD(TrailComponent, minDistance, ComponentFieldType::Float, 0.001f, 10.0f),
 		RIZE_FIELD(TrailComponent, widthStart, ComponentFieldType::Float, 0.0f, 100.0f),
@@ -54,7 +54,16 @@ void EditorSuite::RegisterVfxComponents()
 		RIZE_FIELD(TrailComponent, intensity, ComponentFieldType::Float, 0.0f, 100.0f),
 		RIZE_FIELD(TrailComponent, additive, ComponentFieldType::Bool, 0.0f, 0.0f),
 		RIZE_FIELD(TrailComponent, emitting, ComponentFieldType::Bool, 0.0f, 0.0f),
-		RIZE_FIELD(TrailComponent, texture, ComponentFieldType::Asset, 0.0f, 0.0f) });
+		RIZE_FIELD(TrailComponent, texture, ComponentFieldType::Asset, 0.0f, 0.0f),
+		RIZE_FIELD(TrailComponent, material, ComponentFieldType::Asset, 0.0f, 0.0f) });
+#ifdef USE_IMGUI
+	trail.drawExtra = [](EditorSuite& suite, GameObject& obj, ComponentData& data) {
+		auto* t = static_cast<TrailComponent*>(data.Data());
+		suite.DrawMaterialRow(obj, t->material, sizeof(t->material));
+	};
+#else
+	(void)trail;
+#endif
 
 	RegisterDataComponent<DecalComponent>(kDecalComponent, "Rendering", {
 		RIZE_FIELD(DecalComponent, texture, ComponentFieldType::Asset, 0.0f, 0.0f),
@@ -96,18 +105,26 @@ void EditorSuite::RegisterVfxComponents()
 		RIZE_FIELD(GpuParticlesComponent, boxExtents, ComponentFieldType::Vector3, 0.0f, 0.0f),
 		RIZE_FIELD(GpuParticlesComponent, stretchFactor, ComponentFieldType::Float, 0.0f, 10.0f),
 		RIZE_FIELD(GpuParticlesComponent, uprightBillboard, ComponentFieldType::Bool, 0.0f, 0.0f),
-		RIZE_FIELD(GpuParticlesComponent, spawnBurst, ComponentFieldType::Int, 0.0f, 1000000.0f) });
+		RIZE_FIELD(GpuParticlesComponent, spawnBurst, ComponentFieldType::Int, 0.0f, 1000000.0f),
+		RIZE_FIELD(GpuParticlesComponent, material, ComponentFieldType::Asset, 0.0f, 0.0f),
+		RIZE_FIELD(GpuParticlesComponent, graph, ComponentFieldType::Asset, 0.0f, 0.0f),
+		RIZE_FIELD(GpuParticlesComponent, parameters, ComponentFieldType::Text, 0.0f, 0.0f) });
 	for (ComponentField& field : particles.fields) {
 		const std::string_view name = field.name;
 		if (name == "shape") field.tooltip = "0 Point, 1 Sphere, 2 Box, 3 Cone (base disc), 4 Ring. Turns and scales with the object.";
 		else if (name == "velocityMode") field.tooltip = "0 Direction: a cone around Direction. 1 Radial: away from the centre of the shape.";
 		else if (name == "stretchFactor") field.tooltip = "0 = round. Above 0 particles stretch along their velocity (sparks, rain).";
 		else if (name == "uprightBillboard") field.tooltip = "Quads stand on the world Y axis and only turn around it (flames, grass).";
+		else if (name == "material") field.tooltip = "A material graph (.vfxmat.json) that decides the colour of every pixel. Empty = Texture x Color.";
+		else if (name == "graph") field.tooltip = "A particle graph (.vfxparticle.json) that decides how particles start and move.\nWhile it is set, Life, Speed, Shape, Gravity, Size and Color above are not used.";
+		else if (name == "parameters") field.hidden = true; // drawn as one row per parameter below
 		else if (name == "spawnBurst") field.tooltip = "Prefab instances fire this many particles when spawned or reused.\nScripts: EmitParticles() / SetParticlesEmitting().";
 	}
 #ifdef USE_IMGUI
-	particles.drawExtra = [](EditorSuite& suite, GameObject&, ComponentData& data) {
+	particles.drawExtra = [](EditorSuite& suite, GameObject& obj, ComponentData& data) {
 		auto* p = static_cast<GpuParticlesComponent*>(data.Data());
+		suite.DrawMaterialRow(obj, p->material, sizeof(p->material));
+		suite.DrawParticleGraphRows(obj, *p);
 		if (ImGui::BeginCombo(TrId("Preset"), Tr("Choose..."))) {
 			for (const char* preset : kGpuParticlePresets) {
 				if (ImGui::Selectable(Tr(preset))) {
@@ -130,6 +147,8 @@ void EditorSuite::UpdateGpuParticles(ID3D12GraphicsCommandList* cmdList)
 	const bool inPlay = sceneState_ != EditorSceneState::Edit || IsStandaloneMode();
 	const double wallClock = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 	const double now = inPlay ? gameTime_ : wallClock;
+	GpuParticles::GetInstance()->SetTime(static_cast<float>(std::fmod(now, 3600.0))); // materials that move (an hour keeps float precision)
+	TrailRenderer::GetInstance()->SetTime(static_cast<float>(std::fmod(now, 3600.0)));
 	for (GameObject& obj : gameObjects_) {
 		auto* p = obj.isActive ? obj.components.Get<GpuParticlesComponent>(kGpuParticlesComponent) : nullptr;
 		if (!p) continue;
@@ -172,11 +191,114 @@ void EditorSuite::UpdateGpuParticles(ID3D12GraphicsCommandList* cmdList)
 		settings.additive = p->additive;
 		ApplyGpuParticleShape(*p, obj.worldMatrix, settings);
 		settings.textureHandle = p->texture[0] != '\0' ? TextureManager::GetInstance()->LoadTexture(ResolveAssetPath(p->texture)) : SoftCircleTexture();
+		if (p->material[0] != '\0') {
+			if (const EffectMaterialEntry* material = GetEffectMaterial(p->material); material && material->ok) {
+				settings.material = material->key;
+				for (size_t slot = 0; slot < material->textureHandles.size() && slot < GpuParticles::kMaterialTextures; ++slot) {
+					settings.materialTextures[slot] = material->textureHandles[slot];
+				}
+			}
+		}
+		if (p->graph[0] != '\0') {
+			if (const EffectMaterialEntry* graph = GetParticleGraph(p->graph); graph && graph->ok) {
+				settings.graph = graph->key;
+				// The graph's default, then this object's value, then what a script set
+				const std::map<std::string, Vector4> values = ParseEffectParameterValues(p->parameters);
+				const auto overrides = effectParameterOverrides_.find(obj.id);
+				for (size_t i = 0; i < graph->parameters.size() && i < GpuParticles::kGraphParameters; ++i) {
+					const std::string& name = graph->parameters[i].name;
+					Vector4 value = graph->parameters[i].value;
+					if (const auto it = values.find(name); it != values.end()) value = it->second;
+					if (overrides != effectParameterOverrides_.end()) {
+						if (const auto it = overrides->second.find(name); it != overrides->second.end()) value = it->second;
+					}
+					settings.graphParams[i] = value;
+				}
+			}
+		}
 
 		const Vector3 origin{ obj.worldMatrix.m[3][0], obj.worldMatrix.m[3][1], obj.worldMatrix.m[3][2] };
 		GpuParticles::GetInstance()->Simulate(cmdList, obj.id, origin, deltaTime, emit, settings);
 	}
+	if (MaterialPreviewActive()) SimulateMaterialPreview(cmdList, wallClock);
 	GpuParticles::GetInstance()->EndFrame();
+}
+
+namespace {
+	// Far below the scene: the preview emitter is never drawn in the views, but it should not even be near them
+	const Vector3 kMaterialPreviewOrigin{ 0.0f, -10000.0f, 0.0f };
+}
+
+bool EditorSuite::MaterialPreviewActive() const
+{
+#ifdef USE_IMGUI
+	// The asset preview of a 3D model uses the same target: that one wins while it is open
+	return showMaterialGraph_ && !materialEditorPath_.empty() && !(previewModel_ && previewObject3d_) && modelPreviewRT_.IsInitialized();
+#else
+	return false;
+#endif
+}
+
+void EditorSuite::SimulateMaterialPreview(ID3D12GraphicsCommandList* cmdList, double wallClock)
+{
+	GpuParticleSettings settings;
+	settings.capacity = 160;
+	settings.lifeMin = 1.2f;
+	settings.lifeMax = 2.0f;
+	settings.speedMin = 0.2f;
+	settings.speedMax = 0.6f;
+	settings.spreadDegrees = 180.0f;
+	settings.sizeStart = 0.9f;
+	settings.sizeEnd = 0.6f;
+	settings.colorStart = { 1.0f, 1.0f, 1.0f, 1.0f };
+	settings.colorEnd = { 1.0f, 1.0f, 1.0f, 0.0f };
+	settings.additive = false;
+	settings.shape = static_cast<uint32_t>(GpuParticleShape::Sphere);
+	settings.shapeRadius = 0.6f;
+	settings.textureHandle = SoftCircleTexture();
+	uint64_t key = 0;
+	if (const EffectMaterialEntry* material = GetEffectMaterial(materialEditorPath_); material && material->ok) {
+		key = material->key;
+		settings.material = key;
+		for (size_t slot = 0; slot < material->textureHandles.size() && slot < GpuParticles::kMaterialTextures; ++slot) {
+			settings.materialTextures[slot] = material->textureHandles[slot];
+		}
+	}
+	// A new material starts a fresh cloud with a burst: a different capacity makes GpuParticles drop the old particles
+	uint32_t emit = 0;
+	if (!materialPreviewStarted_ || key != materialPreviewKey_) {
+		materialPreviewKey_ = key;
+		materialPreviewStarted_ = true;
+		materialPreviewLast_ = wallClock;
+		materialPreviewCapacity_ = materialPreviewCapacity_ == 160u ? 161u : 160u;
+		emit = 60;
+	}
+	settings.capacity = materialPreviewCapacity_;
+	const float dt = std::clamp(static_cast<float>(wallClock - materialPreviewLast_), 0.0f, 0.1f);
+	materialPreviewLast_ = wallClock;
+	emit += GpuParticleEmitCount(40.0f, dt, materialPreviewCarry_);
+	GpuParticles::GetInstance()->Simulate(cmdList, GpuParticles::kPreviewEmitterId, kMaterialPreviewOrigin, dt, emit, settings);
+}
+
+void EditorSuite::RenderMaterialPreview(ID3D12GraphicsCommandList* cmdList)
+{
+#ifdef USE_IMGUI
+	materialPreviewCamera_.fovY = 0.6f;
+	materialPreviewCamera_.aspectRatio = 1.0f;
+	materialPreviewCamera_.nearClip = 0.05f;
+	materialPreviewCamera_.farClip = 100.0f;
+	materialPreviewCamera_.translation = { kMaterialPreviewOrigin.x, kMaterialPreviewOrigin.y, kMaterialPreviewOrigin.z - 4.0f };
+	materialPreviewCamera_.rotation = { 0.0f, 0.0f, 0.0f };
+	materialPreviewCamera_.Update();
+	previewSceneRT_.BeginRender();
+	GpuParticles::GetInstance()->DrawEmitter(cmdList, materialPreviewCamera_, GpuParticles::kPreviewEmitterId);
+	previewSceneRT_.EndRender();
+	modelPreviewRT_.BeginRender(false);
+	postProcess_.Resolve(cmdList, previewSceneRT_);
+	modelPreviewRT_.EndRender();
+#else
+	(void)cmdList;
+#endif
 }
 
 void EditorSuite::UpdateTrails()
@@ -221,18 +343,82 @@ void EditorSuite::DrawDecals(ID3D12GraphicsCommandList* cmdList, const Camera& c
 	decalExcluded_.clear();
 }
 
-void EditorSuite::DrawEffects(ID3D12GraphicsCommandList* cmdList, const Camera& camera, RenderTexture& target)
+bool EditorSuite::EffectPanelPreviewActive() const
+{
+#ifdef USE_IMGUI
+	return showEffectEditor_ && effectPreviewRoot_ != 0 && sceneState_ == EditorSceneState::Edit && !MaterialPreviewActive() &&
+		!(previewModel_ && previewObject3d_) && modelPreviewRT_.IsInitialized();
+#else
+	return false;
+#endif
+}
+
+void EditorSuite::RenderEffectPreview(ID3D12GraphicsCommandList* cmdList)
+{
+#ifdef USE_IMGUI
+	const GameObject* root = FindGameObjectById(effectPreviewRoot_, false);
+	if (!root) return;
+	// Orbit around the root (its preview motion included): the panel keeps the effect in view wherever it is
+	const Vector3 target{ root->worldMatrix.m[3][0], root->worldMatrix.m[3][1], root->worldMatrix.m[3][2] };
+	const float pitch = std::clamp(effectPanelPitch_, -1.4f, 1.4f);
+	const float distance = std::clamp(effectPanelDistance_, 0.5f, 200.0f);
+	effectPanelCamera_.fovY = 0.7f;
+	effectPanelCamera_.aspectRatio = 1.0f;
+	effectPanelCamera_.nearClip = 0.05f;
+	effectPanelCamera_.farClip = 1000.0f;
+	effectPanelCamera_.orthographic = false;
+	// Rotation (pitch, yaw) looks along +Z turned by yaw and tilted down by pitch: step back along that line
+	const Vector3 forward{ std::sin(effectPanelYaw_) * std::cos(pitch), -std::sin(pitch), std::cos(effectPanelYaw_) * std::cos(pitch) };
+	effectPanelCamera_.translation = { target.x - forward.x * distance, target.y - forward.y * distance, target.z - forward.z * distance };
+	effectPanelCamera_.rotation = { pitch, effectPanelYaw_, 0.0f };
+	effectPanelCamera_.Update();
+	previewSceneRT_.BeginRender();
+	DrawEffects(cmdList, effectPanelCamera_, previewSceneRT_, effectPreviewRoot_);
+	previewSceneRT_.EndRender();
+	modelPreviewRT_.BeginRender(false);
+	postProcess_.Resolve(cmdList, previewSceneRT_);
+	modelPreviewRT_.EndRender();
+#else
+	(void)cmdList;
+#endif
+}
+
+void EditorSuite::DrawEffects(ID3D12GraphicsCommandList* cmdList, const Camera& camera, RenderTexture& target, uint32_t onlyEffectRoot)
 {
 	(void)target;
 
-	// One draw per texture and blend mode; blended ones first
-	std::map<std::pair<bool, uint32_t>, std::vector<TrailVertex>> trails;
+	// One draw per blend mode, texture and material; blended ones first
+	struct TrailBatch { std::vector<TrailVertex> vertices; std::vector<uint32_t> textures; };
+	std::map<std::tuple<bool, uint32_t, uint64_t>, TrailBatch> trails;
+	// Ribbons store the clock they were made on: the Effect Editor's preview has its own in Edit
+	const bool editPreview = sceneState_ == EditorSceneState::Edit && !IsStandaloneMode() && effectPreviewRoot_ != 0;
+	const double now = editPreview ? effectPreviewClock_ : gameTime_;
+	std::vector<uint64_t> effectEmitters;
 	for (GameObject& obj : gameObjects_) {
+		if (onlyEffectRoot != 0) {
+			if (EffectRootOf(obj.id) != onlyEffectRoot) continue;
+			if (obj.components.Has(kGpuParticlesComponent)) effectEmitters.push_back(obj.id);
+		}
 		const TrailComponent* trail = obj.components.Get<TrailComponent>(kTrailComponent);
 		if (!trail || trail->ribbon.PointCount() < 2) continue;
 		const uint32_t texture = trail->texture[0] != '\0' ? TextureManager::GetInstance()->LoadTexture(ResolveAssetPath(trail->texture)) : 0u;
-		trail->ribbon.BuildMesh(camera.translation, gameTime_, StyleOf(*trail), trails[{ trail->additive, texture }]);
+		uint64_t material = 0;
+		std::vector<uint32_t> materialTextures;
+		if (trail->material[0] != '\0') {
+			const EffectMaterialEntry* entry = GetEffectMaterial(trail->material);
+			if (entry && entry->ok && TrailRenderer::GetInstance()->BuildMaterial(entry->key, entry->body, nullptr)) {
+				material = entry->key;
+				materialTextures = entry->textureHandles;
+			}
+		}
+		TrailBatch& batch = trails[{ trail->additive, texture, material }];
+		batch.textures = materialTextures;
+		trail->ribbon.BuildMesh(camera.translation, now, StyleOf(*trail), batch.vertices);
 	}
-	for (const auto& [key, vertices] : trails) TrailRenderer::GetInstance()->Draw(cmdList, camera, vertices, key.first, key.second);
-	GpuParticles::GetInstance()->Draw(cmdList, camera);
+	for (auto& [key, batch] : trails) {
+		batch.textures.resize(TrailRenderer::kMaterialTextures, 0u);
+		TrailRenderer::GetInstance()->Draw(cmdList, camera, batch.vertices, std::get<0>(key), std::get<1>(key), std::get<2>(key), batch.textures.data());
+	}
+	if (onlyEffectRoot != 0) GpuParticles::GetInstance()->DrawEmitters(cmdList, camera, effectEmitters);
+	else GpuParticles::GetInstance()->Draw(cmdList, camera);
 }

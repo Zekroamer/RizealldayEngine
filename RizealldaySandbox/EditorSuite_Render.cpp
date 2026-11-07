@@ -622,6 +622,15 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList)
 		modelPreviewRT_.EndRender();
 	}
 
+	// 3b. The Material Graph's preview (the same target as the model preview, which wins when both are open)
+	if (MaterialPreviewActive()) {
+		RIZE_PROFILE_GPU(cmdList, "Material Preview");
+		RenderMaterialPreview(cmdList);
+	} else if (EffectPanelPreviewActive()) {
+		RIZE_PROFILE_GPU(cmdList, "Effect Preview");
+		RenderEffectPreview(cmdList);
+	}
+
 	// 4. Restore to swapchain backbuffer for ImGui UI drawing
 	dxCommon_->BindMainRenderTarget();
 #else

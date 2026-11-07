@@ -156,6 +156,7 @@ void EditorSuite::DrawAnimatorWindow()
 		ImGui::End();
 		return;
 	}
+	if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) shortcutWindowFocusedNow_ = true;
 
 	// Toolbar
 	char pathBuf[260];

@@ -3,6 +3,8 @@
 void EditorSuite::DrawEditorUI(float deltaTime)
 {
 	RIZE_PROFILE_CPU("Editor UI");
+	shortcutWindowFocused_ = shortcutWindowFocusedNow_; // what this frame's windows report is used by the next Update
+	shortcutWindowFocusedNow_ = false;
 	if (!dxCommon_ || dxCommon_->IsDeviceLost()) {
 		return;
 	}
@@ -68,6 +70,7 @@ void EditorSuite::DrawEditorUI(float deltaTime)
 	if (showTimelineWindow_) DrawTimelineWindow();
 	if (showEffectEditor_) DrawEffectEditorWindow();
 	else if (effectPreviewRoot_ != 0) StopEffectPreview(); // closed with its X
+	if (showMaterialGraph_) DrawMaterialGraphWindow();
 	DrawAutoSaveRestoreModal();
 	if (showInputActionsWindow_) DrawInputActionsWindow();
 #endif
@@ -237,6 +240,9 @@ void EditorSuite::DrawMainMenuBar()
 			}
 			if (ImGui::MenuItem(TrId("Effect Editor"), nullptr, showEffectEditor_)) {
 				showEffectEditor_ = !showEffectEditor_;
+			}
+			if (ImGui::MenuItem(TrId("Material Graph"), nullptr, showMaterialGraph_)) {
+				showMaterialGraph_ = !showMaterialGraph_;
 			}
 			if (ImGui::MenuItem(TrId("Animator"), nullptr, showAnimatorWindow_)) {
 				showAnimatorWindow_ = !showAnimatorWindow_;

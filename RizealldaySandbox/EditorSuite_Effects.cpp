@@ -339,6 +339,32 @@ void EditorSuite::DrawEffectEditorWindow()
 	if (ImGui::Button(TrId("Stop"))) StopEffectPreview();
 	ImGui::EndDisabled();
 	if (!inEdit) ImGui::TextDisabled("%s", Tr("The preview runs in Edit mode. In Play the effect runs on game time."));
+
+	// Preview panel: only this effect, on a camera that orbits it
+	if (EffectPanelPreviewActive()) {
+		const float side = (std::min)(ImGui::GetContentRegionAvail().x, 260.0f);
+		// A button under the picture owns the mouse: dragging turns the camera instead of moving the window
+		const ImVec2 at = ImGui::GetCursorScreenPos();
+		ImGui::InvisibleButton("##EffectPreviewPanel", ImVec2(side, side));
+		ImGui::GetWindowDrawList()->AddImage(ImTextureRef((ImTextureID)modelPreviewRT_.GetSrvGPUHandle().ptr), at, ImVec2(at.x + side, at.y + side));
+		if (ImGui::IsItemActive()) {
+			const ImVec2 delta = ImGui::GetIO().MouseDelta;
+			effectPanelYaw_ += delta.x * 0.01f;
+			effectPanelPitch_ = std::clamp(effectPanelPitch_ + delta.y * 0.01f, -1.4f, 1.4f);
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY); // the wheel zooms instead of scrolling the window
+			const float wheel = ImGui::GetIO().MouseWheel;
+			if (wheel != 0.0f) effectPanelDistance_ = std::clamp(effectPanelDistance_ * std::pow(0.85f, wheel), 0.5f, 200.0f);
+		}
+		ImGui::SetItemTooltip("%s", Tr("Only this effect. Drag to turn around it, mouse wheel to move closer."));
+	} else if (inEdit && effectPreviewRoot_ == rootId && previewModel_ && previewObject3d_) {
+		ImGui::TextDisabled("%s", Tr("Preview is paused while a 3D model preview is open in the Project panel."));
+	} else if (inEdit && effectPreviewRoot_ == rootId && MaterialPreviewActive()) {
+		ImGui::TextDisabled("%s", Tr("The Material Graph shows its preview now. Close it to see the effect here."));
+	} else if (inEdit && effectPreviewRoot_ != rootId) {
+		ImGui::TextDisabled("%s", Tr("Press Play to see the effect here."));
+	}
 	ImGui::SliderFloat(TrId("Speed"), &effectPreviewSpeed_, 0.1f, 2.0f, "%.2fx");
 	bool changed = ImGui::Checkbox(TrId("Loop"), &rootTiming->loop);
 	ImGui::SameLine();

@@ -4,10 +4,14 @@
 #include "math/Vector4.h"
 #include <d3d12.h>
 #include <wrl.h>
+#include <cstdint>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 class DirectXCommon;
 class DXCManager;
+struct IDxcBlob;
 class Camera;
 
 struct TrailVertex {
@@ -54,11 +58,31 @@ public:
 	static TrailRenderer* GetInstance();
 	void Initialize(DirectXCommon* dxCommon, DXCManager* dxc);
 	void Finalize();
-	/// textureHandle 0 = plain white
-	void Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera, const std::vector<TrailVertex>& vertices, bool additive, uint32_t textureHandle = 0);
+	/// textureHandle 0 = plain white. `material` = a key built with BuildMaterial (0 = texture x colour);
+	/// `materialTextures` = its four texture slots (0 = textureHandle)
+	void Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera, const std::vector<TrailVertex>& vertices, bool additive, uint32_t textureHandle = 0,
+		uint64_t material = 0, const uint32_t* materialTextures = nullptr);
+	/// Time materials see (gTime)
+	void SetTime(float seconds) { time_ = seconds; }
+
+	// Materials (node graphs), as in GpuParticles: Particle Age = the place along the ribbon (0 head, 1 tail)
+	bool BuildMaterial(uint64_t key, const std::string& body, std::string* error);
+	bool HasMaterial(uint64_t key) const { return materials_.count(key) != 0; }
+	static std::string MaterialShaderSource(const std::string& body);
+	static constexpr uint32_t kMaterialTextures = 4;
 
 private:
+	struct MaterialPsos {
+		Microsoft::WRL::ComPtr<ID3D12PipelineState> alpha;
+		Microsoft::WRL::ComPtr<ID3D12PipelineState> additive;
+	};
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> CreatePso(IDxcBlob* ps, bool additive) const;
+
 	DirectXCommon* dxCommon_ = nullptr;
+	DXCManager* dxc_ = nullptr;
+	Microsoft::WRL::ComPtr<IDxcBlob> vertexShader_;
+	std::unordered_map<uint64_t, MaterialPsos> materials_;
+	float time_ = 0.0f;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature_;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> alphaPso_;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> additivePso_;

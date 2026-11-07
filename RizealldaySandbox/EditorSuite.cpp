@@ -477,6 +477,12 @@ void EditorSuite::Initialize(
 				if (const std::string window = argValue("--window "); window == "animator") showAnimatorWindow_ = true;
 				else if (window == "timeline") showTimelineWindow_ = true;
 				else if (window == "effect") showEffectEditor_ = true;
+				else if (window == "material") {
+					showMaterialGraph_ = true;
+					const GameObject* sel = (selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size())) ? &gameObjects_[selectedObjectIndex_] : nullptr;
+					const auto* particles = sel ? sel->components.Get<GpuParticlesComponent>(kGpuParticlesComponent) : nullptr;
+					if (particles && particles->material[0] != '\0') OpenMaterialGraph(particles->material);
+				}
 				else if (window == "profiler") showProfiler_ = true;
 				else if (window == "open-project") showOpenProjectModal_ = true;
 #endif
@@ -690,18 +696,18 @@ void EditorSuite::Update(float deltaTime, Input* input)
 		}
 
 		// Undo / Redo (Disabled in Play mode). While a field is being typed in, these keys belong to the field.
-		if (sceneState_ != EditorSceneState::Play && !IsStandaloneMode() && !io.WantTextInput) {
+		if (sceneState_ != EditorSceneState::Play && !IsStandaloneMode() && !io.WantTextInput && !shortcutWindowFocused_) {
 			if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z)) Undo();
 			if (io.KeyCtrl && (ImGui::IsKeyPressed(ImGuiKey_Y) || (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z)))) Redo();
 		}
 
 		if (!IsStandaloneMode()) {
 			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) SaveScene(currentScenePath_);
-			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N) && !io.WantTextInput) NewScene();
-			if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !io.WantTextInput) DeleteSelectedGameObject();
-			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D) && !io.WantTextInput) pendingDuplicateIndex_ = selectedObjectIndex_;
+			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N) && !io.WantTextInput && !shortcutWindowFocused_) NewScene();
+			if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !io.WantTextInput && !shortcutWindowFocused_) DeleteSelectedGameObject();
+			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D) && !io.WantTextInput && !shortcutWindowFocused_) pendingDuplicateIndex_ = selectedObjectIndex_;
 
-			if (!isFlightNavigating_ && !io.WantTextInput) {
+			if (!isFlightNavigating_ && !io.WantTextInput && !shortcutWindowFocused_) {
 				if (ImGui::IsKeyPressed(ImGuiKey_Q)) currentGizmo_ = GizmoType::Hand;
 				if (ImGui::IsKeyPressed(ImGuiKey_W)) currentGizmo_ = GizmoType::Move;
 				if (ImGui::IsKeyPressed(ImGuiKey_E)) currentGizmo_ = GizmoType::Rotate;

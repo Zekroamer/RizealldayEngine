@@ -399,6 +399,9 @@ void EditorSuite::DrawProjectAndConsolePanel()
 							} else if (ext == ".obj" || ext == ".fbx" || ext == ".gltf" || ext == ".glb") {
 								badge = "[3D]";
 								badgeCol = ImVec4(0.3f, 0.8f, 0.9f, 1.0f);
+							} else if (filename.ends_with(".vfxmat.json")) {
+								badge = "[MAT]";
+								badgeCol = ImVec4(1.0f, 0.6f, 0.3f, 1.0f);
 							} else if (filename.ends_with(".prefab.json")) {
 								badge = "[PREFAB]";
 								badgeCol = ImVec4(0.4f, 0.65f, 1.0f, 1.0f);
@@ -434,6 +437,8 @@ void EditorSuite::DrawProjectAndConsolePanel()
 										LoadScene(entry.path().string());
 									} else if (ext == ".cpp" || ext == ".h" || ext == ".hpp") {
 										OpenFileInVisualStudio(entry.path());
+									} else if (filename.ends_with(".vfxmat.json")) {
+										OpenMaterialGraph(managedAssetPath(entry.path()));
 									} else if (filename.ends_with(".prefab.json")) {
 										// Double-click: place one instance at the origin
 										const std::string prefabName = filename.substr(0, filename.size() - std::string_view(".prefab.json").size());

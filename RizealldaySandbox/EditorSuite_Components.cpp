@@ -174,6 +174,7 @@ void EditorSuite::DrawDataComponentInspector(GameObject& obj, const ComponentInf
 	if (open && keep && data) {
 		auto* base = static_cast<unsigned char*>(data->Data());
 		for (const ComponentField& field : info.fields) {
+			if (field.hidden) continue;
 			void* ptr = base + field.offset;
 			const std::string overrideKey = std::string("components/") + info.name + "/" + field.name;
 			// "emitRate" -> "Emit Rate", translated; the field name stays the ImGui ID

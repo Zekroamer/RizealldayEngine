@@ -10,6 +10,15 @@
 
 namespace {
 	constexpr uint32_t kParticleBytes = 32; // Particle in GpuParticle.CS.hlsl
+	constexpr uint32_t kGraphParticleBytes = 64; // GraphParticle in ParticleGraphShaderSource and GpuParticleGraph.VS.hlsl
+
+	struct GraphConstants {
+		Vector3 origin; float deltaTime;
+		Vector3 direction; float time;
+		uint32_t emitStart, emitCount, capacity, seed;
+		Vector4 params[GpuParticles::kGraphParameters];
+	};
+	static_assert(sizeof(GraphConstants) == 44 * 4, "keep in sync with GraphConstants in ParticleGraphShaderSource");
 	constexpr uint32_t kMaxCapacity = 1000000;
 	constexpr uint32_t kThreadGroupSize = 64;
 
@@ -38,8 +47,10 @@ namespace {
 		float middleTime; // < 0: two keys
 		float stretch;    // 0 = camera-facing squares
 		float upright;    // 1 = stands on world Y
+		float time;       // materials
+		float drawPad[3];
 	};
-	static_assert(sizeof(DrawConstants) == 160, "keep in sync with the DrawConstants cbuffer in GpuParticle.hlsli");
+	static_assert(sizeof(DrawConstants) == 176, "keep in sync with the DrawConstants cbuffer in GpuParticle.hlsli");
 
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> MakeSignature(ID3D12Device* device, const D3D12_ROOT_SIGNATURE_DESC& desc)
 	{
@@ -74,6 +85,7 @@ GpuParticles* GpuParticles::GetInstance()
 void GpuParticles::Initialize(DirectXCommon* dxCommon, DXCManager* dxc)
 {
 	dxCommon_ = dxCommon;
+	dxc_ = dxc;
 	ID3D12Device* device = dxCommon_->GetDevice();
 	const auto compile = [&](const wchar_t* file, const wchar_t* profile) {
 		return dxc->CompileShader(file, profile, dxc->GetDxcUtils(), dxc->GetDxcCompiler(), dxc->GetIncludeHandler());
@@ -97,35 +109,60 @@ void GpuParticles::Initialize(DirectXCommon* dxCommon, DXCManager* dxc)
 	HRESULT hr = device->CreateComputePipelineState(&computePso, IID_PPV_ARGS(&computePso_));
 	assert(SUCCEEDED(hr));
 
-	// Draw: constants, particles (vertex shader), texture
-	D3D12_DESCRIPTOR_RANGE range{};
-	range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-	range.NumDescriptors = 1;
-	range.BaseShaderRegister = 1;
-	D3D12_ROOT_PARAMETER drawParameters[3] = {};
+	// Draw: constants, particles (vertex shader), four textures t1..t4 (one table each: any texture handles)
+	D3D12_DESCRIPTOR_RANGE ranges[kMaterialTextures] = {};
+	D3D12_ROOT_PARAMETER drawParameters[2 + kMaterialTextures] = {};
 	drawParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 	drawParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
 	drawParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-	drawParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-	drawParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-	drawParameters[2].DescriptorTable.NumDescriptorRanges = 1;
-	drawParameters[2].DescriptorTable.pDescriptorRanges = &range;
-	D3D12_STATIC_SAMPLER_DESC sampler{};
-	sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-	sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-	sampler.MaxLOD = D3D12_FLOAT32_MAX;
-	sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	for (uint32_t i = 0; i < kMaterialTextures; ++i) {
+		ranges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+		ranges[i].NumDescriptors = 1;
+		ranges[i].BaseShaderRegister = 1 + i;
+		drawParameters[2 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		drawParameters[2 + i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+		drawParameters[2 + i].DescriptorTable.NumDescriptorRanges = 1;
+		drawParameters[2 + i].DescriptorTable.pDescriptorRanges = &ranges[i];
+	}
+	D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+	samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+	samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+	samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+	samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+	samplers[1] = samplers[0]; // s1: repeating, for scrolling textures
+	samplers[1].ShaderRegister = 1;
+	samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
 	D3D12_ROOT_SIGNATURE_DESC drawDesc{};
 	drawDesc.pParameters = drawParameters;
 	drawDesc.NumParameters = _countof(drawParameters);
-	drawDesc.pStaticSamplers = &sampler;
-	drawDesc.NumStaticSamplers = 1;
+	drawDesc.pStaticSamplers = samplers;
+	drawDesc.NumStaticSamplers = _countof(samplers);
 	drawSignature_ = MakeSignature(device, drawDesc);
 
-	Microsoft::WRL::ComPtr<IDxcBlob> vs = compile(L"shaders/GpuParticle.VS.hlsl", L"vs_6_0");
+	vertexShader_ = compile(L"shaders/GpuParticle.VS.hlsl", L"vs_6_0");
+	graphVertexShader_ = compile(L"shaders/GpuParticleGraph.VS.hlsl", L"vs_6_0");
 	Microsoft::WRL::ComPtr<IDxcBlob> ps = compile(L"shaders/GpuParticle.PS.hlsl", L"ps_6_0");
-	assert(vs && ps);
-	if (!vs || !ps) return;
+	assert(vertexShader_ && graphVertexShader_ && ps);
+	if (!vertexShader_ || !graphVertexShader_ || !ps) return;
+	alphaPso_ = CreateDrawPso(ps.Get(), false, vertexShader_.Get());
+	additivePso_ = CreateDrawPso(ps.Get(), true, vertexShader_.Get());
+	graphAlphaPso_ = CreateDrawPso(ps.Get(), false, graphVertexShader_.Get());
+	graphAdditivePso_ = CreateDrawPso(ps.Get(), true, graphVertexShader_.Get());
+	assert(alphaPso_ && additivePso_ && graphAlphaPso_ && graphAdditivePso_);
+
+	// Particle graphs: their constants (with the parameters) + the particle buffer
+	D3D12_ROOT_PARAMETER graphParameters[2] = {};
+	graphParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+	graphParameters[0].Constants.Num32BitValues = sizeof(GraphConstants) / 4;
+	graphParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+	D3D12_ROOT_SIGNATURE_DESC graphDesc{};
+	graphDesc.pParameters = graphParameters;
+	graphDesc.NumParameters = _countof(graphParameters);
+	graphComputeSignature_ = MakeSignature(device, graphDesc);
+}
+
+Microsoft::WRL::ComPtr<ID3D12PipelineState> GpuParticles::CreateDrawPso(IDxcBlob* ps, bool additive, IDxcBlob* vs) const
+{
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
 	desc.pRootSignature = drawSignature_.Get();
 	desc.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
@@ -151,17 +188,120 @@ void GpuParticles::Initialize(DirectXCommon* dxCommon, DXCManager* dxc)
 	desc.SampleDesc.Count = 1;
 	desc.SampleMask = D3D12_DEFAULT_SAMPLE_MASK;
 	desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-	hr = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&alphaPso_));
-	assert(SUCCEEDED(hr));
-	blend.DestBlend = D3D12_BLEND_ONE;
-	hr = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&additivePso_));
-	assert(SUCCEEDED(hr));
+	if (additive) blend.DestBlend = D3D12_BLEND_ONE;
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
+	if (FAILED(dxCommon_->GetDevice()->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pso)))) return nullptr;
+	return pso;
+}
+
+std::string GpuParticles::MaterialShaderSource(const std::string& body)
+{
+	return "#include \"GpuParticle.hlsli\"\n"
+		"#include \"GraphCommon.hlsli\"\n"
+		"Texture2D<float4> gTexture0 : register(t1);\n"
+		"Texture2D<float4> gTexture1 : register(t2);\n"
+		"Texture2D<float4> gTexture2 : register(t3);\n"
+		"Texture2D<float4> gTexture3 : register(t4);\n"
+		"SamplerState gSampler : register(s0);\n"
+		"SamplerState gWrapSampler : register(s1);\n"
+		"float4 main(GpuParticleVSOutput input) : SV_TARGET0\n{\n"
+		"const float2 uv = input.uv;\n"
+		"const float4 vertexColor = input.color;\n"
+		"const float particleAge = input.data.x;\n"
+		"const float particleRandom = input.data.y;\n"
+		"const float4 baseColor = gTexture0.Sample(gSampler, uv) * vertexColor; // the look without a material\n"
+		"float3 emissive = vertexColor.rgb;\n"
+		"float opacity = vertexColor.a;\n"
+		+ body +
+		"\nreturn float4(emissive, opacity);\n}\n";
+}
+
+std::string GpuParticles::ParticleGraphShaderSource(const std::string& spawnBody, const std::string& updateBody)
+{
+	// GraphParticle is 64 bytes; keep it in sync with GpuParticleGraph.VS.hlsl and kGraphParticleBytes
+	return "#include \"GraphCommon.hlsli\"\n"
+		"struct GraphParticle { float3 position; float age; float3 velocity; float life; float4 color; float size; float rotation; uint seed; float custom; };\n"
+		"RWStructuredBuffer<GraphParticle> gParticles : register(u0);\n"
+		"cbuffer GraphConstants : register(b0)\n{\n"
+		"float3 gOrigin; float gDeltaTime;\n"
+		"float3 gDirection; float gTime;\n"
+		"uint gEmitStart; uint gEmitCount; uint gCapacity; uint gSeed;\n"
+		"float4 gParams[8];\n};\n"
+		"[numthreads(64, 1, 1)]\nvoid main(uint3 id : SV_DispatchThreadID)\n{\n"
+		"const uint index = id.x;\n"
+		"if (index >= gCapacity) return;\n"
+		"GraphParticle p = gParticles[index];\n"
+		"if ((index + gCapacity - gEmitStart) % gCapacity < gEmitCount)\n{\n"
+		"const uint seed = GraphPcg(index * 2654435761u + gSeed);\n"
+		"const float age = 0.0f;\nconst float particleAge = 0.0f;\nconst float particleRandom = GraphRandom(seed, 0u);\n"
+		"float3 position = gOrigin;\nfloat3 velocity = gDirection;\nfloat life = 1.0f;\nfloat4 color = float4(1, 1, 1, 1);\nfloat size = 0.2f;\nfloat rotation = 0.0f;\n"
+		"{\n" + spawnBody + "\n}\n"
+		"p.position = position;\np.velocity = velocity;\np.life = max(life, 0.001f);\np.age = 0.0f;\n"
+		"p.color = color;\np.size = size;\np.rotation = rotation;\np.seed = seed;\np.custom = 0.0f;\n"
+		"}\nelse if (p.age < p.life)\n{\n"
+		"const uint seed = p.seed;\nconst float age = p.age;\nconst float life = p.life;\n"
+		"const float particleAge = saturate(age / life);\nconst float particleRandom = GraphRandom(seed, 0u);\n"
+		"const float3 position = p.position;\nfloat3 velocity = p.velocity;\nfloat4 color = p.color;\nfloat size = p.size;\nfloat rotation = p.rotation;\n"
+		"float kill = 0.0f;\nfloat floorClamp = -3.0e38f;\n"
+		"{\n" + updateBody + "\n}\n"
+		"p.velocity = velocity;\np.position = position + velocity * gDeltaTime;\np.position.y = max(p.position.y, floorClamp);\n"
+		"p.color = color;\np.size = size;\np.rotation = rotation;\n"
+		"p.age = kill > 0.5f ? p.life : age + gDeltaTime;\n"
+		"}\n"
+		"gParticles[index] = p;\n}\n";
+}
+
+bool GpuParticles::BuildMaterial(uint64_t key, const std::string& body, std::string* error)
+{
+	if (materials_.count(key)) return true;
+	if (!dxc_ || !dxCommon_ || !vertexShader_ || !graphVertexShader_) {
+		if (error) *error = "GPU particles are not initialized";
+		return false;
+	}
+	Microsoft::WRL::ComPtr<IDxcBlob> ps = dxc_->TryCompileShaderSource(MaterialShaderSource(body), L"ParticleMaterial.PS.hlsl", L"ps_6_0", error);
+	if (!ps) return false;
+	MaterialPsos psos{ CreateDrawPso(ps.Get(), false, vertexShader_.Get()), CreateDrawPso(ps.Get(), true, vertexShader_.Get()),
+		CreateDrawPso(ps.Get(), false, graphVertexShader_.Get()), CreateDrawPso(ps.Get(), true, graphVertexShader_.Get()) };
+	if (!psos.alpha || !psos.additive || !psos.graphAlpha || !psos.graphAdditive) {
+		if (error) *error = "The material's pipeline could not be created";
+		return false;
+	}
+	materials_[key] = std::move(psos);
+	return true;
+}
+
+bool GpuParticles::BuildParticleGraph(uint64_t key, const std::string& spawnBody, const std::string& updateBody, std::string* error)
+{
+	if (graphs_.count(key)) return true;
+	if (!dxc_ || !dxCommon_ || !graphComputeSignature_) {
+		if (error) *error = "GPU particles are not initialized";
+		return false;
+	}
+	Microsoft::WRL::ComPtr<IDxcBlob> cs = dxc_->TryCompileShaderSource(ParticleGraphShaderSource(spawnBody, updateBody), L"ParticleGraph.CS.hlsl", L"cs_6_0", error);
+	if (!cs) return false;
+	D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
+	desc.pRootSignature = graphComputeSignature_.Get();
+	desc.CS = { cs->GetBufferPointer(), cs->GetBufferSize() };
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
+	if (FAILED(dxCommon_->GetDevice()->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)))) {
+		if (error) *error = "The particle graph's pipeline could not be created";
+		return false;
+	}
+	graphs_[key] = std::move(pso);
+	return true;
 }
 
 void GpuParticles::Finalize()
 {
 	// Called after the GPU has been flushed (RizeEngine::Finalize)
 	emitters_.clear();
+	materials_.clear();
+	graphs_.clear();
+	vertexShader_.Reset();
+	graphVertexShader_.Reset();
+	graphAlphaPso_.Reset();
+	graphAdditivePso_.Reset();
+	graphComputeSignature_.Reset();
 	computePso_.Reset();
 	computeSignature_.Reset();
 	alphaPso_.Reset();
@@ -174,14 +314,17 @@ void GpuParticles::Simulate(ID3D12GraphicsCommandList* cmdList, uint64_t id, con
 {
 	if (!dxCommon_ || !computePso_) return;
 	const uint32_t capacity = std::clamp(settings.capacity, 1u, kMaxCapacity);
+	// A graph that does not compile (yet) falls back to the settings, so the emitter never just vanishes
+	const auto graph = settings.graph != 0 ? graphs_.find(settings.graph) : graphs_.end();
+	const bool usesGraph = graph != graphs_.end();
 	Emitter& emitter = emitters_[id];
-	if (!emitter.buffer || emitter.settings.capacity != capacity) {
+	if (!emitter.buffer || emitter.settings.capacity != capacity || emitter.usesGraph != usesGraph) {
 		if (emitter.buffer) dxCommon_->DeferRelease(emitter.buffer);
 		D3D12_HEAP_PROPERTIES heap{};
 		heap.Type = D3D12_HEAP_TYPE_DEFAULT;
 		D3D12_RESOURCE_DESC resource{};
 		resource.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		resource.Width = static_cast<UINT64>(capacity) * kParticleBytes;
+		resource.Width = static_cast<UINT64>(capacity) * (usesGraph ? kGraphParticleBytes : kParticleBytes);
 		resource.Height = 1;
 		resource.DepthOrArraySize = 1;
 		resource.MipLevels = 1;
@@ -198,6 +341,7 @@ void GpuParticles::Simulate(ID3D12GraphicsCommandList* cmdList, uint64_t id, con
 		emitter.ringHead = 0;
 		emitter.isShaderResource = false;
 		emitter.idleFrames = 0;
+		emitter.usesGraph = usesGraph;
 	}
 	// Back from the pool: the particles of its last life must not show up again
 	const bool clearStale = emitter.idleFrames > 0;
@@ -243,6 +387,43 @@ void GpuParticles::Simulate(ID3D12GraphicsCommandList* cmdList, uint64_t id, con
 	emitter.seed = emitter.seed * 1664525u + 1013904223u;
 	emitter.ringHead = (emitter.ringHead + count) % capacity;
 
+	if (usesGraph) {
+		GraphConstants g{};
+		g.origin = origin;
+		g.deltaTime = constants.deltaTime;
+		g.direction = constants.direction;
+		g.time = time_;
+		g.emitStart = constants.emitStart;
+		g.emitCount = count;
+		g.capacity = capacity;
+		g.seed = constants.seed;
+		for (uint32_t i = 0; i < kGraphParameters; ++i) {
+			const Vector4& v = settings.graphParams[i];
+			g.params[i] = (std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) && std::isfinite(v.w)) ? v : Vector4{ 0.0f, 0.0f, 0.0f, 0.0f };
+		}
+		cmdList->SetComputeRootSignature(graphComputeSignature_.Get());
+		cmdList->SetPipelineState(graph->second.Get());
+		cmdList->SetComputeRootUnorderedAccessView(1, emitter.buffer->GetGPUVirtualAddress());
+		if (clearStale) {
+			// The same as below: an hour-long step without emitting ends every old particle
+			GraphConstants expire = g;
+			expire.deltaTime = 3600.0f;
+			expire.emitCount = 0;
+			cmdList->SetComputeRoot32BitConstants(0, sizeof(GraphConstants) / 4, &expire, 0);
+			cmdList->Dispatch((capacity + kThreadGroupSize - 1) / kThreadGroupSize, 1, 1);
+			D3D12_RESOURCE_BARRIER uav{};
+			uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+			uav.UAV.pResource = emitter.buffer.Get();
+			cmdList->ResourceBarrier(1, &uav);
+		}
+		cmdList->SetComputeRoot32BitConstants(0, sizeof(GraphConstants) / 4, &g, 0);
+		cmdList->Dispatch((capacity + kThreadGroupSize - 1) / kThreadGroupSize, 1, 1);
+		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+		cmdList->ResourceBarrier(1, &barrier);
+		emitter.isShaderResource = true;
+		return;
+	}
 	cmdList->SetComputeRootSignature(computeSignature_.Get());
 	cmdList->SetPipelineState(computePso_.Get());
 	cmdList->SetComputeRootUnorderedAccessView(1, emitter.buffer->GetGPUVirtualAddress());
@@ -293,6 +474,22 @@ void GpuParticles::Clear()
 
 void GpuParticles::Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera)
 {
+	DrawList(cmdList, camera, nullptr);
+}
+
+void GpuParticles::DrawEmitter(ID3D12GraphicsCommandList* cmdList, const Camera& camera, uint64_t id)
+{
+	const std::vector<uint64_t> ids{ id };
+	DrawList(cmdList, camera, &ids);
+}
+
+void GpuParticles::DrawEmitters(ID3D12GraphicsCommandList* cmdList, const Camera& camera, const std::vector<uint64_t>& ids)
+{
+	if (!ids.empty()) DrawList(cmdList, camera, &ids);
+}
+
+void GpuParticles::DrawList(ID3D12GraphicsCommandList* cmdList, const Camera& camera, const std::vector<uint64_t>* only)
+{
 	if (emitters_.empty() || !dxCommon_ || !alphaPso_ || !additivePso_) return;
 	const Matrix4x4& view = camera.GetViewMatrix();
 	TextureManager::GetInstance()->SetDescriptorHeaps(cmdList);
@@ -303,6 +500,7 @@ void GpuParticles::Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera
 	std::vector<Vector3> origins;
 	for (const auto& [id, emitter] : emitters_) {
 		if (!emitter.isShaderResource || emitter.idleFrames > 0) continue; // not simulated last frame: hidden
+		if (only ? std::find(only->begin(), only->end(), id) == only->end() : id == kPreviewEmitterId) continue;
 		drawn.push_back(&emitter);
 		origins.push_back(emitter.origin);
 	}
@@ -322,12 +520,22 @@ void GpuParticles::Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera
 		constants.middleTime = emitter.settings.useMiddleKey ? std::clamp(emitter.settings.middleTime, 0.001f, 0.999f) : -1.0f;
 		constants.stretch = std::isfinite(emitter.settings.stretch) ? (std::max)(emitter.settings.stretch, 0.0f) : 0.0f;
 		constants.upright = emitter.settings.upright ? 1.0f : 0.0f;
+		constants.time = time_;
 		const D3D12_GPU_VIRTUAL_ADDRESS address = dxCommon_->UploadConstants(constants);
 		if (address == 0) continue;
-		cmdList->SetPipelineState(emitter.settings.additive ? additivePso_.Get() : alphaPso_.Get());
+		const bool additive = emitter.settings.additive;
+		ID3D12PipelineState* pso = emitter.usesGraph ? (additive ? graphAdditivePso_.Get() : graphAlphaPso_.Get()) : (additive ? additivePso_.Get() : alphaPso_.Get());
+		if (auto material = materials_.find(emitter.settings.material); emitter.settings.material != 0 && material != materials_.end()) {
+			const MaterialPsos& m = material->second;
+			pso = emitter.usesGraph ? (additive ? m.graphAdditive.Get() : m.graphAlpha.Get()) : (additive ? m.additive.Get() : m.alpha.Get());
+		}
+		cmdList->SetPipelineState(pso);
 		cmdList->SetGraphicsRootConstantBufferView(0, address);
 		cmdList->SetGraphicsRootShaderResourceView(1, emitter.buffer->GetGPUVirtualAddress());
-		cmdList->SetGraphicsRootDescriptorTable(2, TextureManager::GetInstance()->GetGPUHandle(emitter.settings.textureHandle));
+		for (uint32_t slot = 0; slot < kMaterialTextures; ++slot) {
+			const uint32_t handle = emitter.settings.materialTextures[slot] != 0 ? emitter.settings.materialTextures[slot] : emitter.settings.textureHandle;
+			cmdList->SetGraphicsRootDescriptorTable(2 + slot, TextureManager::GetInstance()->GetGPUHandle(handle));
+		}
 		cmdList->DrawInstanced(6, emitter.settings.capacity, 0, 0);
 	}
 }

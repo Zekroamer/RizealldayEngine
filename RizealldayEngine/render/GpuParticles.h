@@ -7,11 +7,13 @@
 #include <cmath>
 #include <cstdint>
 #include <numeric>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
 class DirectXCommon;
 class DXCManager;
+struct IDxcBlob;
 class Camera;
 
 struct GpuParticleSettings {
@@ -46,6 +48,12 @@ struct GpuParticleSettings {
 	Vector3 shapeAxisZ{ 0.0f, 0.0f, 0.5f };
 	float stretch = 0.0f; // 0 = round billboards; > 0 = streaks along the velocity, length x (1 + speed * stretch)
 	bool upright = false; // quads stand on world Y and only turn about it (grass, flames seen from above stay thin)
+	uint64_t material = 0;              // a material built with BuildMaterial; 0 = texture x colour
+	uint32_t materialTextures[4] = {};  // texture handles of the material's slots; 0 = textureHandle
+	// A particle graph built with BuildParticleGraph: it alone decides how particles start and move (life, speed,
+	// shape, gravity, size and colour above are then unused); 0 = the settings above
+	uint64_t graph = 0;
+	Vector4 graphParams[8] = {}; // the graph's parameters, in its order
 };
 
 enum class GpuParticleShape : uint32_t { Point = 0, Sphere = 1, Box = 2, Cone = 3, Ring = 4, Count };
@@ -152,6 +160,30 @@ public:
 	/// Releases emitters that were not simulated since the last call
 	void EndFrame();
 	void Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera);
+	/// The editor's material preview: simulated like any emitter, drawn only by DrawEmitter (never by Draw)
+	static constexpr uint64_t kPreviewEmitterId = 0xFFFFFFFFFFFFFF01ull;
+	void DrawEmitter(ID3D12GraphicsCommandList* cmdList, const Camera& camera, uint64_t id);
+	/// Only these emitters, back to front (the Effect Editor's preview of one effect)
+	void DrawEmitters(ID3D12GraphicsCommandList* cmdList, const Camera& camera, const std::vector<uint64_t>& ids);
+	/// Time materials see (gTime): game time in Play, the editor clock in Edit
+	void SetTime(float seconds) { time_ = seconds; }
+
+	// Materials (node graphs): `body` is the HLSL a material graph generated; it runs inside MaterialShaderSource.
+	// Built once per key; false with the compiler output when it does not compile (the emitter then draws as before).
+	bool BuildMaterial(uint64_t key, const std::string& body, std::string* error);
+	bool HasMaterial(uint64_t key) const { return materials_.count(key) != 0; }
+	/// The whole pixel shader of a material graph: inputs uv, vertexColor, particleAge, particleRandom, gTime, gTexture0..3
+	static std::string MaterialShaderSource(const std::string& body);
+	static constexpr uint32_t kMaterialTextures = 4;
+
+	// Particle graphs: the compute shader of an emitter from two generated bodies. Spawn runs once per new particle
+	// (sets position, velocity, life, color, size, rotation), Update every frame per living one (velocity, color,
+	// size, rotation, kill; the position then moves by velocity). An empty body keeps the defaults.
+	static std::string ParticleGraphShaderSource(const std::string& spawnBody, const std::string& updateBody);
+	static constexpr uint32_t kGraphParameters = 8;
+	/// Builds the compute shader of a particle graph once per key; false with the compiler output when it does not compile
+	bool BuildParticleGraph(uint64_t key, const std::string& spawnBody, const std::string& updateBody, std::string* error);
+	bool HasParticleGraph(uint64_t key) const { return graphs_.count(key) != 0; }
 	void Clear();
 	size_t EmitterCount() const { return emitters_.size(); }
 	/// GPU buffers created so far (a pooled object that comes back reuses its buffer)
@@ -169,9 +201,29 @@ private:
 		bool simulated = false;
 		bool isShaderResource = false;
 		uint32_t idleFrames = 0; // EndFrames without a Simulate; > 0 = hidden, its particles are stale
+		bool usesGraph = false;  // 64-byte graph particles (drawn by the graph vertex shader)
 	};
 
+	struct MaterialPsos {
+		Microsoft::WRL::ComPtr<ID3D12PipelineState> alpha;
+		Microsoft::WRL::ComPtr<ID3D12PipelineState> additive;
+		Microsoft::WRL::ComPtr<ID3D12PipelineState> graphAlpha; // the same pixel shader on graph particles
+		Microsoft::WRL::ComPtr<ID3D12PipelineState> graphAdditive;
+	};
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> CreateDrawPso(IDxcBlob* ps, bool additive, IDxcBlob* vs) const;
+	/// only == nullptr: every emitter except the preview one
+	void DrawList(ID3D12GraphicsCommandList* cmdList, const Camera& camera, const std::vector<uint64_t>* only);
+
 	DirectXCommon* dxCommon_ = nullptr;
+	DXCManager* dxc_ = nullptr;
+	Microsoft::WRL::ComPtr<IDxcBlob> vertexShader_;
+	Microsoft::WRL::ComPtr<IDxcBlob> graphVertexShader_;
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> graphAlphaPso_;
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> graphAdditivePso_;
+	Microsoft::WRL::ComPtr<ID3D12RootSignature> graphComputeSignature_;
+	std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> graphs_;
+	std::unordered_map<uint64_t, MaterialPsos> materials_;
+	float time_ = 0.0f;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> computeSignature_;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> computePso_;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> drawSignature_;
