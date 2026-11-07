@@ -32,7 +32,9 @@ void EditorSuite::RegisterEffectComponents()
 uint32_t EditorSuite::EffectRootOf(uint32_t id)
 {
 	uint32_t root = 0;
-	for (const GameObject* obj = FindGameObjectById(id, false); obj; ) {
+	// A broken file can make a parent cycle: never take more steps than there are objects
+	size_t steps = gameObjects_.size();
+	for (const GameObject* obj = FindGameObjectById(id, false); obj && steps-- > 0; ) {
 		if (obj->components.Has(kEffectTimingComponent)) root = obj->id;
 		obj = obj->parentId >= 0 ? FindGameObjectById(static_cast<uint32_t>(obj->parentId), false) : nullptr;
 	}
@@ -47,6 +49,37 @@ namespace {
 		GpuParticlesComponent* particles = nullptr;
 		TrailComponent* trail = nullptr;
 	};
+
+	/// The layers of an effect: the root and its descendants that emit something or carry their own timing.
+	/// The one place that decides what a layer is and how long it lasts (runtime and the Effect Editor lanes).
+	std::vector<EffectLayer> CollectEffectLayers(EditorSuite& suite, uint32_t rootId)
+	{
+		std::vector<EffectLayer> layers;
+		GameObject* root = suite.FindGameObjectById(rootId, false);
+		const auto* rootTiming = root ? root->components.Get<EffectTimingComponent>(kEffectTimingComponent) : nullptr;
+		if (!rootTiming) return layers;
+		std::vector<uint32_t> ids = { rootId };
+		std::unordered_set<uint32_t> seen = { rootId }; // a parent cycle must not grow the list forever
+		for (size_t i = 0; i < ids.size(); ++i) {
+			GameObject* obj = suite.FindGameObjectById(ids[i], false);
+			if (!obj) continue;
+			for (uint32_t child : obj->childrenIds) {
+				if (seen.insert(child).second) ids.push_back(child);
+			}
+			EffectLayer layer{ obj->id };
+			layer.particles = obj->components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+			layer.trail = obj->components.Get<TrailComponent>(kTrailComponent);
+			const auto* own = obj->components.Get<EffectTimingComponent>(kEffectTimingComponent);
+			if (!own && !layer.particles && !layer.trail) continue;
+			layer.timing = own ? own : rootTiming;
+			layer.window.startDelay = (std::max)(layer.timing->startDelay, 0.0f);
+			layer.window.duration = (std::max)(layer.timing->duration, 0.0f);
+			if (layer.particles) layer.window.tail = (std::max)(layer.particles->lifeMax, 0.0f);
+			if (layer.trail) layer.window.tail = (std::max)(layer.window.tail, layer.trail->lifetime);
+			layers.push_back(layer);
+		}
+		return layers;
+	}
 }
 
 void EditorSuite::AdvanceEffectRoot(GameObject& root, float deltaTime, bool inPlay)
@@ -55,25 +88,7 @@ void EditorSuite::AdvanceEffectRoot(GameObject& root, float deltaTime, bool inPl
 	if (!rootTiming || rootTiming->finished) return;
 	const uint32_t rootId = root.id;
 
-	// The layers: the root and its descendants that emit something or carry their own timing
-	std::vector<EffectLayer> layers;
-	std::vector<uint32_t> ids = { rootId };
-	for (size_t i = 0; i < ids.size(); ++i) {
-		GameObject* obj = FindGameObjectById(ids[i], false);
-		if (!obj) continue;
-		ids.insert(ids.end(), obj->childrenIds.begin(), obj->childrenIds.end());
-		EffectLayer layer{ obj->id };
-		layer.particles = obj->components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
-		layer.trail = obj->components.Get<TrailComponent>(kTrailComponent);
-		const auto* own = obj->components.Get<EffectTimingComponent>(kEffectTimingComponent);
-		if (!own && !layer.particles && !layer.trail) continue;
-		layer.timing = own ? own : rootTiming;
-		layer.window.startDelay = (std::max)(layer.timing->startDelay, 0.0f);
-		layer.window.duration = (std::max)(layer.timing->duration, 0.0f);
-		if (layer.particles) layer.window.tail = (std::max)(layer.particles->lifeMax, 0.0f);
-		if (layer.trail) layer.window.tail = (std::max)(layer.window.tail, layer.trail->lifetime);
-		layers.push_back(layer);
-	}
+	const std::vector<EffectLayer> layers = CollectEffectLayers(*this, rootId);
 	std::vector<EffectLayerWindow> windows;
 	for (const EffectLayer& layer : layers) windows.push_back(layer.window);
 	const float period = EffectLength(windows, !rootTiming->loop);
@@ -278,7 +293,6 @@ void EditorSuite::DrawEffectEditorWindow()
 		ImGui::End();
 		return;
 	}
-	if (!showEffectEditor_ && effectPreviewRoot_ != 0) StopEffectPreview();
 
 	// New effect from a template (at the Scene camera's focus point would need a pick: the origin is predictable)
 	if (ImGui::BeginCombo(TrId("New Effect"), Tr("Choose..."))) {
@@ -335,21 +349,13 @@ void EditorSuite::DrawEffectEditorWindow()
 	struct Lane { uint32_t id; std::string name; float start, end, tail; bool emitting; };
 	std::vector<Lane> lanes;
 	float timeline = 0.0f;
-	std::vector<uint32_t> ids = { rootId };
-	for (size_t i = 0; i < ids.size(); ++i) {
-		const GameObject* obj = FindGameObjectById(ids[i], false);
-		if (!obj) continue;
-		ids.insert(ids.end(), obj->childrenIds.begin(), obj->childrenIds.end());
-		const auto* p = obj->components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
-		const auto* trail = obj->components.Get<TrailComponent>(kTrailComponent);
-		const auto* own = obj->components.Get<EffectTimingComponent>(kEffectTimingComponent);
-		if (!p && !trail && !own) continue;
-		const EffectTimingComponent& t = own ? *own : *rootTiming;
-		const float duration = t.duration > 0.0f ? t.duration : 5.0f; // open-ended layers draw 5 s
-		const float tail = p ? p->lifeMax : (trail ? trail->lifetime : 0.0f);
-		const int gate = p ? p->effectGate : (trail ? trail->effectGate : kEffectGateNone);
-		lanes.push_back({ obj->id, obj->name, t.startDelay, t.startDelay + duration, tail, gate == kEffectGateOn });
-		timeline = (std::max)(timeline, t.startDelay + duration + tail);
+	for (const EffectLayer& layer : CollectEffectLayers(*this, rootId)) {
+		const GameObject* obj = FindGameObjectById(layer.id, false);
+		const float duration = layer.window.duration > 0.0f ? layer.window.duration : 5.0f; // open-ended layers draw 5 s
+		const int gate = layer.particles ? layer.particles->effectGate : (layer.trail ? layer.trail->effectGate : kEffectGateNone);
+		const float start = layer.window.startDelay;
+		lanes.push_back({ layer.id, obj ? obj->name : std::string(), start, start + duration, layer.window.tail, gate == kEffectGateOn });
+		timeline = (std::max)(timeline, start + duration + layer.window.tail);
 	}
 	timeline = (std::max)(timeline, 0.1f);
 	ImGui::Spacing();
@@ -410,8 +416,7 @@ void EditorSuite::DrawEffectEditorWindow()
 		changed |= ImGui::DragFloat(TrId("Pulse Shake"), &own->pulseShake, 0.01f, 0.0f, 2.0f);
 		changed |= ImGui::DragFloat(TrId("Pulse Seconds"), &own->pulseSeconds, 0.01f, 0.01f, 5.0f);
 	} else if (ImGui::Button(TrId("Own Timing"))) {
-		AddComponentByName(*layer, kEffectTimingComponent);
-		layer = FindGameObjectById(effectEditorLayer_ != 0 ? effectEditorLayer_ : rootId, false);
+		AddComponentByName(*layer, kEffectTimingComponent); // `layer` stays valid: adding a component moves no object
 	}
 	if (layer) {
 		if (auto* p = layer->components.Get<GpuParticlesComponent>(kGpuParticlesComponent)) {

@@ -194,9 +194,14 @@ void GpuParticles::Simulate(ID3D12GraphicsCommandList* cmdList, uint64_t id, con
 			emitters_.erase(id);
 			return;
 		}
+		++bufferCreations_;
 		emitter.ringHead = 0;
 		emitter.isShaderResource = false;
+		emitter.idleFrames = 0;
 	}
+	// Back from the pool: the particles of its last life must not show up again
+	const bool clearStale = emitter.idleFrames > 0;
+	emitter.idleFrames = 0;
 	emitter.settings = settings;
 	emitter.settings.capacity = capacity;
 	emitter.origin = origin;
@@ -240,8 +245,21 @@ void GpuParticles::Simulate(ID3D12GraphicsCommandList* cmdList, uint64_t id, con
 
 	cmdList->SetComputeRootSignature(computeSignature_.Get());
 	cmdList->SetPipelineState(computePso_.Get());
-	cmdList->SetComputeRoot32BitConstants(0, sizeof(ComputeConstants) / 4, &constants, 0);
 	cmdList->SetComputeRootUnorderedAccessView(1, emitter.buffer->GetGPUVirtualAddress());
+	if (clearStale) {
+		// One step of an hour without emitting ages every old particle past its life (lives are at most a minute)
+		ComputeConstants expire = constants;
+		expire.deltaTime = 3600.0f;
+		expire.emitCount = 0;
+		expire.collideWithFloor = 0u;
+		cmdList->SetComputeRoot32BitConstants(0, sizeof(ComputeConstants) / 4, &expire, 0);
+		cmdList->Dispatch((capacity + kThreadGroupSize - 1) / kThreadGroupSize, 1, 1);
+		D3D12_RESOURCE_BARRIER uav{};
+		uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+		uav.UAV.pResource = emitter.buffer.Get();
+		cmdList->ResourceBarrier(1, &uav);
+	}
+	cmdList->SetComputeRoot32BitConstants(0, sizeof(ComputeConstants) / 4, &constants, 0);
 	cmdList->Dispatch((capacity + kThreadGroupSize - 1) / kThreadGroupSize, 1, 1);
 
 	barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -253,11 +271,14 @@ void GpuParticles::Simulate(ID3D12GraphicsCommandList* cmdList, uint64_t id, con
 void GpuParticles::EndFrame()
 {
 	for (auto it = emitters_.begin(); it != emitters_.end();) {
-		if (it->second.simulated) {
-			it->second.simulated = false;
+		Emitter& emitter = it->second;
+		if (emitter.simulated) {
+			emitter.simulated = false;
 			++it;
+		} else if (++emitter.idleFrames <= kIdleFramesBeforeRelease) {
+			++it; // kept: a pooled object usually comes back soon
 		} else {
-			dxCommon_->DeferRelease(it->second.buffer);
+			dxCommon_->DeferRelease(emitter.buffer);
 			it = emitters_.erase(it);
 		}
 	}
@@ -281,7 +302,7 @@ void GpuParticles::Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera
 	std::vector<const Emitter*> drawn;
 	std::vector<Vector3> origins;
 	for (const auto& [id, emitter] : emitters_) {
-		if (!emitter.isShaderResource) continue;
+		if (!emitter.isShaderResource || emitter.idleFrames > 0) continue; // not simulated last frame: hidden
 		drawn.push_back(&emitter);
 		origins.push_back(emitter.origin);
 	}

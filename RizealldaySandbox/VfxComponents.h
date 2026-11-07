@@ -11,6 +11,11 @@ inline constexpr const char* kTrailComponent = "Trail";
 inline constexpr int kEffectGateNone = 0;
 inline constexpr int kEffectGateOn = 1;
 inline constexpr int kEffectGateOff = 2;
+/// Whether an emitter emits: a running effect switches it on and off, its own Emitting (scripts) can still stop it
+inline bool EffectiveEmitting(int effectGate, bool emitting)
+{
+	return effectGate == kEffectGateNone ? emitting : (effectGate == kEffectGateOn && emitting);
+}
 
 /// A ribbon behind a moving object (sword swing, dash, projectile)
 struct TrailComponent {

@@ -2,6 +2,14 @@
 
 ## [Belum dirilis]
 
+## [2.8.1] — 2026-11-07
+
+### Perbaikan
+- Scene dengan siklus parent (file rusak) tidak lagi membuat editor hang saat ada efek atau partikel.
+- `SetParticlesEmitting(false)` dan field `emitting` sekarang bisa menghentikan layer efek yang sedang berjalan.
+- Timeline Effect Editor memakai aturan layer yang sama dengan runtime, jadi panjang lane sesuai.
+- GPU Particles: objek yang kembali dari pool memakai buffer GPU yang sama (tidak membuat buffer baru setiap spawn), dan partikel lamanya tidak muncul lagi.
+
 ## [2.8.0] — 2026-11-07
 
 ### Fitur Baru

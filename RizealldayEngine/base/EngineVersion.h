@@ -3,7 +3,7 @@
 
 /// Engine release version (major.minor.patch). Bump it for every zip handed to the team;
 /// the updater and project.json compare against it.
-inline constexpr const char* kEngineVersion = "2.8.0";
+inline constexpr const char* kEngineVersion = "2.8.1";
 
 /// Compares dotted version strings part by part as numbers ("2.10.0" > "2.9.0", "2.1" == "2.1.0").
 /// A leading 'v' is ignored. Returns <0, 0 or >0 like strcmp.

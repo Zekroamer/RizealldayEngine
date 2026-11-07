@@ -6057,6 +6057,7 @@ TEST_CASE(Vfx, GpuParticlesAreSimulatedAndDrawn)
 	s.UpdateWorldMatrices();
 	A::State(s) = EditorSceneState::Play;
 	A::GameTime(s) = 0.0;
+	GpuParticles::GetInstance()->Clear(); // emitters of earlier tests may still wait for their idle time
 	CaptureGameViewSignature(s);
 	const std::vector<float> emptySignature = CaptureGameViewSignature(s);
 	const std::vector<float> emptyRows = gCapturedRowMeans;
@@ -6115,6 +6116,7 @@ TEST_CASE(Vfx, GpuParticlesAreSimulatedAndDrawn)
 	s.QueueDeleteGameObjectById(id);
 	s.ProcessPendingDeletes();
 	CaptureGameViewSignature(s);
+	for (uint32_t i = 0; i <= GpuParticles::kIdleFramesBeforeRelease; ++i) GpuParticles::GetInstance()->EndFrame();
 	CHECK(GpuParticles::GetInstance()->EmitterCount() == 0u);
 	A::State(s) = EditorSceneState::Edit;
 	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
@@ -6740,6 +6742,121 @@ TEST_CASE(Effects, EditorPreviewMovesOnlyThePicture)
 		const uint32_t id = s.CreateEffectFromTemplate(name, {});
 		CHECK_MSG(id != 0 && s.FindGameObjectById(id, false)->components.Has(kEffectTimingComponent), name);
 	}
+}
+
+TEST_CASE(Effects, ParentCycleDoesNotHang)
+{
+	// A broken file can link two objects as each other's parent; effects must not walk around forever
+	GameObject& a = s.CreateGameObject("Cycle A", GameObjectType::Empty);
+	const uint32_t aId = a.id;
+	REQUIRE(s.AddComponentByName(a, kEffectTimingComponent));
+	GameObject& b = s.CreateGameObject("Cycle B", GameObjectType::Empty);
+	const uint32_t bId = b.id;
+	REQUIRE(s.AddComponentByName(b, kGpuParticlesComponent));
+	s.FindGameObjectById(aId, false)->parentId = static_cast<int>(bId);
+	s.FindGameObjectById(bId, false)->parentId = static_cast<int>(aId);
+	s.RebuildHierarchyLinks();
+	s.EffectRootOf(aId); // returns at all: that is the test
+	s.EffectRootOf(bId);
+	A::State(s) = EditorSceneState::Play;
+	s.UpdateEffects(0.1f);
+	A::State(s) = EditorSceneState::Edit;
+	s.StartEffectPreview(aId);
+	s.UpdateEffectPreview(0.1f);
+	CaptureGameViewSignature(s); // UpdateGpuParticles asks every particle object for its effect root
+	s.StopEffectPreview();
+	s.FindGameObjectById(aId, false)->parentId = -1;
+	s.FindGameObjectById(bId, false)->parentId = -1;
+	s.RebuildHierarchyLinks();
+	s.QueueDeleteGameObjectById(aId);
+	s.QueueDeleteGameObjectById(bId);
+	s.ProcessPendingDeletes();
+	CHECK(true);
+}
+
+TEST_CASE(Effects, ScriptsCanStopAnEffectLayer)
+{
+	// A running effect switches its layers on and off; the component's own Emitting still has the last word
+	CHECK(EffectiveEmitting(kEffectGateNone, true));
+	CHECK(!EffectiveEmitting(kEffectGateNone, false));
+	CHECK(EffectiveEmitting(kEffectGateOn, true));
+	CHECK(!EffectiveEmitting(kEffectGateOn, false));
+	CHECK(!EffectiveEmitting(kEffectGateOff, true));
+
+	EngineAPI& api = A::Api(s);
+	const uint32_t aura = s.CreateEffectFromTemplate("Magic Aura", { 0.0f, 0.0f, 0.0f });
+	REQUIRE(aura != 0);
+	const uint32_t layer = ChildNamed(s, aura, "Aura");
+	REQUIRE(Particles(s, layer) != nullptr);
+	A::State(s) = EditorSceneState::Play;
+	s.ResetEffects();
+	s.UpdateEffects(0.1f);
+	REQUIRE(Particles(s, layer)->effectGate == kEffectGateOn);
+	CHECK(EffectiveEmitting(Particles(s, layer)->effectGate, Particles(s, layer)->emitting));
+	api.setParticlesEmitting(api.hostContext, layer, false);
+	s.UpdateEffects(0.1f);
+	CHECK(!EffectiveEmitting(Particles(s, layer)->effectGate, Particles(s, layer)->emitting));
+	A::State(s) = EditorSceneState::Edit;
+	s.ResetEffects();
+	s.QueueDeleteGameObjectById(aura);
+	s.ProcessPendingDeletes();
+}
+
+TEST_CASE(Vfx, PooledEmittersKeepTheirBuffer)
+{
+	A::AimAudioListener(s, { 0.0f, 0.0f, -20.0f }, 0.0f);
+	s.UpdateWorldMatrices();
+	A::State(s) = EditorSceneState::Play;
+	A::GameTime(s) = 0.0;
+	GpuParticles::GetInstance()->Clear(); // emitters of earlier tests may still wait for their idle time
+	CaptureGameViewSignature(s);
+	const std::vector<float> empty = CaptureGameViewSignature(s);
+
+	GameObject& obj = s.CreateGameObject("Pooled Fx", GameObjectType::Empty);
+	const uint32_t id = obj.id;
+	REQUIRE(s.AddComponentByName(obj, kGpuParticlesComponent));
+	auto* p = Particles(s, id);
+	REQUIRE(p != nullptr);
+	p->emitting = false;
+	p->burst = 500;
+	p->capacity = 500;
+	p->lifeMin = p->lifeMax = 30.0f;
+	p->speedMin = p->speedMax = 0.0f;
+	p->shape = static_cast<int>(GpuParticleShape::Box);
+	p->boxExtents = { 4.0f, 3.0f, 0.1f };
+	p->sizeStart = p->sizeEnd = 0.5f;
+	p->colorStart = p->colorEnd = { 1.0f, 1.0f, 1.0f, 1.0f };
+	p->intensity = 2.0f;
+	s.UpdateWorldMatrices();
+	A::GameTime(s) = 0.05;
+	const std::vector<float> shown = CaptureGameViewSignature(s);
+	CHECK_MSG(LargestSignatureDifference(empty, shown) > 30.0f, std::format("burst visible {:.0f}", LargestSignatureDifference(empty, shown)));
+	const uint64_t created = GpuParticles::GetInstance()->BufferCreations();
+	const size_t emitters = GpuParticles::GetInstance()->EmitterCount();
+
+	// Pooled (inactive): its particles are not drawn, but the buffer stays
+	s.FindGameObjectById(id, false)->isActive = false;
+	A::GameTime(s) = 0.1;
+	const std::vector<float> pooled = CaptureGameViewSignature(s);
+	CHECK_MSG(LargestSignatureDifference(empty, pooled) < 8.0f, std::format("pooled still drawn {:.0f}", LargestSignatureDifference(empty, pooled)));
+	CHECK(GpuParticles::GetInstance()->EmitterCount() == emitters);
+
+	// Reused: same buffer, and the particles of its last life are gone
+	s.FindGameObjectById(id, false)->isActive = true;
+	A::GameTime(s) = 0.15;
+	const std::vector<float> reused = CaptureGameViewSignature(s);
+	CHECK(GpuParticles::GetInstance()->BufferCreations() == created);
+	CHECK_MSG(LargestSignatureDifference(empty, reused) < 8.0f, std::format("old particles came back {:.0f}", LargestSignatureDifference(empty, reused)));
+
+	// Unused for long enough: released
+	s.FindGameObjectById(id, false)->isActive = false;
+	for (uint32_t i = 0; i <= GpuParticles::kIdleFramesBeforeRelease + 1; ++i) GpuParticles::GetInstance()->EndFrame();
+	CHECK(GpuParticles::GetInstance()->EmitterCount() == emitters - 1);
+	CHECK(emitters == 1u);
+	s.QueueDeleteGameObjectById(id);
+	s.ProcessPendingDeletes();
+	A::State(s) = EditorSceneState::Edit;
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
 }
 
 TEST_CASE(Vfx, GpuParticleGradientAndDrawOrder)

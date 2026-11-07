@@ -143,7 +143,7 @@ void EditorSuite::UpdateGpuParticles(ID3D12GraphicsCommandList* cmdList)
 		}
 		uint32_t emit = static_cast<uint32_t>((std::max)(p->burst, 0));
 		p->burst = 0;
-		bool emitting = p->effectGate == kEffectGateNone ? p->emitting : p->effectGate == kEffectGateOn;
+		bool emitting = EffectiveEmitting(p->effectGate, p->emitting);
 		if (effectRoot != 0 && effectRoot != effectPreviewRoot_) emitting = false;
 		if (emitting) emit += GpuParticleEmitCount(p->emitRate, deltaTime, p->emitCarry);
 
@@ -192,7 +192,7 @@ void EditorSuite::UpdateTrails()
 			continue;
 		}
 		const Vector3 head{ obj.worldMatrix.m[3][0], obj.worldMatrix.m[3][1], obj.worldMatrix.m[3][2] };
-		const bool emitting = trail->effectGate == kEffectGateNone ? trail->emitting : trail->effectGate == kEffectGateOn;
+		const bool emitting = EffectiveEmitting(trail->effectGate, trail->emitting);
 		trail->ribbon.Update(head, previewed ? effectPreviewClock_ : gameTime_, StyleOf(*trail), emitting && obj.isActive);
 	}
 }

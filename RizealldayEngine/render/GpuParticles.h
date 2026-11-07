@@ -154,6 +154,10 @@ public:
 	void Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera);
 	void Clear();
 	size_t EmitterCount() const { return emitters_.size(); }
+	/// GPU buffers created so far (a pooled object that comes back reuses its buffer)
+	uint64_t BufferCreations() const { return bufferCreations_; }
+	/// An emitter not simulated for this many EndFrames is released; until then it is hidden and kept for reuse
+	static constexpr uint32_t kIdleFramesBeforeRelease = 120;
 
 private:
 	struct Emitter {
@@ -164,6 +168,7 @@ private:
 		uint32_t seed = 1;
 		bool simulated = false;
 		bool isShaderResource = false;
+		uint32_t idleFrames = 0; // EndFrames without a Simulate; > 0 = hidden, its particles are stale
 	};
 
 	DirectXCommon* dxCommon_ = nullptr;
@@ -173,4 +178,5 @@ private:
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> alphaPso_;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> additivePso_;
 	std::unordered_map<uint64_t, Emitter> emitters_;
+	uint64_t bufferCreations_ = 0;
 };
