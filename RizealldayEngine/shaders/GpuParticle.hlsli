@@ -10,7 +10,8 @@
     float4 gColorMiddle;
     float gSizeMiddle;
     float gMiddleTime; // < 0: two keys only
-    float2 gPad;
+    float gStretch;    // 0 = camera-facing squares; > 0 = streaks along the velocity
+    float gPad;
 };
 
 struct GpuParticleVSOutput

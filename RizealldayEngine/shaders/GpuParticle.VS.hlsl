@@ -37,7 +37,20 @@ GpuParticleVSOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_Insta
     }
     const float t = p.age / p.life;
     const float size = Key(t, gSizeStart.xxxx, gSizeMiddle.xxxx, gSizeEnd.xxxx).x;
-    const float3 world = p.position + (gCameraRight * corner.x + gCameraUp * corner.y) * size * 0.5f;
+    float3 across = gCameraRight;
+    float3 along = gCameraUp;
+    float stretchLength = 1.0f;
+    // Streak: the quad's long side follows the velocity as seen on screen; too slow or flying straight at the camera stays square
+    const float2 onScreen = float2(dot(p.velocity, gCameraRight), dot(p.velocity, gCameraUp));
+    const float screenSpeed = sqrt(dot(onScreen, onScreen));
+    if (gStretch > 0.0f && screenSpeed > 0.01f)
+    {
+        const float2 dir = onScreen / screenSpeed;
+        along = gCameraRight * dir.x + gCameraUp * dir.y;
+        across = gCameraRight * dir.y - gCameraUp * dir.x;
+        stretchLength = 1.0f + sqrt(dot(p.velocity, p.velocity)) * gStretch;
+    }
+    const float3 world = p.position + (across * corner.x + along * (corner.y * stretchLength)) * size * 0.5f;
     output.position = mul(float4(world, 1.0f), gViewProjection);
     output.color = Key(t, gColorStart, gColorMiddle, gColorEnd);
     return output;

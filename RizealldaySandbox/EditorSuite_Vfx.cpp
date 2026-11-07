@@ -89,7 +89,18 @@ void EditorSuite::RegisterVfxComponents()
 		RIZE_FIELD(GpuParticlesComponent, bounce, ComponentFieldType::Float, 0.0f, 1.0f),
 		RIZE_FIELD(GpuParticlesComponent, intensity, ComponentFieldType::Float, 0.0f, 100.0f),
 		RIZE_FIELD(GpuParticlesComponent, additive, ComponentFieldType::Bool, 0.0f, 0.0f),
-		RIZE_FIELD(GpuParticlesComponent, texture, ComponentFieldType::Asset, 0.0f, 0.0f) });
+		RIZE_FIELD(GpuParticlesComponent, texture, ComponentFieldType::Asset, 0.0f, 0.0f),
+		RIZE_FIELD(GpuParticlesComponent, shape, ComponentFieldType::Int, 0.0f, 4.0f),
+		RIZE_FIELD(GpuParticlesComponent, velocityMode, ComponentFieldType::Int, 0.0f, 1.0f),
+		RIZE_FIELD(GpuParticlesComponent, shapeRadius, ComponentFieldType::Float, 0.0f, 1000.0f),
+		RIZE_FIELD(GpuParticlesComponent, boxExtents, ComponentFieldType::Vector3, 0.0f, 0.0f),
+		RIZE_FIELD(GpuParticlesComponent, stretchFactor, ComponentFieldType::Float, 0.0f, 10.0f) });
+	for (ComponentField& field : particles.fields) {
+		const std::string_view name = field.name;
+		if (name == "shape") field.tooltip = "0 Point, 1 Sphere, 2 Box, 3 Cone (base disc), 4 Ring. Turns and scales with the object.";
+		else if (name == "velocityMode") field.tooltip = "0 Direction: a cone around Direction. 1 Radial: away from the centre of the shape.";
+		else if (name == "stretchFactor") field.tooltip = "0 = round. Above 0 particles stretch along their velocity (sparks, rain).";
+	}
 #ifdef USE_IMGUI
 	particles.drawExtra = [](EditorSuite& suite, GameObject&, ComponentData& data) {
 		auto* p = static_cast<GpuParticlesComponent*>(data.Data());
@@ -148,6 +159,7 @@ void EditorSuite::UpdateGpuParticles(ID3D12GraphicsCommandList* cmdList)
 		settings.floorHeight = p->floorHeight;
 		settings.bounce = p->bounce;
 		settings.additive = p->additive;
+		ApplyGpuParticleShape(*p, obj.worldMatrix, settings);
 		settings.textureHandle = p->texture[0] != '\0' ? TextureManager::GetInstance()->LoadTexture(ResolveAssetPath(p->texture)) : SoftCircleTexture();
 
 		const Vector3 origin{ obj.worldMatrix.m[3][0], obj.worldMatrix.m[3][1], obj.worldMatrix.m[3][2] };

@@ -88,6 +88,11 @@ public:
 		auto* typed = dynamic_cast<ComponentDataT<T>*>(Find(name));
 		return typed ? &typed->value : nullptr;
 	}
+	template <typename T>
+	const T* Get(const std::string& name) const {
+		auto* typed = dynamic_cast<const ComponentDataT<T>*>(Find(name));
+		return typed ? &typed->value : nullptr;
+	}
 
 	// Components found in a file but not registered in this build: kept as JSON text so saving does not lose them
 	std::map<std::string, std::string>& Unknown() { return unknown_; }

@@ -767,5 +767,15 @@
 	"Open Prefab": "プレハブを開く",
 	"Rewind timeline cursor to 0.00 s": "タイムライン位置を 0.00 秒に戻す",
 	"Parameter Y (2D)": "パラメーター Y (2D)",
-	"2D: e.g. moveX / moveY. Idle at (0, 0), forward (0, 1), back (0, -1), left (-1, 0), right (1, 0).": "2D: 例 moveX / moveY。待機 (0, 0)、前 (0, 1)、後ろ (0, -1)、左 (-1, 0)、右 (1, 0)。"
+	"2D: e.g. moveX / moveY. Idle at (0, 0), forward (0, 1), back (0, -1), left (-1, 0), right (1, 0).": "2D: 例 moveX / moveY。待機 (0, 0)、前 (0, 1)、後ろ (0, -1)、左 (-1, 0)、右 (1, 0)。",
+	"Shape": "形状",
+	"Velocity Mode": "速度モード",
+	"Shape Radius": "形状の半径",
+	"Stretch Factor": "引き伸ばし係数",
+	"Shockwave Ring": "衝撃波リング",
+	"Explosion": "爆発",
+	"Portal": "ポータル",
+	"0 Point, 1 Sphere, 2 Box, 3 Cone (base disc), 4 Ring. Turns and scales with the object.": "0 点、1 球、2 箱、3 円錐 (底面の円)、4 リング。オブジェクトの回転と拡大縮小に従います。",
+	"0 Direction: a cone around Direction. 1 Radial: away from the centre of the shape.": "0 方向: Direction を中心とした円錐。1 放射: 形状の中心から外へ。",
+	"0 = round. Above 0 particles stretch along their velocity (sparks, rain).": "0 = 丸。0 より大きいと速度の向きに伸びます (火花、雨)。"
 }

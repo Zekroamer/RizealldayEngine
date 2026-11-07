@@ -2,6 +2,14 @@
 
 ## [Belum dirilis]
 
+## [2.6.0] — 2026-11-07
+
+### Fitur Baru
+- **Bentuk emitter GPU Particles**: Titik, Bola, Kotak, Kerucut, dan Cincin, ikut rotasi dan skala objek, dengan gizmo oranye di Scene view untuk objek terpilih.
+- **Arah Radial**: partikel menjauh dari pusat bentuk, untuk ledakan dan gelombang kejut.
+- **Partikel memanjang (stretched billboard)**: `stretchFactor` membuat percikan dan hujan berbentuk goresan searah gerak. Preset Sparks kini memakainya.
+- Preset baru: **Shockwave Ring**, **Explosion**, **Portal**. Scene lama tetap terlihat sama (titik, arah, tanpa regangan).
+
 ## [2.5.3] — 2026-11-07
 
 ### Perbaikan

@@ -4,6 +4,7 @@
 #include <d3d12.h>
 #include <wrl.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <numeric>
 #include <unordered_map>
@@ -36,7 +37,73 @@ struct GpuParticleSettings {
 	float bounce = 0.3f; // 0 = stops, 1 = keeps its speed
 	bool additive = true;
 	uint32_t textureHandle = 0;
+	// Where new particles appear and which way they fly (world space, built from the object's transform)
+	uint32_t shape = 0;        // GpuParticleShape
+	uint32_t velocityMode = 0; // GpuParticleVelocity
+	float shapeRadius = 0.5f;  // Sphere / Cone base / Ring
+	Vector3 shapeAxisX{ 0.5f, 0.0f, 0.0f }; // Box: half-axes, rotated and scaled with the object
+	Vector3 shapeAxisY{ 0.0f, 0.5f, 0.0f };
+	Vector3 shapeAxisZ{ 0.0f, 0.0f, 0.5f };
+	float stretch = 0.0f; // 0 = round billboards; > 0 = streaks along the velocity, length x (1 + speed * stretch)
 };
+
+enum class GpuParticleShape : uint32_t { Point = 0, Sphere = 1, Box = 2, Cone = 3, Ring = 4, Count };
+enum class GpuParticleVelocity : uint32_t { Direction = 0, Radial = 1, Count };
+
+/// Two unit vectors across `direction` (normalized); GpuParticle.CS.hlsl builds the same pair
+inline void GpuParticleTangents(const Vector3& direction, Vector3& tangent, Vector3& bitangent)
+{
+	const Vector3 helper = std::abs(direction.y) < 0.99f ? Vector3{ 0.0f, 1.0f, 0.0f } : Vector3{ 1.0f, 0.0f, 0.0f };
+	tangent = { helper.y * direction.z - helper.z * direction.y, helper.z * direction.x - helper.x * direction.z, helper.x * direction.y - helper.y * direction.x };
+	const float length = std::sqrt(tangent.x * tangent.x + tangent.y * tangent.y + tangent.z * tangent.z);
+	tangent = { tangent.x / length, tangent.y / length, tangent.z / length };
+	bitangent = { direction.y * tangent.z - direction.z * tangent.y, direction.z * tangent.x - direction.x * tangent.z, direction.x * tangent.y - direction.y * tangent.x };
+}
+
+/// Spawn position relative to the emitter for random numbers u1..u3 in [0, 1]. Same formulas as SpawnOffset in GpuParticle.CS.hlsl.
+inline Vector3 GpuParticleSpawnOffset(const GpuParticleSettings& s, const Vector3& direction, float u1, float u2, float u3)
+{
+	constexpr float kTwoPi = 6.2831853f;
+	switch (static_cast<GpuParticleShape>(s.shape)) {
+	case GpuParticleShape::Sphere: {
+		// Uniform in the ball: uniform direction, distance cbrt(u) x radius
+		const float z = 1.0f - 2.0f * u1;
+		const float ring = std::sqrt((std::max)(1.0f - z * z, 0.0f));
+		const float angle = u2 * kTwoPi;
+		const float distance = s.shapeRadius * std::cbrt(u3);
+		return { std::cos(angle) * ring * distance, std::sin(angle) * ring * distance, z * distance };
+	}
+	case GpuParticleShape::Box: {
+		const float a = u1 * 2.0f - 1.0f, b = u2 * 2.0f - 1.0f, c = u3 * 2.0f - 1.0f;
+		return { s.shapeAxisX.x * a + s.shapeAxisY.x * b + s.shapeAxisZ.x * c,
+			s.shapeAxisX.y * a + s.shapeAxisY.y * b + s.shapeAxisZ.y * c,
+			s.shapeAxisX.z * a + s.shapeAxisY.z * b + s.shapeAxisZ.z * c };
+	}
+	case GpuParticleShape::Cone:
+	case GpuParticleShape::Ring: {
+		// Cone: the whole base disc; Ring: only its edge. Both lie across the direction.
+		Vector3 t, b;
+		GpuParticleTangents(direction, t, b);
+		const float angle = u1 * kTwoPi;
+		const float r = s.shapeRadius * (s.shape == static_cast<uint32_t>(GpuParticleShape::Cone) ? std::sqrt(u2) : 1.0f);
+		const float x = std::cos(angle) * r, y = std::sin(angle) * r;
+		return { t.x * x + b.x * y, t.y * x + b.y * y, t.z * x + b.z * y };
+	}
+	default:
+		return { 0.0f, 0.0f, 0.0f };
+	}
+}
+
+/// Radial mode: away from the emitter's centre; from the centre itself any direction (uniform on the sphere)
+inline Vector3 GpuParticleRadialDirection(const Vector3& offset, float u1, float u2)
+{
+	const float length = std::sqrt(offset.x * offset.x + offset.y * offset.y + offset.z * offset.z);
+	if (length > 1.0e-4f) return { offset.x / length, offset.y / length, offset.z / length };
+	const float z = 1.0f - 2.0f * u1;
+	const float ring = std::sqrt((std::max)(1.0f - z * z, 0.0f));
+	const float angle = u2 * 6.2831853f;
+	return { std::cos(angle) * ring, std::sin(angle) * ring, z };
+}
 
 /// Value at life fraction t (0..1). Same formula as Key() in GpuParticle.VS.hlsl.
 inline float GpuParticleKey(float t, float start, float middle, float end, float middleTime, bool useMiddleKey)

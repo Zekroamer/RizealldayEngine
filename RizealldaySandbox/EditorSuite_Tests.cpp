@@ -5840,6 +5840,16 @@ TEST_CASE(Vfx, GpuParticleEmissionKeepsFractions)
 		CHECK(p.speedMin <= p.speedMax);
 	}
 	CHECK(!ApplyGpuParticlePreset(p, "No Such Preset"));
+	// Shaped presets set their shape; the others go back to a round point emitter
+	REQUIRE(ApplyGpuParticlePreset(p, "Shockwave Ring"));
+	CHECK(p.shape == static_cast<int>(GpuParticleShape::Ring));
+	CHECK(p.velocityMode == static_cast<int>(GpuParticleVelocity::Radial));
+	REQUIRE(ApplyGpuParticlePreset(p, "Sparks"));
+	CHECK(p.shape == static_cast<int>(GpuParticleShape::Point));
+	CHECK(p.stretchFactor > 0.0f);
+	REQUIRE(ApplyGpuParticlePreset(p, "Fire"));
+	CHECK(p.stretchFactor == 0.0f);
+	CHECK(p.velocityMode == static_cast<int>(GpuParticleVelocity::Direction));
 }
 
 namespace {
@@ -5922,6 +5932,259 @@ TEST_CASE(Vfx, GpuParticlesAreSimulatedAndDrawn)
 	s.ProcessPendingDeletes();
 	CaptureGameViewSignature(s);
 	CHECK(GpuParticles::GetInstance()->EmitterCount() == 0u);
+	A::State(s) = EditorSceneState::Edit;
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+TEST_CASE(Vfx, GpuParticleShapesStayInsideTheirShape)
+{
+	const auto dot = [](const Vector3& a, const Vector3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
+	const auto length = [&](const Vector3& v) { return std::sqrt(dot(v, v)); };
+	GpuParticleSettings gs;
+	gs.shapeRadius = 2.0f;
+	gs.shapeAxisX = { 3.0f, 0.0f, 0.0f };
+	gs.shapeAxisY = { 0.0f, 0.0f, 1.0f }; // a rotated box: its Y half-axis lies along world Z
+	gs.shapeAxisZ = { 0.0f, -0.5f, 0.0f };
+	const Vector3 up{ 0.0f, 1.0f, 0.0f };
+	const Vector3 tilted{ 0.6f, 0.8f, 0.0f };
+	int checkedSamples = 0;
+	for (int a = 0; a <= 8; ++a) {
+		for (int b = 0; b <= 8; ++b) {
+			for (int c = 0; c <= 8; ++c) {
+				const float u1 = a / 8.0f, u2 = b / 8.0f, u3 = c / 8.0f;
+				++checkedSamples;
+				gs.shape = static_cast<uint32_t>(GpuParticleShape::Point);
+				CHECK(length(GpuParticleSpawnOffset(gs, up, u1, u2, u3)) == 0.0f);
+
+				gs.shape = static_cast<uint32_t>(GpuParticleShape::Sphere);
+				CHECK(length(GpuParticleSpawnOffset(gs, up, u1, u2, u3)) <= 2.0f + 1.0e-4f);
+
+				gs.shape = static_cast<uint32_t>(GpuParticleShape::Box);
+				const Vector3 box = GpuParticleSpawnOffset(gs, up, u1, u2, u3);
+				CHECK(std::abs(box.x) <= 3.0f + 1.0e-4f);
+				CHECK(std::abs(box.y) <= 0.5f + 1.0e-4f);
+				CHECK(std::abs(box.z) <= 1.0f + 1.0e-4f);
+
+				for (const Vector3& dir : { up, tilted }) {
+					gs.shape = static_cast<uint32_t>(GpuParticleShape::Cone); // the base disc, across the direction
+					const Vector3 disc = GpuParticleSpawnOffset(gs, dir, u1, u2, u3);
+					CHECK(std::abs(dot(disc, dir)) < 1.0e-4f);
+					CHECK(length(disc) <= 2.0f + 1.0e-4f);
+					gs.shape = static_cast<uint32_t>(GpuParticleShape::Ring); // on the circle itself
+					const Vector3 ring = GpuParticleSpawnOffset(gs, dir, u1, u2, u3);
+					CHECK(std::abs(dot(ring, dir)) < 1.0e-4f);
+					CHECK(std::abs(length(ring) - 2.0f) < 1.0e-3f);
+					// Radial: away from the centre
+					const Vector3 out = GpuParticleRadialDirection(ring, u1, u2);
+					CHECK(std::abs(length(out) - 1.0f) < 1.0e-4f);
+					CHECK(dot(out, ring) > 0.0f);
+				}
+			}
+		}
+	}
+	CHECK(checkedSamples == 729);
+	// From the centre itself there is no "away": any unit direction will do
+	CHECK(std::abs(length(GpuParticleRadialDirection({ 0.0f, 0.0f, 0.0f }, 0.3f, 0.7f)) - 1.0f) < 1.0e-4f);
+	// Sphere and box fill their volume, not only the surface
+	gs.shape = static_cast<uint32_t>(GpuParticleShape::Sphere);
+	CHECK(length(GpuParticleSpawnOffset(gs, up, 0.5f, 0.5f, 0.0f)) < 0.01f);
+	gs.shape = static_cast<uint32_t>(GpuParticleShape::Box);
+	CHECK(length(GpuParticleSpawnOffset(gs, up, 0.5f, 0.5f, 0.5f)) < 1.0e-4f);
+}
+
+TEST_CASE(Vfx, GpuParticleShapeFollowsTheObject)
+{
+	GpuParticlesComponent p;
+	p.shape = static_cast<int>(GpuParticleShape::Box);
+	p.shapeRadius = 1.5f;
+	p.boxExtents = { 1.0f, 2.0f, 3.0f };
+	p.velocityMode = static_cast<int>(GpuParticleVelocity::Radial);
+	p.stretchFactor = 0.25f;
+	// Scaled x2 on X, then turned 90 degrees about Y: local X points to world -Z (left-handed, row vectors)
+	const Matrix4x4 world = Mathematics::MakeAffineMatrix({ 2.0f, 1.0f, 1.0f }, { 0.0f, 1.5707963f, 0.0f }, { 5.0f, 0.0f, 0.0f });
+	GpuParticleSettings gs;
+	ApplyGpuParticleShape(p, world, gs);
+	CHECK(gs.shape == static_cast<uint32_t>(GpuParticleShape::Box));
+	CHECK(gs.velocityMode == static_cast<uint32_t>(GpuParticleVelocity::Radial));
+	CHECK_NEAR(gs.stretch, 0.25f, 1.0e-6f);
+	CHECK_NEAR(gs.shapeAxisX.z, -2.0f, 1.0e-4f); // extent 1 x scale 2, along the turned X axis
+	CHECK_NEAR(gs.shapeAxisX.x, 0.0f, 1.0e-4f);
+	CHECK_NEAR(gs.shapeAxisY.y, 2.0f, 1.0e-4f);
+	CHECK_NEAR(gs.shapeAxisZ.x, 3.0f, 1.0e-4f);
+	CHECK_NEAR(gs.shapeRadius, 3.0f, 1.0e-4f); // radius x the largest scale
+
+	// Out-of-range values from old files or scripts fall back to safe ones
+	p.shape = 42;
+	p.velocityMode = -3;
+	p.shapeRadius = -1.0f;
+	p.stretchFactor = -2.0f;
+	ApplyGpuParticleShape(p, Mathematics::MakeIdentity4x4(), gs);
+	CHECK(gs.shape == static_cast<uint32_t>(GpuParticleShape::Point));
+	CHECK(gs.velocityMode == static_cast<uint32_t>(GpuParticleVelocity::Direction));
+	CHECK(gs.shapeRadius >= 0.0f);
+	CHECK(gs.stretch == 0.0f);
+
+	// The new fields are saved; scenes from before them load as a point emitter, as they looked
+	GameObject& obj = s.CreateGameObject("Ring Emitter", GameObjectType::Empty);
+	const uint32_t id = obj.id;
+	REQUIRE(s.AddComponentByName(obj, kGpuParticlesComponent));
+	auto* saved = obj.components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+	saved->shape = static_cast<int>(GpuParticleShape::Ring);
+	saved->velocityMode = static_cast<int>(GpuParticleVelocity::Radial);
+	saved->shapeRadius = 4.0f;
+	saved->boxExtents = { 0.1f, 0.2f, 0.3f };
+	saved->stretchFactor = 0.08f;
+	const std::string scene = s.SerializeSceneToString();
+	REQUIRE(s.DeserializeSceneFromString(scene));
+	const auto* loaded = s.FindGameObjectById(id, false)->components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+	REQUIRE(loaded != nullptr);
+	CHECK(loaded->shape == static_cast<int>(GpuParticleShape::Ring));
+	CHECK(loaded->velocityMode == static_cast<int>(GpuParticleVelocity::Radial));
+	CHECK_NEAR(loaded->shapeRadius, 4.0f, 1.0e-6f);
+	CHECK_NEAR(loaded->boxExtents.z, 0.3f, 1.0e-6f);
+	CHECK_NEAR(loaded->stretchFactor, 0.08f, 1.0e-6f);
+	std::string old = scene;
+	for (const char* key : { "\"shape\"", "\"velocityMode\"", "\"stretchFactor\"" }) {
+		const size_t at = old.find(key, old.find("Ring Emitter")); // this object's component, not another object's key
+		REQUIRE(at != std::string::npos);
+		old.replace(at, std::strlen(key), "\"removed_" + std::string(key + 1));
+	}
+	REQUIRE(s.DeserializeSceneFromString(old));
+	const auto* legacy = s.FindGameObjectById(id, false)->components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+	REQUIRE(legacy != nullptr);
+	CHECK(legacy->shape == static_cast<int>(GpuParticleShape::Point));
+	CHECK(legacy->velocityMode == static_cast<int>(GpuParticleVelocity::Direction));
+	CHECK(legacy->stretchFactor == 0.0f);
+}
+
+namespace {
+	struct LitArea {
+		int cells = 0, columns = 0, rows = 0;
+		float brightest = 0.0f, centreGain = 0.0f;
+		bool centre = false;    // the two middle cells of the middle row
+		bool belowMiddle = false; // anything under the middle row
+	};
+	/// Which cells of a 16x9 game-view signature gained light compared with `baseline`
+	LitArea LitCells(const std::vector<float>& signature, const std::vector<float>& baseline, float threshold = 12.0f)
+	{
+		LitArea area;
+		if (signature.size() != baseline.size()) return area;
+		std::vector<bool> column(kSignatureColumns, false), row(kSignatureRows, false);
+		for (int y = 0; y < kSignatureRows; ++y) {
+			for (int x = 0; x < kSignatureColumns; ++x) {
+				const size_t i = static_cast<size_t>(y * kSignatureColumns + x) * 3;
+				const float gain = signature[i] + signature[i + 1] + signature[i + 2] - baseline[i] - baseline[i + 1] - baseline[i + 2];
+				area.brightest = (std::max)(area.brightest, gain);
+				if (y == kSignatureRows / 2 && (x == 7 || x == 8)) area.centreGain = (std::max)(area.centreGain, gain);
+				if (gain < threshold) continue;
+				++area.cells;
+				column[x] = row[y] = true;
+				if (y == kSignatureRows / 2 && (x == 7 || x == 8)) area.centre = true;
+				if (y > kSignatureRows / 2) area.belowMiddle = true;
+			}
+		}
+		area.columns = static_cast<int>(std::count(column.begin(), column.end(), true));
+		area.rows = static_cast<int>(std::count(row.begin(), row.end(), true));
+		return area;
+	}
+}
+
+TEST_CASE(Vfx, GpuParticleShapesAndStretchOnScreen)
+{
+	A::AimAudioListener(s, { 0.0f, 0.0f, -20.0f }, 0.0f); // the game camera looks along +Z at the origin: about 16 x 9 units visible, ~1 unit per cell
+	s.UpdateWorldMatrices();
+	A::State(s) = EditorSceneState::Play;
+	A::GameTime(s) = 0.0;
+	CaptureGameViewSignature(s);
+	const std::vector<float> empty = CaptureGameViewSignature(s);
+
+	// One emitter at the origin; `setup` shapes it, then the picture after `seconds` of game time
+	double clock = 0.0;
+	const auto shoot = [&](const std::function<void(GpuParticlesComponent&, GameObject&)>& setup, double seconds) {
+		GameObject& obj = s.CreateGameObject("Shape Test", GameObjectType::Empty);
+		const uint32_t id = obj.id;
+		s.AddComponentByName(obj, kGpuParticlesComponent);
+		auto* p = obj.components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+		std::vector<float> picture;
+		if (p) {
+			p->emitting = false;
+			p->burst = 2000;
+			p->capacity = 2000;
+			p->lifeMin = p->lifeMax = 5.0f;
+			p->speedMin = p->speedMax = 0.0f;
+			p->spreadDegrees = 0.0f;
+			p->sizeStart = p->sizeEnd = 0.4f;
+			p->colorStart = p->colorEnd = { 1.0f, 1.0f, 1.0f, 1.0f };
+			p->intensity = 2.0f;
+			setup(*p, obj);
+			s.UpdateWorldMatrices();
+			CaptureGameViewSignature(s); // starts the emitter's clock and fires the burst
+			for (double t = 0.0; t < seconds; t += 0.05) {
+				clock += 0.05;
+				A::GameTime(s) = clock;
+				picture = CaptureGameViewSignature(s);
+			}
+			if (picture.empty()) picture = CaptureGameViewSignature(s);
+		}
+		s.QueueDeleteGameObjectById(id);
+		s.ProcessPendingDeletes();
+		CaptureGameViewSignature(s); // frees the emitter
+		return picture;
+	};
+
+	const LitArea point = LitCells(shoot([](GpuParticlesComponent&, GameObject&) {}, 0.05), empty);
+	CHECK_MSG(point.cells >= 1 && point.cells <= 8, std::format("point lit {} cells", point.cells));
+
+	// A ring facing the camera: lit around, dark in the middle
+	const LitArea ring = LitCells(shoot([](GpuParticlesComponent& p, GameObject&) {
+		p.shape = static_cast<int>(GpuParticleShape::Ring);
+		p.shapeRadius = 3.0f;
+		p.direction = { 0.0f, 0.0f, -1.0f };
+	}, 0.05), empty);
+	// Bloom may tint the middle a little; the ring itself must stay far brighter than the hole
+	CHECK_MSG(ring.cells >= 16 && ring.centreGain < ring.brightest * 0.3f, std::format("ring lit {} cells, centre {:.0f} of {:.0f}", ring.cells, ring.centreGain, ring.brightest));
+
+	// A long box lies across the picture; turned 90 degrees about Z it stands up
+	const auto longBox = [](float turn) {
+		return [turn](GpuParticlesComponent& p, GameObject& obj) {
+			p.shape = static_cast<int>(GpuParticleShape::Box);
+			p.boxExtents = { 6.0f, 0.1f, 0.1f };
+			obj.rotation = { 0.0f, 0.0f, turn };
+			obj.rotationQuat = Quaternion::FromEuler(obj.rotation);
+		};
+	};
+	const LitArea flat = LitCells(shoot(longBox(0.0f), 0.05), empty);
+	CHECK_MSG(flat.columns >= 7 && flat.rows <= 3, // bloom spills one row up and down
+		 std::format("flat box {} columns x {} rows", flat.columns, flat.rows));
+	const LitArea standing = LitCells(shoot(longBox(1.5707963f), 0.05), empty);
+	CHECK_MSG(standing.rows >= 6 && standing.columns <= 3, std::format("standing box {} columns x {} rows", standing.columns, standing.rows));
+
+	// Direction mode goes up the cone; Radial goes every way, so some fall below the middle too
+	const auto spray = [](int mode) {
+		return [mode](GpuParticlesComponent& p, GameObject&) {
+			p.velocityMode = mode;
+			p.speedMin = p.speedMax = 3.0f;
+			p.sizeStart = p.sizeEnd = 0.3f;
+		};
+	};
+	const LitArea upward = LitCells(shoot(spray(static_cast<int>(GpuParticleVelocity::Direction)), 1.0), empty);
+	const LitArea radial = LitCells(shoot(spray(static_cast<int>(GpuParticleVelocity::Radial)), 1.0), empty);
+	CHECK_MSG(upward.cells > 0 && !upward.belowMiddle, std::format("direction mode: {} cells, below {}", upward.cells, upward.belowMiddle));
+	CHECK_MSG(radial.belowMiddle && radial.rows >= 4, std::format("radial mode: {} rows, below {}", radial.rows, radial.belowMiddle));
+
+	// Stretched billboards: fast sideways particles become streaks
+	const auto streak = [](float stretch) {
+		return [stretch](GpuParticlesComponent& p, GameObject&) {
+			p.direction = { 1.0f, 0.0f, 0.0f };
+			p.speedMin = p.speedMax = 8.0f;
+			p.stretchFactor = stretch;
+		};
+	};
+	const LitArea round = LitCells(shoot(streak(0.0f), 0.1), empty);
+	const LitArea stretched = LitCells(shoot(streak(3.0f), 0.1), empty);
+	CHECK_MSG(stretched.columns >= round.columns + 2, std::format("streak {} columns vs {} round", stretched.columns, round.columns));
+	CHECK(stretched.rows <= round.rows + 1); // longer, not wider
+
 	A::State(s) = EditorSceneState::Edit;
 	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
 }

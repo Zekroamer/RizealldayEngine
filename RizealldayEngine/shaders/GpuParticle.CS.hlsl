@@ -27,7 +27,13 @@ cbuffer Constants : register(b0)
     float gFloorHeight;
     float gBounce;
     uint gCollideWithFloor;
-    uint gPad;
+    uint gShape;        // 0 Point, 1 Sphere, 2 Box, 3 Cone (base disc), 4 Ring
+    float3 gShapeAxisX; // Box half-axes in world space
+    float gShapeRadius;
+    float3 gShapeAxisY;
+    uint gVelocityMode; // 0 Direction (cone around gDirection), 1 Radial (away from the centre)
+    float3 gShapeAxisZ;
+    float gPad;
 };
 
 uint Pcg(uint value)
@@ -43,16 +49,59 @@ float Random(inout uint state)
     return float(state) / 4294967295.0f;
 }
 
+// Same pair as GpuParticleTangents in GpuParticles.h
+void Tangents(out float3 tangent, out float3 bitangent)
+{
+    const float3 helper = abs(gDirection.y) < 0.99f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+    tangent = normalize(cross(helper, gDirection));
+    bitangent = cross(gDirection, tangent);
+}
+
 float3 RandomInCone(inout uint state)
 {
     const float z = lerp(gCosSpread, 1.0f, Random(state));
     const float angle = Random(state) * 6.2831853f;
     const float radius = sqrt(saturate(1.0f - z * z));
-    const float3 local = float3(cos(angle) * radius, sin(angle) * radius, z);
-    const float3 helper = abs(gDirection.y) < 0.99f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
-    const float3 tangent = normalize(cross(helper, gDirection));
-    const float3 bitangent = cross(gDirection, tangent);
-    return tangent * local.x + bitangent * local.y + gDirection * local.z;
+    float3 tangent, bitangent;
+    Tangents(tangent, bitangent);
+    return tangent * (cos(angle) * radius) + bitangent * (sin(angle) * radius) + gDirection * z;
+}
+
+float3 UnitSphere(float u1, float u2)
+{
+    const float z = 1.0f - 2.0f * u1;
+    const float ring = sqrt(saturate(1.0f - z * z));
+    const float angle = u2 * 6.2831853f;
+    return float3(cos(angle) * ring, sin(angle) * ring, z);
+}
+
+// Same formulas as GpuParticleSpawnOffset in GpuParticles.h
+float3 SpawnOffset(float u1, float u2, float u3)
+{
+    if (gShape == 1u)
+    {
+        return UnitSphere(u1, u2) * (gShapeRadius * pow(u3, 1.0f / 3.0f));
+    }
+    if (gShape == 2u)
+    {
+        return gShapeAxisX * (u1 * 2.0f - 1.0f) + gShapeAxisY * (u2 * 2.0f - 1.0f) + gShapeAxisZ * (u3 * 2.0f - 1.0f);
+    }
+    if (gShape == 3u || gShape == 4u)
+    {
+        float3 tangent, bitangent;
+        Tangents(tangent, bitangent);
+        const float angle = u1 * 6.2831853f;
+        const float r = gShapeRadius * (gShape == 3u ? sqrt(u2) : 1.0f);
+        return tangent * (cos(angle) * r) + bitangent * (sin(angle) * r);
+    }
+    return float3(0.0f, 0.0f, 0.0f);
+}
+
+// Same as GpuParticleRadialDirection in GpuParticles.h
+float3 RadialDirection(float3 offset, float u1, float u2)
+{
+    const float len = length(offset);
+    return len > 1.0e-4f ? offset / len : UnitSphere(u1, u2);
 }
 
 [numthreads(64, 1, 1)]
@@ -67,8 +116,13 @@ void main(uint3 id : SV_DispatchThreadID)
     if ((index + gCapacity - gEmitStart) % gCapacity < gEmitCount)
     {
         uint state = index * 2654435761u + gSeed;
-        p.position = gOrigin;
-        p.velocity = RandomInCone(state) * lerp(gSpeedMin, gSpeedMax, Random(state));
+        const float u1 = Random(state);
+        const float u2 = Random(state);
+        const float u3 = Random(state);
+        const float3 offset = SpawnOffset(u1, u2, u3);
+        p.position = gOrigin + offset;
+        const float3 heading = gVelocityMode == 1u ? RadialDirection(offset, Random(state), Random(state)) : RandomInCone(state);
+        p.velocity = heading * lerp(gSpeedMin, gSpeedMax, Random(state));
         p.life = lerp(gLifeMin, gLifeMax, Random(state));
         p.age = 0.0f;
     }

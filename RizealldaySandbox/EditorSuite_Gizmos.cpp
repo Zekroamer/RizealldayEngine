@@ -150,6 +150,7 @@ void EditorSuite::DrawSceneViewOverlays(const ImVec2& vpPos, const ImVec2& vpSiz
 		} else if (sel.type == GameObjectType::DirectionalLight || sel.type == GameObjectType::PointLight || sel.type == GameObjectType::SpotLight || sel.hasLight) {
 			DrawLightGizmo(vpPos, vpSize, sel);
 		}
+		if (showGizmos_) DrawParticleShapeGizmo(vpPos, vpSize, sel);
 	}
 
 	if (showGizmos_ && !terrainSculpt_.active && selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size())) {
@@ -676,6 +677,94 @@ void EditorSuite::DrawCameraFrustum(const ImVec2& vpPos, const ImVec2& vpSize, c
 	for (int i = 0; i < 4; ++i) {
 		drawList->AddLine(sc[i], sc[(i + 1) % 4], IM_COL32(255, 255, 255, 200), 1.2f);
 	}
+#endif
+}
+
+void EditorSuite::DrawParticleShapeGizmo(const ImVec2& vpPos, const ImVec2& vpSize, const GameObject& obj)
+{
+#ifdef USE_IMGUI
+	const GpuParticlesComponent* p = obj.components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+	if (!p) return;
+	// The same world-space shape the emitter uses (ApplyGpuParticleShape)
+	GpuParticleSettings shape;
+	ApplyGpuParticleShape(*p, obj.worldMatrix, shape);
+	const Vector3 origin{ obj.worldMatrix.m[3][0], obj.worldMatrix.m[3][1], obj.worldMatrix.m[3][2] };
+	Vector3 dir = TransformUtil::TransformDirection(p->direction, obj.worldMatrix);
+	const float dirLength = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+	dir = dirLength > 1.0e-6f ? Vector3{ dir.x / dirLength, dir.y / dirLength, dir.z / dirLength } : Vector3{ 0.0f, 1.0f, 0.0f };
+
+	ImDrawList* drawList = ImGui::GetWindowDrawList();
+	const ImU32 col = IM_COL32(255, 170, 60, 220);
+	const auto line = [&](const Vector3& a, const Vector3& b) {
+		ImVec2 sa, sb;
+		float da = 0.0f, db = 0.0f;
+		if (WorldToScreen(a, editorCamera_, vpPos, vpSize, sa, da) && WorldToScreen(b, editorCamera_, vpPos, vpSize, sb, db)) drawList->AddLine(sa, sb, col, 1.3f);
+	};
+	const auto at = [](const Vector3& c, const Vector3& u, float a, const Vector3& v, float b) {
+		return Vector3{ c.x + u.x * a + v.x * b, c.y + u.y * a + v.y * b, c.z + u.z * a + v.z * b };
+	};
+	const auto circle = [&](const Vector3& u, const Vector3& v, float radius) {
+		constexpr int kSegments = 32;
+		for (int i = 0; i < kSegments; ++i) {
+			const float a0 = 6.2831853f * i / kSegments, a1 = 6.2831853f * (i + 1) / kSegments;
+			line(at(origin, u, std::cos(a0) * radius, v, std::sin(a0) * radius), at(origin, u, std::cos(a1) * radius, v, std::sin(a1) * radius));
+		}
+	};
+
+	Vector3 t, b;
+	GpuParticleTangents(dir, t, b);
+	switch (static_cast<GpuParticleShape>(shape.shape)) {
+	case GpuParticleShape::Sphere:
+		circle({ 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, shape.shapeRadius);
+		circle({ 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, shape.shapeRadius);
+		circle({ 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f, 0.0f }, shape.shapeRadius);
+		break;
+	case GpuParticleShape::Box: {
+		Vector3 corners[8];
+		for (int i = 0; i < 8; ++i) {
+			const float sx = (i & 1) ? 1.0f : -1.0f, sy = (i & 2) ? 1.0f : -1.0f, sz = (i & 4) ? 1.0f : -1.0f;
+			corners[i] = at(at(origin, shape.shapeAxisX, sx, shape.shapeAxisY, sy), shape.shapeAxisZ, sz, Vector3{}, 0.0f);
+		}
+		for (int i = 0; i < 8; ++i) {
+			for (int bit : { 1, 2, 4 }) {
+				if (!(i & bit)) line(corners[i], corners[i | bit]);
+			}
+		}
+		break;
+	}
+	case GpuParticleShape::Cone: {
+		// Base disc plus the spread around the direction, drawn one unit long
+		circle(t, b, shape.shapeRadius);
+		const float spread = std::clamp(p->spreadDegrees, 0.0f, 89.0f) * 3.14159265f / 180.0f;
+		const float reach = (std::max)(shape.shapeRadius, 1.0f);
+		const float topRadius = shape.shapeRadius + std::tan(spread) * reach;
+		for (int i = 0; i < 4; ++i) {
+			const float a = 1.5707963f * i;
+			const Vector3 base = at(origin, t, std::cos(a) * shape.shapeRadius, b, std::sin(a) * shape.shapeRadius);
+			const Vector3 top = at(at(origin, dir, reach, Vector3{}, 0.0f), t, std::cos(a) * topRadius, b, std::sin(a) * topRadius);
+			line(base, top);
+		}
+		break;
+	}
+	case GpuParticleShape::Ring:
+		circle(t, b, shape.shapeRadius);
+		break;
+	default:
+		break;
+	}
+	// Which way they fly: the direction, or (Radial) four arrows away from the centre
+	const float arrow = (std::max)(shape.shapeRadius, 0.5f) + 0.5f;
+	if (shape.velocityMode == static_cast<uint32_t>(GpuParticleVelocity::Radial)) {
+		for (int i = 0; i < 4; ++i) {
+			const float a = 1.5707963f * i;
+			const Vector3 out{ t.x * std::cos(a) + b.x * std::sin(a), t.y * std::cos(a) + b.y * std::sin(a), t.z * std::cos(a) + b.z * std::sin(a) };
+			line(at(origin, out, shape.shapeRadius, Vector3{}, 0.0f), at(origin, out, arrow, Vector3{}, 0.0f));
+		}
+	} else {
+		line(origin, at(origin, dir, arrow, Vector3{}, 0.0f));
+	}
+#else
+	(void)vpPos; (void)vpSize; (void)obj;
 #endif
 }
 

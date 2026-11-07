@@ -918,6 +918,7 @@ private:
 	void DrawColliderWireframes(const ImVec2& vpPos, const ImVec2& vpSize);
 	void DrawCameraFrustum(const ImVec2& vpPos, const ImVec2& vpSize, const GameObject& camObj);
 	void DrawLightGizmo(const ImVec2& vpPos, const ImVec2& vpSize, const GameObject& lightObj);
+	void DrawParticleShapeGizmo(const ImVec2& vpPos, const ImVec2& vpSize, const GameObject& obj);
 
 	// 3D Math Projection Helper
 	bool WorldToScreen(const Vector3& worldPos, const Camera& cam, const ImVec2& vpPos, const ImVec2& vpSize, ImVec2& outScreenPos, float& outDepth);

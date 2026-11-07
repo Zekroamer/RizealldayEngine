@@ -20,8 +20,12 @@ namespace {
 		float lifeMin, lifeMax, speedMin, speedMax;
 		uint32_t emitStart, emitCount, capacity, seed;
 		float floorHeight, bounce;
-		uint32_t collideWithFloor, pad;
+		uint32_t collideWithFloor, shape;
+		Vector3 shapeAxisX; float shapeRadius; // float3 + scalar per 16 bytes, as the HLSL cbuffer packs them
+		Vector3 shapeAxisY; uint32_t velocityMode;
+		Vector3 shapeAxisZ; float pad;
 	};
+	static_assert(sizeof(ComputeConstants) == 36 * 4, "keep in sync with the Constants cbuffer in GpuParticle.CS.hlsl");
 
 	struct DrawConstants {
 		Matrix4x4 viewProjection;
@@ -32,8 +36,10 @@ namespace {
 		Vector4 colorMiddle;
 		float sizeMiddle;
 		float middleTime; // < 0: two keys
-		float pad[2];
+		float stretch;    // 0 = camera-facing squares
+		float pad;
 	};
+	static_assert(sizeof(DrawConstants) == 160, "keep in sync with the DrawConstants cbuffer in GpuParticle.hlsli");
 
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> MakeSignature(ID3D12Device* device, const D3D12_ROOT_SIGNATURE_DESC& desc)
 	{
@@ -223,6 +229,12 @@ void GpuParticles::Simulate(ID3D12GraphicsCommandList* cmdList, uint64_t id, con
 	constants.floorHeight = std::isfinite(settings.floorHeight) ? settings.floorHeight : 0.0f;
 	constants.bounce = std::clamp(settings.bounce, 0.0f, 1.0f);
 	constants.collideWithFloor = settings.collideWithFloor ? 1u : 0u;
+	constants.shape = settings.shape < static_cast<uint32_t>(GpuParticleShape::Count) ? settings.shape : 0u;
+	constants.velocityMode = settings.velocityMode < static_cast<uint32_t>(GpuParticleVelocity::Count) ? settings.velocityMode : 0u;
+	constants.shapeRadius = std::isfinite(settings.shapeRadius) ? (std::max)(settings.shapeRadius, 0.0f) : 0.0f;
+	constants.shapeAxisX = settings.shapeAxisX;
+	constants.shapeAxisY = settings.shapeAxisY;
+	constants.shapeAxisZ = settings.shapeAxisZ;
 	emitter.seed = emitter.seed * 1664525u + 1013904223u;
 	emitter.ringHead = (emitter.ringHead + count) % capacity;
 
@@ -287,6 +299,7 @@ void GpuParticles::Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera
 		constants.colorMiddle = emitter.settings.colorMiddle;
 		constants.sizeMiddle = emitter.settings.sizeMiddle;
 		constants.middleTime = emitter.settings.useMiddleKey ? std::clamp(emitter.settings.middleTime, 0.001f, 0.999f) : -1.0f;
+		constants.stretch = std::isfinite(emitter.settings.stretch) ? (std::max)(emitter.settings.stretch, 0.0f) : 0.0f;
 		const D3D12_GPU_VIRTUAL_ADDRESS address = dxCommon_->UploadConstants(constants);
 		if (address == 0) continue;
 		cmdList->SetPipelineState(emitter.settings.additive ? additivePso_.Get() : alphaPso_.Get());

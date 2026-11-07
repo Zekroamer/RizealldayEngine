@@ -767,5 +767,15 @@
 	"Open Prefab": "Buka Prefab",
 	"Rewind timeline cursor to 0.00 s": "Putar ulang kursor timeline ke 0.00 dtk",
 	"Parameter Y (2D)": "Parameter Y (2D)",
-	"2D: e.g. moveX / moveY. Idle at (0, 0), forward (0, 1), back (0, -1), left (-1, 0), right (1, 0).": "2D: misalnya moveX / moveY. Idle di (0, 0), maju (0, 1), mundur (0, -1), kiri (-1, 0), kanan (1, 0)."
+	"2D: e.g. moveX / moveY. Idle at (0, 0), forward (0, 1), back (0, -1), left (-1, 0), right (1, 0).": "2D: misalnya moveX / moveY. Idle di (0, 0), maju (0, 1), mundur (0, -1), kiri (-1, 0), kanan (1, 0).",
+	"Shape": "Bentuk",
+	"Velocity Mode": "Mode Kecepatan",
+	"Shape Radius": "Jari-jari Bentuk",
+	"Stretch Factor": "Faktor Regangan",
+	"Shockwave Ring": "Cincin Gelombang Kejut",
+	"Explosion": "Ledakan",
+	"Portal": "Portal",
+	"0 Point, 1 Sphere, 2 Box, 3 Cone (base disc), 4 Ring. Turns and scales with the object.": "0 Titik, 1 Bola, 2 Kotak, 3 Kerucut (piringan alas), 4 Cincin. Ikut berputar dan berskala bersama objek.",
+	"0 Direction: a cone around Direction. 1 Radial: away from the centre of the shape.": "0 Arah: kerucut di sekitar Direction. 1 Radial: menjauh dari pusat bentuk.",
+	"0 = round. Above 0 particles stretch along their velocity (sparks, rain).": "0 = bulat. Di atas 0 partikel memanjang searah kecepatannya (percikan, hujan)."
 }
