@@ -2,6 +2,8 @@
 
 ## [Belum dirilis]
 
+## [2.8.0] — 2026-11-07
+
 ### Fitur Baru
 - **Look Preset** di panel Post Processing: Clean Default, Vivid Action, Cinematic Warm, Neon Glow, Dark Moody. Bayangan, ambient occlusion, dan kabut tidak ikut berubah.
 - **Post FX di Scene view** (toolbar viewport atau "Preview in Scene View"): bloom, grading, dan efek layar game terlihat saat merancang. Default mati karena menambah satu pass post-process.
