@@ -66,6 +66,8 @@ void EditorSuite::DrawEditorUI(float deltaTime)
 	if (showProfiler_) DrawProfilerWindow();
 	if (showAnimatorWindow_) DrawAnimatorWindow();
 	if (showTimelineWindow_) DrawTimelineWindow();
+	if (showEffectEditor_) DrawEffectEditorWindow();
+	else if (effectPreviewRoot_ != 0) StopEffectPreview(); // closed with its X
 	DrawAutoSaveRestoreModal();
 	if (showInputActionsWindow_) DrawInputActionsWindow();
 #endif
@@ -232,6 +234,9 @@ void EditorSuite::DrawMainMenuBar()
 			}
 			if (ImGui::MenuItem(TrId("Timeline"), nullptr, showTimelineWindow_)) {
 				showTimelineWindow_ = !showTimelineWindow_;
+			}
+			if (ImGui::MenuItem(TrId("Effect Editor"), nullptr, showEffectEditor_)) {
+				showEffectEditor_ = !showEffectEditor_;
 			}
 			if (ImGui::MenuItem(TrId("Animator"), nullptr, showAnimatorWindow_)) {
 				showAnimatorWindow_ = !showAnimatorWindow_;
@@ -772,6 +777,12 @@ void EditorSuite::DrawHierarchyCreationMenu()
 			AddComponentByName(ps, kGpuParticlesComponent);
 			isSceneDirty_ = true;
 			PushUndoSnapshot();
+		}
+		if (ImGui::BeginMenu(TrId("Effect"))) {
+			for (const char* name : kEffectTemplates) {
+				if (ImGui::MenuItem(Tr(name)) && CreateEffectFromTemplate(name, { 0.0f, 1.0f, 0.0f }) != 0) showEffectEditor_ = true;
+			}
+			ImGui::EndMenu();
 		}
 		ImGui::EndMenu();
 	}

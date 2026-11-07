@@ -264,6 +264,9 @@ void EditorSuite::DrawFloatingBottomBar(const ImVec2& vpPos, const ImVec2& vpSiz
 	ImGui::Checkbox(TrId("Light"), &enableLighting_);
 	ImGui::SetItemTooltip(Tr("Toggle viewport scene lighting"));
 	ImGui::SameLine();
+	if (ImGui::Checkbox(TrId("Post FX"), &scenePostPreview_)) Localization::SetEditorSettingBool("scenePostPreview", scenePostPreview_);
+	ImGui::SetItemTooltip("%s", Tr("Preview the game's post-processing (bloom, grading, screen effects) in the Scene view"));
+	ImGui::SameLine();
 	ImGui::Checkbox(TrId("Cull"), &enableFrustumCulling_);
 	ImGui::SetItemTooltip(Tr("Toggle view frustum AABB culling"));
 	ImGui::SameLine();

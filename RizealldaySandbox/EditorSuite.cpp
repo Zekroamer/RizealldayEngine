@@ -355,7 +355,11 @@ void EditorSuite::Initialize(
 	editViewRT_.Initialize(dxCommon_, 1920, 1080, 2, 1, 128, editClearColor);
 	gameViewRT_.Initialize(dxCommon_, 1920, 1080, 3, 2, 129, gameClearColor);
 	modelPreviewRT_.Initialize(dxCommon_, 256, 256, 4, 4, 132, previewClearColor);
-	postProcess_.Initialize(dxCommon_, &dxc_);
+	postProcess_.Initialize(dxCommon_, &dxc_, DirectXCommon::kPostRtvBaseIndex);
+#ifdef USE_IMGUI
+	scenePostProcess_.Initialize(dxCommon_, &dxc_, DirectXCommon::kScenePostRtvBaseIndex);
+	scenePostPreview_ = Localization::EditorSettingBool("scenePostPreview", false);
+#endif
 #ifdef USE_IMGUI
 	editSceneRT_.Initialize(dxCommon_, 1920, 1080, DirectXCommon::kSceneRtvBaseIndex, DirectXCommon::kSceneDsvBaseIndex, dxCommon_->AllocateSrvIndex(), editClearColor, true, dxCommon_->AllocateSrvIndex());
 	previewSceneRT_.Initialize(dxCommon_, 256, 256, DirectXCommon::kSceneRtvBaseIndex + 2, DirectXCommon::kSceneDsvBaseIndex + 2, dxCommon_->AllocateSrvIndex(), previewClearColor, true);
@@ -472,6 +476,7 @@ void EditorSuite::Initialize(
 				}
 				if (const std::string window = argValue("--window "); window == "animator") showAnimatorWindow_ = true;
 				else if (window == "timeline") showTimelineWindow_ = true;
+				else if (window == "effect") showEffectEditor_ = true;
 				else if (window == "profiler") showProfiler_ = true;
 				else if (window == "open-project") showOpenProjectModal_ = true;
 #endif
@@ -834,12 +839,16 @@ void EditorSuite::Update(float deltaTime, Input* input)
 
 	// Game time: scripts, physics and animations see deltaTime * timeScale (0 = paused, e.g. a level-up menu)
 	float gameDeltaTime = advancePlayFrame ? deltaTime * timeScale_ : deltaTime;
-	if (advancePlayFrame) {
-		// Camera shake and hitstop run on real time, so a hitstop can still shake the frozen frame
+	// Camera shake and the impact pulse run on real time (a hitstop still shakes the frozen frame), in Edit too
+	// so the Post Processing panel can preview them; a paused game keeps them where they are
+	if (advancePlayFrame || sceneState_ == EditorSceneState::Edit) {
 		if (shakeLeft_ > 0.0f) {
 			shakeLeft_ = (std::max)(0.0f, shakeLeft_ - deltaTime);
 			shakeTime_ += deltaTime;
 		}
+		UpdateImpactPulse(deltaTime);
+	}
+	if (advancePlayFrame) {
 		if (hitstopLeft_ > 0.0f) {
 			hitstopLeft_ -= deltaTime;
 			gameDeltaTime = 0.0f;
@@ -862,6 +871,8 @@ void EditorSuite::Update(float deltaTime, Input* input)
 		const bool inPlay = (sceneState_ != EditorSceneState::Edit) || IsStandaloneMode();
 		const float animationDeltaTime = advancePlayFrame ? gameDeltaTime : (inPlay ? 0.0f : deltaTime);
 		if (advancePlayFrame) UpdateTimelines(gameDeltaTime);
+		if (advancePlayFrame) UpdateEffects(gameDeltaTime);
+		else if (sceneState_ == EditorSceneState::Edit) UpdateEffectPreview(deltaTime);
 		UpdateAnimations(animationDeltaTime, inPlay);
 	}
 

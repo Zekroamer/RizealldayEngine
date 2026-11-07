@@ -27,6 +27,15 @@ void EditorSuite::DrawPostProcessSettingsUI()
 
 	PostProcessSettings& post = postSettings_;
 	bool changed = ImGui::Checkbox(TrId("Enable Post Processing"), &post.enabled);
+	if (ImGui::BeginCombo(TrId("Look Preset"), Tr("Choose..."))) {
+		for (const char* preset : kPostLookPresets) {
+			if (ImGui::Selectable(Tr(preset))) changed |= ApplyPostLookPreset(post, preset);
+		}
+		ImGui::EndCombo();
+	}
+	ImGui::SetItemTooltip("%s", Tr("Sets grading, bloom, vignette and letterbox. Shadows, ambient occlusion and fog stay."));
+	if (ImGui::Checkbox(TrId("Preview in Scene View"), &scenePostPreview_)) Localization::SetEditorSettingBool("scenePostPreview", scenePostPreview_);
+	ImGui::SetItemTooltip("%s", Tr("Preview the game's post-processing (bloom, grading, screen effects) in the Scene view"));
 	ImGui::BeginDisabled(!post.enabled);
 	changed |= ImGui::Checkbox(TrId("Tone Mapping (ACES)"), &post.toneMapping);
 	changed |= ImGui::DragFloat(TrId("Exposure"), &post.exposure, 0.01f, 0.0f, 10.0f);
@@ -68,6 +77,57 @@ void EditorSuite::DrawPostProcessSettingsUI()
 		isSceneDirty_ = true;
 		PushUndoSnapshot();
 	}
+
+	// Screen Effect studio: try a full-screen shader and the impact pulse without writing a script
+	ImGui::Spacing();
+	ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.0f, 1.0f), "%s", Tr("Screen Effects"));
+	ImGui::Separator();
+	if (screenEffectStudioFiles_.empty()) screenEffectStudioFiles_ = ListScreenEffectShaders("shaders");
+	if (screenEffectStudioFiles_.empty()) {
+		ImGui::TextDisabled("%s", Tr("No ScreenEffect.*.PS.hlsl shaders in the shaders folder"));
+	} else {
+		screenEffectStudioShader_ = std::clamp(screenEffectStudioShader_, 0, static_cast<int>(screenEffectStudioFiles_.size()) - 1);
+		const std::string& current = screenEffectStudioFiles_[screenEffectStudioShader_];
+		if (ImGui::BeginCombo(TrId("Shader"), current.c_str())) {
+			screenEffectStudioFiles_ = ListScreenEffectShaders("shaders"); // new files show up when the list opens
+			for (int i = 0; i < static_cast<int>(screenEffectStudioFiles_.size()); ++i) {
+				if (ImGui::Selectable(screenEffectStudioFiles_[i].c_str(), i == screenEffectStudioShader_)) {
+					screenEffectStudioShader_ = i;
+					screenEffectStudioHint_.clear();
+				}
+			}
+			ImGui::EndCombo();
+		}
+		const std::string file = "shaders/" + screenEffectStudioFiles_[(std::min)(screenEffectStudioShader_, static_cast<int>(screenEffectStudioFiles_.size()) - 1)];
+		if (screenEffectStudioHint_.empty()) screenEffectStudioHint_ = ScreenEffectShaderHint(file);
+		if (!screenEffectStudioHint_.empty()) {
+			ImGui::PushTextWrapPos(0.0f);
+			ImGui::TextDisabled("%s", screenEffectStudioHint_.c_str());
+			ImGui::PopTextWrapPos();
+		}
+		ImGui::DragFloat4(TrId("gParams[0]"), &screenEffectStudioParams_[0], 0.01f);
+		ImGui::DragFloat4(TrId("gParams[1]"), &screenEffectStudioParams_[4], 0.01f);
+		ImGui::SliderInt(TrId("Slot"), &screenEffectStudioSlot_, 0, kImpactEffectSlot - 1);
+		ImGui::SetItemTooltip("%s", Tr("Scripts use the same slots: Play clears them"));
+		if (ImGui::Button(TrId("Apply"))) {
+			float params[PostProcess::kScreenEffectParams] = {};
+			std::copy(std::begin(screenEffectStudioParams_), std::end(screenEffectStudioParams_), params);
+			std::string error;
+			const std::filesystem::path path(file);
+			if (!SetScreenEffectInViews(screenEffectStudioSlot_, path.wstring(), params, &error)) LogMessage("[ScreenEffect] " + file + ": " + error, 2);
+		}
+		ImGui::SameLine();
+		if (ImGui::Button(TrId("Clear Screen Effects"))) ClearAllScreenEffects();
+	}
+
+	ImGui::Spacing();
+	ImGui::TextDisabled("%s", Tr("Impact Pulse"));
+	ImGui::DragFloat(TrId("Bloom Boost"), &impactPulseTest_.bloomBoost, 0.05f, 0.0f, 10.0f);
+	ImGui::SliderFloat(TrId("Radial Blur"), &impactPulseTest_.radialBlur, 0.0f, 1.0f);
+	ImGui::DragFloat(TrId("Shake"), &impactPulseTest_.shake, 0.01f, 0.0f, 2.0f);
+	ImGui::DragFloat(TrId("Seconds"), &impactPulseTest_.seconds, 0.01f, 0.05f, 3.0f);
+	if (ImGui::Button(TrId("Test Impact Pulse"))) TriggerImpactPulse(impactPulseTest_);
+	ImGui::SetItemTooltip("%s", Tr("Flash, blur and shake as a hit would cause them. Turn on Post FX to see it in the Scene view."));
 #endif
 }
 

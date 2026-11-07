@@ -134,11 +134,18 @@ void EditorSuite::UpdateGpuParticles(ID3D12GraphicsCommandList* cmdList)
 		auto* p = obj.isActive ? obj.components.Get<GpuParticlesComponent>(kGpuParticlesComponent) : nullptr;
 		if (!p) continue;
 		// Going back in time (a new Play) or a long gap (loading) must not produce a jump
-		const float deltaTime = (p->lastTime < 0.0) ? 0.0f : std::clamp(static_cast<float>(now - p->lastTime), 0.0f, 0.1f);
+		float deltaTime = (p->lastTime < 0.0) ? 0.0f : std::clamp(static_cast<float>(now - p->lastTime), 0.0f, 0.1f);
 		p->lastTime = now;
+		// In Edit an effect plays only in the Effect Editor's preview (slower, faster or paused); the others stay quiet
+		const uint32_t effectRoot = inPlay ? 0 : EffectRootOf(obj.id);
+		if (effectRoot != 0 && effectRoot == effectPreviewRoot_) {
+			deltaTime *= effectPreviewPlaying_ ? std::clamp(effectPreviewSpeed_, 0.05f, 4.0f) : 0.0f;
+		}
 		uint32_t emit = static_cast<uint32_t>((std::max)(p->burst, 0));
 		p->burst = 0;
-		if (p->emitting) emit += GpuParticleEmitCount(p->emitRate, deltaTime, p->emitCarry);
+		bool emitting = p->effectGate == kEffectGateNone ? p->emitting : p->effectGate == kEffectGateOn;
+		if (effectRoot != 0 && effectRoot != effectPreviewRoot_) emitting = false;
+		if (emitting) emit += GpuParticleEmitCount(p->emitRate, deltaTime, p->emitCarry);
 
 		GpuParticleSettings settings;
 		settings.capacity = static_cast<uint32_t>((std::max)(p->capacity, 1));
@@ -178,12 +185,15 @@ void EditorSuite::UpdateTrails()
 	for (GameObject& obj : gameObjects_) {
 		TrailComponent* trail = obj.components.Get<TrailComponent>(kTrailComponent);
 		if (!trail) continue;
-		if (!inPlay) {
+		// In Edit only the effect the Effect Editor previews draws its trails, on the preview clock
+		const bool previewed = !inPlay && effectPreviewRoot_ != 0 && EffectRootOf(obj.id) == effectPreviewRoot_;
+		if (!inPlay && !previewed) {
 			trail->ribbon.Clear();
 			continue;
 		}
 		const Vector3 head{ obj.worldMatrix.m[3][0], obj.worldMatrix.m[3][1], obj.worldMatrix.m[3][2] };
-		trail->ribbon.Update(head, gameTime_, StyleOf(*trail), trail->emitting && obj.isActive);
+		const bool emitting = trail->effectGate == kEffectGateNone ? trail->emitting : trail->effectGate == kEffectGateOn;
+		trail->ribbon.Update(head, previewed ? effectPreviewClock_ : gameTime_, StyleOf(*trail), emitting && obj.isActive);
 	}
 }
 

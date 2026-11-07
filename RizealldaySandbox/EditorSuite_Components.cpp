@@ -62,6 +62,7 @@ void EditorSuite::RegisterBuiltinComponents()
 	RegisterPhysicsComponents();
 	RegisterMaterialComponent();
 	RegisterVfxComponents();
+	RegisterEffectComponents();
 	RegisterTimelineComponent();
 	RegisterTerrainComponent();
 }

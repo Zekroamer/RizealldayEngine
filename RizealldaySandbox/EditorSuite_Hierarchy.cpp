@@ -43,6 +43,12 @@ void EditorSuite::UpdateWorldMatrices()
 		idToIndex[gameObjects_[i].id] = i;
 	}
 
+	// The Effect Editor's preview motion moves the previewed effect's picture, never its saved position
+	const bool previewMotion = effectPreviewRoot_ != 0 && effectPreviewMotion_ != EffectPreviewMotion::None && sceneState_ == EditorSceneState::Edit;
+	const Vector3 previewOffset = previewMotion
+		? EffectPreviewOffset(effectPreviewMotion_, effectPreviewRadius_, effectPreviewCycles_, static_cast<float>(effectPreviewClock_))
+		: Vector3{ 0.0f, 0.0f, 0.0f };
+
 	enum class State : uint8_t { Unvisited, InProgress, Done };
 	std::vector<State> state(count, State::Unvisited);
 	bool cycleFound = false;
@@ -74,6 +80,11 @@ void EditorSuite::UpdateWorldMatrices()
 
 		const Matrix4x4 local = TransformUtil::ComposeTRS(obj.translation, obj.rotationQuat, obj.scale);
 		obj.worldMatrix = hasParent ? Mathematics::Multiply(local, parentWorld) : local;
+		if (previewMotion && obj.id == effectPreviewRoot_) { // its children follow through parentWorld
+			obj.worldMatrix.m[3][0] += previewOffset.x;
+			obj.worldMatrix.m[3][1] += previewOffset.y;
+			obj.worldMatrix.m[3][2] += previewOffset.z;
+		}
 		state[index] = State::Done;
 	};
 

@@ -7,6 +7,11 @@
 
 inline constexpr const char* kTrailComponent = "Trail";
 
+// Runtime switch set by an Effect Timing root (EditorSuite_Effects.cpp): None = the component's own "emitting"
+inline constexpr int kEffectGateNone = 0;
+inline constexpr int kEffectGateOn = 1;
+inline constexpr int kEffectGateOff = 2;
+
 /// A ribbon behind a moving object (sword swing, dash, projectile)
 struct TrailComponent {
 	float lifetime = 0.5f;
@@ -21,6 +26,7 @@ struct TrailComponent {
 	char texture[260] = {}; // empty = soft edges; u runs along the trail (head 0, tail 1), v across it
 
 	TrailRibbon ribbon; // runtime, not saved
+	int effectGate = kEffectGateNone; // runtime
 };
 
 inline constexpr const char* kGpuParticlesComponent = "GPU Particles";
@@ -64,6 +70,7 @@ struct GpuParticlesComponent {
 	// Runtime, not saved
 	float emitCarry = 0.0f;
 	double lastTime = -1.0;
+	int effectGate = kEffectGateNone;
 };
 
 /// Shape, velocity mode and stretch of `p` in world space: box half-axes follow the object's rotation and

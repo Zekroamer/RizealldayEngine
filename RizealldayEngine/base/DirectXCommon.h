@@ -25,6 +25,7 @@ public:
 	static constexpr uint32_t kSceneRtvBaseIndex = 8;
 	static constexpr uint32_t kSceneDsvBaseIndex = 5;
 	static constexpr uint32_t kPostRtvBaseIndex = 12;
+	static constexpr uint32_t kScenePostRtvBaseIndex = 22; // the Scene view's own PostProcess (editor preview)
 	static constexpr uint32_t kMaxDsvDescriptors = 8;
 	static constexpr uint32_t kMaxSrvDescriptors = 1024;
 	static constexpr uint32_t kFixedSrvBegin = 128;

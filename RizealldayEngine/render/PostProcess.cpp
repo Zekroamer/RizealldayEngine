@@ -26,10 +26,14 @@ PostProcess::~PostProcess()
 	if (rootSignature_) dxCommon_->DeferRelease(rootSignature_);
 }
 
-void PostProcess::Initialize(DirectXCommon* dxCommon, DXCManager* dxc)
+static_assert(DirectXCommon::kPostRtvBaseIndex + PostProcess::kRtvCount <= DirectXCommon::kScenePostRtvBaseIndex);
+static_assert(DirectXCommon::kScenePostRtvBaseIndex + PostProcess::kRtvCount <= DirectXCommon::kMaxRtvDescriptors);
+
+void PostProcess::Initialize(DirectXCommon* dxCommon, DXCManager* dxc, uint32_t rtvBase)
 {
 	dxCommon_ = dxCommon;
 	dxc_ = dxc;
+	rtvBase_ = rtvBase;
 	CreateRootSignature();
 
 	auto compile = [dxc](const wchar_t* file, const wchar_t* profile) {
@@ -168,7 +172,7 @@ void PostProcess::ReleaseTarget(Target& target)
 void PostProcess::Resize(uint32_t width, uint32_t height)
 {
 	if (width == 0 || height == 0 || (fxaaSource_.width == width && fxaaSource_.height == height)) return;
-	uint32_t rtv = DirectXCommon::kPostRtvBaseIndex;
+	uint32_t rtv = rtvBase_;
 	CreateTarget(effectTargets_[0], rtv++, width, height, DirectXCommon::kSceneColorFormat);
 	CreateTarget(effectTargets_[1], rtv++, width, height, DirectXCommon::kSceneColorFormat);
 	CreateTarget(fxaaSource_, rtv++, width, height, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB);

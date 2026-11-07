@@ -394,12 +394,15 @@ struct EngineAPI {
 	bool (*getPostProcess)(void* ctx, ScriptPostProcess* out) = nullptr;
 	bool (*setPostProcess)(void* ctx, const ScriptPostProcess* value) = nullptr;
 	bool (*setScreenEffect)(void* ctx, int slot, const char* shaderFile, const float* params16) = nullptr; // shaderFile null = clear the slot
+	// Impact pulse and look presets (API v15)
+	void (*impactPulse)(void* ctx, float bloomBoost, float radialBlur, float shake, float seconds) = nullptr;
+	bool (*setLookPreset)(void* ctx, const char* name) = nullptr;
 };
 
 /// Engine <-> GameScripts.dll compatibility check. Bump kScriptApiVersion when the meaning of the API changes;
 /// layout changes of EngineAPI / ScriptGameObjectView / ScriptBase are caught automatically by the sizes.
 /// The fingerprint is defined at the end of this header (it needs the complete ScriptBase).
-constexpr uint32_t kScriptApiVersion = 14; // 4: Animator, 5: ShakeCamera / Hitstop / input actions, 6: MoveCharacter, 7: FindPath, 8: KeepAcrossScenes, 9: material outline, 10: camera input + projection + prewarm + post-processing, 11: animation layers + bones + IK + ragdoll, 12: audio buses + pitch + 3D + components by name, 13: fog in ScriptPostProcess, 14: orthographic camera size
+constexpr uint32_t kScriptApiVersion = 15; // 4: Animator, 5: ShakeCamera / Hitstop / input actions, 6: MoveCharacter, 7: FindPath, 8: KeepAcrossScenes, 9: material outline, 10: camera input + projection + prewarm + post-processing, 11: animation layers + bones + IK + ragdoll, 12: audio buses + pitch + 3D + components by name, 13: fog in ScriptPostProcess, 14: orthographic camera size, 15: impact pulse + look presets
 
 /// Size of the UI canvas used by the UI* helpers (stretched over the game view)
 constexpr float kUICanvasWidth = 1280.0f;
@@ -827,6 +830,11 @@ public:
 	bool SetPostProcess(const ScriptPostProcess& value) const {
 		return engineApi_ && engineApi_->setPostProcess && engineApi_->setPostProcess(engineApi_->hostContext, &value);
 	}
+	/// Look presets of the Post Processing panel: "Clean Default", "Vivid Action", "Cinematic Warm", "Neon Glow", "Dark Moody".
+	/// Changes grading, bloom, vignette and letterbox (not shadows or fog); Stop restores the scene's look. False for an unknown name.
+	bool SetLookPreset(const char* name) const {
+		return engineApi_ && engineApi_->setLookPreset && name && engineApi_->setLookPreset(engineApi_->hostContext, name);
+	}
 	/// Runs a pixel shader over the HDR scene (slots 0..3, in order) until ClearScreenEffect or Stop. Files: Assets/... of the
 	/// project or the built-in shaders/ScreenEffect.*.PS.hlsl. params16 fills gParams[4] (see shaders/Post.hlsli); nullptr keeps
 	/// the previous values, so calling it every frame to animate is cheap. False if the shader does not compile (see Console).
@@ -1215,6 +1223,11 @@ public:
 	/// Freezes game time for `seconds` (impact pause). Update still runs with deltaTime 0; SetTimeScale is not changed.
 	void Hitstop(float seconds) const {
 		if (engineApi_ && engineApi_->hitstop) engineApi_->hitstop(engineApi_->hostContext, seconds);
+	}
+	/// Hit flash: extra bloom, a radial blur (0..1) and a camera shake that fade out over `seconds` (real time).
+	/// Uses the engine's own screen effect slot, so slots 0..3 stay yours. A new pulse replaces a running one.
+	void TriggerImpactPulse(float bloomBoost, float radialBlur, float seconds, float shake = 0.0f) const {
+		if (engineApi_ && engineApi_->impactPulse) engineApi_->impactPulse(engineApi_->hostContext, bloomBoost, radialBlur, shake, seconds);
 	}
 
 	// ---- Input actions (keyboard, mouse and gamepad at once; edit in Options > Input Actions) ----

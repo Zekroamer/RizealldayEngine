@@ -8,6 +8,8 @@
 #include "render/EnvironmentProbe.h"
 #include "PbrMaterial.h"
 #include "VfxComponents.h"
+#include "PostLooks.h"
+#include "EffectTiming.h"
 #include "Timeline.h"
 #include "Terrain.h"
 #include "3d/Camera.h"
@@ -398,8 +400,25 @@ public:
 		double lastBake = 0.0;
 	};
 	TerrainSculptState terrainSculpt_;
-	/// Once a frame on game time: heads follow their objects. Trails only run in Play.
+	/// Once a frame on game time: heads follow their objects. Trails run in Play, and in Edit for the previewed effect.
 	void UpdateTrails();
+
+	// Layered effects (EditorSuite_Effects.cpp): a root with Effect Timing + child layers with GPU Particles / Trail
+	static void RegisterEffectComponents();
+	/// Play: advances every effect root on game time (bursts, emission windows, pulses, loop, despawn when done)
+	void UpdateEffects(float deltaTime);
+	/// Every effect back to its start, emitters back to their own settings, the editor preview stopped
+	void ResetEffects();
+	/// Builds one of kEffectTemplates at `position` (selected, undoable); 0 for an unknown name
+	uint32_t CreateEffectFromTemplate(const std::string& name, const Vector3& position);
+	/// Topmost ancestor-or-self with Effect Timing, 0 when the object is not part of an effect
+	uint32_t EffectRootOf(uint32_t id);
+	// Edit-mode preview of one effect (Effect Editor transport); runs on the editor clock times the speed
+	void StartEffectPreview(uint32_t rootId);
+	void StopEffectPreview();
+	void UpdateEffectPreview(float realDeltaTime);
+	void SetEffectPreviewMotion(EffectPreviewMotion motion, float radius, float cyclesPerSecond);
+	void DrawEffectEditorWindow();
 	void DrawEffects(ID3D12GraphicsCommandList* cmdList, const Camera& camera, RenderTexture& target);
 	/// Decals, then the objects RenderScene3D held back (decalExcluded_). Call right after RenderScene3D.
 	void DrawDecals(ID3D12GraphicsCommandList* cmdList, const Camera& camera, RenderTexture& target);
@@ -462,6 +481,11 @@ public:
 	void Hitstop(float seconds);
 	float CameraShakeStrength() const { return shakeLeft_ > 0.0f && shakeDuration_ > 0.0f ? shakeStrength_ * shakeLeft_ / shakeDuration_ : 0.0f; }
 	Vector3 CameraShakeOffset() const;
+	/// Extra bloom + radial blur (engine slot kImpactEffectSlot) fading over `seconds`, plus a camera shake.
+	/// Runs on real time in Play and Edit (the Post Processing panel's Test Impact Pulse).
+	void TriggerImpactPulse(const ImpactPulse& pulse);
+	/// The look this frame: the scene's settings plus a running impact pulse
+	PostProcessSettings EffectivePostSettings() const;
 	void DrawAnimatorWindow();
 	void DrawSkeletonOverlay(const ImVec2& vpPos, const ImVec2& vpSize);
 	// Animator window helpers (EditorSuite_AnimatorWindow.cpp)
@@ -912,6 +936,14 @@ private:
 	float shakeLeft_ = 0.0f;
 	float shakeTime_ = 0.0f;
 	float hitstopLeft_ = 0.0f;
+	ImpactPulse impactPulse_{};
+	float impactLeft_ = 0.0f;
+	float ImpactFade() const { return impactLeft_ > 0.0f && impactPulse_.seconds > 0.0f ? impactLeft_ / impactPulse_.seconds : 0.0f; }
+	void UpdateImpactPulse(float realDeltaTime);
+	// Screen effects go to the Game view's PostProcess and to the Scene view preview's
+	bool SetScreenEffectInViews(int slot, const std::wstring& shaderFile, const float params[PostProcess::kScreenEffectParams], std::string* error);
+	void ClearScreenEffectInViews(int slot);
+	void ClearAllScreenEffects();
 	double physicsAccumulator_ = 0.0; // leftover time for the next fixed physics step
 	std::unique_ptr<Physics::PhysicsWorld> physicsWorld_; // created on first use
 	bool physicsQueryDirty_ = true; // objects may have moved since the physics world last saw them
@@ -999,6 +1031,15 @@ private:
 	uint32_t gameDepthSrvIndex_ = DirectXCommon::kInvalidSrvIndex;
 	void InitializeGameSceneTarget(uint32_t width, uint32_t height);
 	PostProcess postProcess_{};
+	PostProcess scenePostProcess_{}; // Scene view preview of the game look (editor only)
+	bool scenePostPreview_ = false;   // off by default: it costs a second post-process pass
+	// Screen Effect studio (Post Processing panel)
+	int screenEffectStudioShader_ = 0;
+	int screenEffectStudioSlot_ = 0;
+	float screenEffectStudioParams_[8] = { 0.5f, 0.5f, 0.3f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+	ImpactPulse impactPulseTest_{};
+	std::vector<std::string> screenEffectStudioFiles_;
+	std::string screenEffectStudioHint_;
 	EnvironmentProbe environmentProbe_{};
 	bool enableInstancing_ = true;
 	struct MaterialAssetEntry {
@@ -1339,6 +1380,16 @@ private:
 	std::unordered_map<std::string, CachedAnimatorController> animatorControllers_;
 	bool showAnimatorWindow_ = false;
 	bool showTimelineWindow_ = false;
+	bool showEffectEditor_ = false;
+	uint32_t effectPreviewRoot_ = 0; // 0 = no preview
+	bool effectPreviewPlaying_ = false;
+	float effectPreviewSpeed_ = 1.0f;
+	double effectPreviewClock_ = 0.0; // scaled editor time of the preview (trails, motion)
+	EffectPreviewMotion effectPreviewMotion_ = EffectPreviewMotion::None;
+	float effectPreviewRadius_ = 2.0f;
+	float effectPreviewCycles_ = 0.5f;
+	uint32_t effectEditorLayer_ = 0; // layer whose curves the Effect Editor shows
+	void AdvanceEffectRoot(GameObject& root, float deltaTime, bool inPlay);
 	// Auto-save (EditorSuite_AutoSave.cpp)
 	bool autoSaveEnabled_ = true;
 	double autoSaveIntervalSeconds_ = 120.0;

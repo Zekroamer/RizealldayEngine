@@ -503,12 +503,13 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList)
 		RenderShadowPass(cmdList, camera);
 		if (lights_) lights_->SetView(camera, target.GetWidth(), target.GetHeight());
 	};
-	const auto setPostCamera = [&](const Camera& camera) {
+	const auto setPostCamera = [&](PostProcess& post, const Camera& camera) {
 		const Matrix4x4& proj = camera.GetProjectionMatrix();
-		postProcess_.SetCamera(1.0f / proj.m[0][0], 1.0f / proj.m[1][1], camera.nearClip, camera.farClip, proj.m[3][3] == 0.0f);
+		post.SetCamera(1.0f / proj.m[0][0], 1.0f / proj.m[1][1], camera.nearClip, camera.farClip, proj.m[3][3] == 0.0f);
 		const Matrix4x4& view = camera.GetViewMatrix();
-		postProcess_.SetCameraHeight(camera.translation.y, view.m[1][0], view.m[1][1], view.m[1][2]);
+		post.SetCameraHeight(camera.translation.y, view.m[1][0], view.m[1][1], view.m[1][2]);
 	};
+	const PostProcessSettings look = EffectivePostSettings();
 
 #ifdef USE_IMGUI
 	// 1. Render to EDIT VIEW (Scene Camera)
@@ -533,9 +534,17 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList)
 	}
 	DrawEffects(cmdList, editorCamera_, editSceneRT_);
 	editSceneRT_.EndRender();
-	// The Scene view shows the scene itself: post-processing is the game's look
-	editViewRT_.BeginRender(false);
-	postProcess_.Resolve(cmdList, editSceneRT_);
+	// The Scene view shows the scene itself, unless "Post FX" previews the game's look there (its own PostProcess)
+	if (scenePostPreview_) {
+		RIZE_PROFILE_GPU(cmdList, "Scene View Post");
+		setPostCamera(scenePostProcess_, editorCamera_);
+		scenePostProcess_.Prepare(cmdList, editSceneRT_, look, static_cast<float>(gameTime_));
+		editViewRT_.BeginRender(false);
+		scenePostProcess_.Composite(cmdList);
+	} else {
+		editViewRT_.BeginRender(false);
+		postProcess_.Resolve(cmdList, editSceneRT_);
+	}
 	editViewRT_.EndRender();
 	}
 	Profiler::GetInstance()->EndGpu(cmdList, sceneViewScope);
@@ -547,7 +556,7 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList)
 	if (gameCamera_) {
 		gameCamera_->Update();
 		prepareView(*gameCamera_, gameSceneRT_);
-		setPostCamera(*gameCamera_);
+		setPostCamera(postProcess_, *gameCamera_);
 	}
 	gameSceneRT_.BeginRender();
 	if (gameCamera_) {
@@ -560,7 +569,7 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList)
 	{
 		RIZE_PROFILE_CPU("Post Process");
 		RIZE_PROFILE_GPU(cmdList, "Post Process");
-		postProcess_.Prepare(cmdList, gameSceneRT_, postSettings_, static_cast<float>(gameTime_));
+		postProcess_.Prepare(cmdList, gameSceneRT_, look, static_cast<float>(gameTime_));
 		gameViewRT_.BeginRender(false);
 		postProcess_.Composite(cmdList);
 	}
@@ -624,7 +633,7 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList)
 	if (gameCamera_) {
 		gameCamera_->Update();
 		prepareView(*gameCamera_, gameSceneRT_);
-		setPostCamera(*gameCamera_);
+		setPostCamera(postProcess_, *gameCamera_);
 	}
 	RIZE_PROFILE_GPU(cmdList, "Game View");
 	gameSceneRT_.BeginRender();
@@ -637,7 +646,7 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList)
 	gameSceneRT_.EndRender();
 	{
 		RIZE_PROFILE_CPU("Post Process");
-		postProcess_.Prepare(cmdList, gameSceneRT_, postSettings_, static_cast<float>(gameTime_));
+		postProcess_.Prepare(cmdList, gameSceneRT_, look, static_cast<float>(gameTime_));
 		dxCommon_->BindMainRenderTarget();
 		postProcess_.Composite(cmdList);
 	}

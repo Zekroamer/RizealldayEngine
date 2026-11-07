@@ -2,6 +2,18 @@
 
 ## [Belum dirilis]
 
+### Fitur Baru
+- **Look Preset** di panel Post Processing: Clean Default, Vivid Action, Cinematic Warm, Neon Glow, Dark Moody. Bayangan, ambient occlusion, dan kabut tidak ikut berubah.
+- **Post FX di Scene view** (toolbar viewport atau "Preview in Scene View"): bloom, grading, dan efek layar game terlihat saat merancang. Default mati karena menambah satu pass post-process.
+- **Screen Effects studio**: coba shader `ScreenEffect.*.PS.hlsl` beserta parameternya tanpa menulis script.
+- **Effect Editor** (*Window > Effect Editor*, atau *GameObject > Visual Effects > Effect*): efek berlapis berbasis prefab. Root efek memakai komponen baru **Effect Timing** (start delay, duration, loop, despawn saat selesai, impact pulse per layer), dan setiap anak dengan GPU Particles atau Trail menjadi satu layer.
+  - Transport Play/Pause/Restart/Stop dengan kecepatan 0,1–2x, lane waktu per layer, kurva *Size over Lifetime* yang bisa diseret, dan gradien *Color over Lifetime*.
+  - **Preview Motion** (Circle, Figure Eight, Line) hanya menggerakkan tampilan di Edit, sehingga Trail bisa dilihat tanpa Play. Posisi yang disimpan tidak berubah.
+  - Template: Hit Spark, Explosion, Magic Aura, Slash Trail. **Save as Prefab**, lalu `InstantiatePrefab` dari script akan memutar efek dari awal setiap kali di-spawn (termasuk dari pool).
+  - Di Edit, efek hanya bergerak saat di-preview; efek lain diam.
+- Script: `TriggerImpactPulse(bloom, blur, seconds, shake)` dan `SetLookPreset("Dark Moody")`. `kScriptApiVersion` naik ke 15, jadi script project perlu di-build ulang.
+- **Impact Pulse**: kilatan bloom, radial blur, dan guncangan kamera yang memudar sendiri, bisa diuji di Edit mode lewat tombol **Test Impact Pulse**. Engine memakai slot efek layar 4; script tetap memakai slot 0..3.
+
 ## [2.7.0] — 2026-11-07
 
 ### Perubahan

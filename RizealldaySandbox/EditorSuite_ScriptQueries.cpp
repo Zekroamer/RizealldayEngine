@@ -450,7 +450,7 @@ void EditorSuite::ResetScriptRuntimeState()
 {
 	audioFollowers_.clear();
 	cursorLocked_ = false;
-	postProcess_.ClearScreenEffects();
+	ClearAllScreenEffects();
 	navGridValid_ = false; // the next FindPath sees the current level
 	frameContacts_.clear();
 	frameContactSet_.clear();
@@ -465,6 +465,8 @@ void EditorSuite::ResetScriptRuntimeState()
 	musicVoice_ = 0;
 	shakeLeft_ = 0.0f;
 	hitstopLeft_ = 0.0f;
+	impactLeft_ = 0.0f;
+	ResetEffects();
 	physicsAccumulator_ = 0.0;
 	if (physicsWorld_) physicsWorld_->Clear();
 	for (const auto& [id, ragdoll] : ragdolls_) {
@@ -500,8 +502,19 @@ void EditorSuite::TickScriptTimers(float deltaTime)
 
 void EditorSuite::BurstOneShotParticles(uint32_t id)
 {
-	const GameObject* obj = FindGameObjectById(id, false);
-	const auto* p = obj && obj->isActive ? obj->components.Get<GpuParticlesComponent>(kGpuParticlesComponent) : nullptr;
+	GameObject* obj = FindGameObjectById(id, false);
+	if (!obj || !obj->isActive) return;
+	// Effects time their own bursts: a spawned effect starts from 0 s, its layers burst when their time comes
+	if (const uint32_t effectRoot = EffectRootOf(id); effectRoot != 0) {
+		if (effectRoot == id) {
+			auto* timing = obj->components.Get<EffectTimingComponent>(kEffectTimingComponent);
+			timing->time = 0.0f;
+			timing->finished = false;
+			timing->started.clear();
+		}
+		return;
+	}
+	const auto* p = obj->components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
 	if (p && p->spawnBurst > 0) pendingParticleBursts_.push_back({ id, p->spawnBurst });
 }
 
@@ -601,14 +614,15 @@ void EditorSuite::SetupEngineAPIExtensions()
 	engineApi_.setScreenEffect = [](void* ctx, int slot, const char* shaderFile, const float* params16) -> bool {
 		auto* self = static_cast<EditorSuite*>(ctx);
 		if (!self) return false;
+		if (slot < 0 || slot >= kImpactEffectSlot) return false; // the last slot is the engine's impact pulse
 		if (!shaderFile) {
-			self->postProcess_.ClearScreenEffect(slot);
+			self->ClearScreenEffectInViews(slot);
 			return true;
 		}
 		std::error_code ec;
 		const std::filesystem::path file = std::filesystem::exists(shaderFile, ec) ? std::filesystem::path(shaderFile) : std::filesystem::path(self->ResolveAssetPath(shaderFile));
 		std::string error;
-		const bool ok = self->postProcess_.SetScreenEffect(slot, file.wstring(), params16, &error);
+		const bool ok = self->SetScreenEffectInViews(slot, file.wstring(), params16, &error);
 		if (!error.empty()) self->LogMessage(std::format("[ScreenEffect] {}: {}", shaderFile, error), 2);
 		return ok;
 	};
@@ -1079,6 +1093,18 @@ void EditorSuite::SetupEngineAPIExtensions()
 	engineApi_.hitstop = [](void* ctx, float seconds) {
 		if (ctx) static_cast<EditorSuite*>(ctx)->Hitstop(seconds);
 	};
+	engineApi_.impactPulse = [](void* ctx, float bloomBoost, float radialBlur, float shake, float seconds) {
+		if (!ctx) return;
+		ImpactPulse pulse;
+		pulse.bloomBoost = bloomBoost;
+		pulse.radialBlur = radialBlur;
+		pulse.shake = shake;
+		pulse.seconds = seconds;
+		static_cast<EditorSuite*>(ctx)->TriggerImpactPulse(pulse); // ignores NaN / non-positive durations
+	};
+	engineApi_.setLookPreset = [](void* ctx, const char* name) -> bool {
+		return ctx && name && ApplyPostLookPreset(static_cast<EditorSuite*>(ctx)->postSettings_, name);
+	};
 	engineApi_.animPlayLayer = [](void* ctx, uint32_t id, int layer, const char* clip, const char* maskBone, bool loop, float speed, float fadeSeconds) -> bool {
 		return ctx && static_cast<EditorSuite*>(ctx)->ScriptPlayAnimationLayer(id, layer, clip, maskBone, loop, speed, fadeSeconds);
 	};
@@ -1148,6 +1174,85 @@ void EditorSuite::Hitstop(float seconds)
 {
 	if (!std::isfinite(seconds) || seconds <= 0.0f) return;
 	hitstopLeft_ = (std::max)(hitstopLeft_, seconds);
+}
+
+void EditorSuite::TriggerImpactPulse(const ImpactPulse& pulse)
+{
+	if (!std::isfinite(pulse.seconds) || pulse.seconds <= 0.0f || !std::isfinite(pulse.bloomBoost) || !std::isfinite(pulse.radialBlur) || !std::isfinite(pulse.shake)) return;
+	impactPulse_ = pulse;
+	impactPulse_.bloomBoost = (std::max)(pulse.bloomBoost, 0.0f);
+	impactPulse_.radialBlur = std::clamp(pulse.radialBlur, 0.0f, 1.0f);
+	impactLeft_ = pulse.seconds;
+	if (pulse.shake > 0.0f) ShakeCamera(pulse.shake, pulse.seconds);
+	UpdateImpactPulse(0.0f);
+}
+
+void EditorSuite::UpdateImpactPulse(float realDeltaTime)
+{
+	if (impactLeft_ <= 0.0f) return;
+	impactLeft_ = (std::max)(0.0f, impactLeft_ - realDeltaTime);
+	const float blur = impactPulse_.radialBlur * ImpactFade();
+	if (blur <= 0.0f) {
+		ClearScreenEffectInViews(kImpactEffectSlot);
+		return;
+	}
+	const float params[PostProcess::kScreenEffectParams] = { 0.5f, 0.5f, blur };
+	std::string error;
+	if (!SetScreenEffectInViews(kImpactEffectSlot, L"shaders/ScreenEffect.RadialBlur.PS.hlsl", params, &error) && !error.empty()) {
+		LogMessage("[ImpactPulse] " + error, 2);
+		impactPulse_.radialBlur = 0.0f; // do not retry every frame
+	}
+}
+
+PostProcessSettings EditorSuite::EffectivePostSettings() const
+{
+	PostProcessSettings s = postSettings_;
+	const float boost = impactPulse_.bloomBoost * ImpactFade();
+	if (boost <= 0.0f) return s;
+	if (!s.enabled) {
+		// The look is off: only the flash, without switching on tone mapping, grading or fog for a moment
+		const PostProcessSettings neutral;
+		s.enabled = true;
+		s.toneMapping = false;
+		s.exposure = neutral.exposure;
+		s.contrast = neutral.contrast;
+		s.saturation = neutral.saturation;
+		s.tint = neutral.tint;
+		s.vignette = 0.0f;
+		s.letterbox = 0.0f;
+		s.fxaa = false;
+		s.ssao = false;
+		s.fogEnabled = false;
+		s.bloomIntensity = 0.0f;
+	}
+	s.bloom = true;
+	s.bloomIntensity += boost;
+	return s;
+}
+
+bool EditorSuite::SetScreenEffectInViews(int slot, const std::wstring& shaderFile, const float params[PostProcess::kScreenEffectParams], std::string* error)
+{
+	const bool ok = postProcess_.SetScreenEffect(slot, shaderFile, params, error);
+#ifdef USE_IMGUI
+	if (ok) scenePostProcess_.SetScreenEffect(slot, shaderFile, params, nullptr);
+#endif
+	return ok;
+}
+
+void EditorSuite::ClearScreenEffectInViews(int slot)
+{
+	postProcess_.ClearScreenEffect(slot);
+#ifdef USE_IMGUI
+	scenePostProcess_.ClearScreenEffect(slot);
+#endif
+}
+
+void EditorSuite::ClearAllScreenEffects()
+{
+	postProcess_.ClearScreenEffects();
+#ifdef USE_IMGUI
+	scenePostProcess_.ClearScreenEffects();
+#endif
 }
 
 Vector3 EditorSuite::CameraShakeOffset() const

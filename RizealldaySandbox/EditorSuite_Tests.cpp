@@ -98,6 +98,9 @@ struct EditorSuiteTestAccess {
 		s.UpdateWorldMatrices();
 	}
 	static RenderTexture& GameViewRT(EditorSuite& s) { return s.gameViewRT_; }
+	static RenderTexture& EditViewRT(EditorSuite& s) { return s.editViewRT_; }
+	static bool& ScenePostPreview(EditorSuite& s) { return s.scenePostPreview_; }
+	static PostProcess& ScenePost(EditorSuite& s) { return s.scenePostProcess_; }
 	static void RunAudio(EditorSuite& s, float dt) { s.UpdateWorldMatrices(); s.UpdateAudio(dt); }
 	static int ScriptFaults(const EditorSuite& s) { return s.scriptFaultCount_; }
 	static bool FaultPending(const EditorSuite& s) { return s.scriptFaultPending_; }
@@ -3871,9 +3874,8 @@ std::vector<float> gCapturedRowMeans;
 
 /// Renders one real frame and returns the Game view as average RGB (0..255) per grid cell.
 /// A coarse grid survives the small rasterization differences between a GPU and WARP.
-std::vector<float> CaptureGameViewSignature(EditorSuite& s)
+std::vector<float> CaptureViewSignature(EditorSuite& s, RenderTexture& rt)
 {
-	RenderTexture& rt = A::GameViewRT(s);
 	Microsoft::WRL::ComPtr<ID3D12Resource> readback;
 	uint32_t rowPitch = 0;
 
@@ -3914,6 +3916,8 @@ std::vector<float> CaptureGameViewSignature(EditorSuite& s)
 	for (size_t i = 0; i < sum.size(); ++i) signature[i] = static_cast<float>(sum[i] / (std::max)(count[i / 3], 1));
 	return signature;
 }
+
+std::vector<float> CaptureGameViewSignature(EditorSuite& s) { return CaptureViewSignature(s, A::GameViewRT(s)); }
 
 float LargestSignatureDifference(const std::vector<float>& a, const std::vector<float>& b)
 {
@@ -4170,6 +4174,174 @@ TEST_CASE(Post, ScreenEffectsRunReadDepthAndSurviveBrokenShaders)
 	s.ResetScriptRuntimeState();
 	CHECK(!s.PostEffects().HasScreenEffect(0));
 	A::State(s) = EditorSceneState::Edit;
+}
+
+TEST_CASE(Post, LookPresetsChangeOnlyTheLook)
+{
+	for (const char* name : kPostLookPresets) {
+		PostProcessSettings look;
+		look.enabled = false;
+		look.ssao = true;
+		look.shadowCascades = 3;
+		look.environmentIntensity = 2.0f;
+		look.fogEnabled = true;
+		look.fogDensity = 0.5f;
+		CHECK_MSG(ApplyPostLookPreset(look, name), name);
+		CHECK_MSG(look.enabled, name);
+		// Lighting quality and fog are the scene's, not the look's
+		CHECK(look.ssao);
+		CHECK(look.shadowCascades == 3);
+		CHECK_NEAR(look.environmentIntensity, 2.0f, 1e-6f);
+		CHECK(look.fogEnabled);
+		CHECK_NEAR(look.fogDensity, 0.5f, 1e-6f);
+	}
+	PostProcessSettings vivid, moody;
+	REQUIRE(ApplyPostLookPreset(vivid, "Vivid Action"));
+	REQUIRE(ApplyPostLookPreset(moody, "Dark Moody"));
+	CHECK(vivid.saturation > 1.0f);
+	CHECK(moody.saturation < 1.0f && moody.exposure < 1.0f && moody.vignette > 0.0f);
+	PostProcessSettings neon;
+	REQUIRE(ApplyPostLookPreset(neon, "Neon Glow"));
+	CHECK(neon.bloom && neon.bloomThreshold < PostProcessSettings{}.bloomThreshold && neon.bloomIntensity > PostProcessSettings{}.bloomIntensity);
+	PostProcessSettings untouched;
+	CHECK(!ApplyPostLookPreset(untouched, "No Such Look"));
+	CHECK(!untouched.enabled);
+}
+
+TEST_CASE(Post, ImpactPulseFadesAndKeepsItsOwnSlot)
+{
+	EngineAPI& api = A::Api(s);
+	A::State(s) = EditorSceneState::Edit; // the editor's Test Impact Pulse button works without Play
+	s.PostSettings() = PostProcessSettings{};
+	s.PostSettings().enabled = true;
+	const float baseBloom = s.PostSettings().bloomIntensity;
+	auto length = [](const Vector3& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); };
+
+	ImpactPulse pulse;
+	pulse.bloomBoost = 2.0f;
+	pulse.radialBlur = 0.4f;
+	pulse.shake = 0.3f;
+	pulse.seconds = 0.5f;
+	s.TriggerImpactPulse(pulse);
+	CHECK_NEAR(s.EffectivePostSettings().bloomIntensity, baseBloom + 2.0f, 1e-4f);
+	CHECK(s.PostEffects().HasScreenEffect(kImpactEffectSlot));
+	CHECK(A::ScenePost(s).HasScreenEffect(kImpactEffectSlot));
+
+	s.Update(0.25f, RizeEngine::GetInput());
+	const float half = s.EffectivePostSettings().bloomIntensity;
+	CHECK_MSG(half > baseBloom + 0.5f && half < baseBloom + 1.5f, std::format("half-way bloom {:.2f}", half));
+	CHECK_MSG(length(s.CameraShakeOffset()) > 0.0f || s.CameraShakeStrength() > 0.0f, "the shake previews in Edit");
+
+	s.Update(0.3f, RizeEngine::GetInput());
+	CHECK_NEAR(s.EffectivePostSettings().bloomIntensity, baseBloom, 1e-5f);
+	CHECK(!s.PostEffects().HasScreenEffect(kImpactEffectSlot));
+	CHECK(!A::ScenePost(s).HasScreenEffect(kImpactEffectSlot));
+	CHECK(s.CameraShakeStrength() == 0.0f);
+
+	// With the look turned off a pulse still flashes, without switching on tone mapping or fog for its duration
+	s.PostSettings().enabled = false;
+	s.PostSettings().fogEnabled = true;
+	s.TriggerImpactPulse(pulse);
+	const PostProcessSettings flash = s.EffectivePostSettings();
+	CHECK(flash.enabled && flash.bloom && !flash.toneMapping && !flash.fogEnabled && !flash.ssao);
+	CHECK_NEAR(flash.bloomIntensity, 2.0f, 1e-4f);
+	CHECK_NEAR(flash.exposure, 1.0f, 1e-6f);
+	s.Update(0.6f, RizeEngine::GetInput());
+	CHECK(!s.EffectivePostSettings().enabled);
+	s.PostSettings() = PostProcessSettings{};
+	s.PostSettings().enabled = true;
+
+	// Scripts own slots 0..3: the engine's slot is out of their reach
+	CHECK(!api.setScreenEffect(api.hostContext, kImpactEffectSlot, "shaders/ScreenEffect.RadialBlur.PS.hlsl", nullptr));
+	CHECK(!s.PostEffects().HasScreenEffect(kImpactEffectSlot));
+	// Script effects reach the Scene view preview too
+	REQUIRE(api.setScreenEffect(api.hostContext, 2, "shaders/ScreenEffect.RadialBlur.PS.hlsl", nullptr));
+	CHECK(A::ScenePost(s).HasScreenEffect(2));
+	s.ResetScriptRuntimeState();
+	CHECK(!A::ScenePost(s).HasScreenEffect(2));
+
+	// Bad values do nothing; a pulse in progress ends with the session
+	ImpactPulse bad;
+	bad.seconds = std::nanf("");
+	bad.bloomBoost = 1.0f;
+	s.TriggerImpactPulse(bad);
+	CHECK_NEAR(s.EffectivePostSettings().bloomIntensity, baseBloom, 1e-5f);
+	s.TriggerImpactPulse(pulse);
+	s.ResetScriptRuntimeState();
+	CHECK_NEAR(s.EffectivePostSettings().bloomIntensity, baseBloom, 1e-5f);
+	CHECK(!s.PostEffects().HasScreenEffect(kImpactEffectSlot));
+}
+
+TEST_CASE(ScriptAPI, ImpactPulseAndLookPresetFromScripts)
+{
+	EngineAPI& api = A::Api(s);
+	REQUIRE(api.impactPulse != nullptr);
+	REQUIRE(api.setLookPreset != nullptr);
+	s.PostSettings() = PostProcessSettings{};
+	s.PostSettings().enabled = true;
+	s.PostSettings().saturation = 1.0f;
+	s.StartPlayMode();
+	const float baseBloom = s.PostSettings().bloomIntensity;
+
+	// The same pulse as the editor's Test Impact Pulse button
+	api.impactPulse(api.hostContext, 1.5f, 0.3f, 0.2f, 0.4f);
+	CHECK_NEAR(s.EffectivePostSettings().bloomIntensity, baseBloom + 1.5f, 1e-4f);
+	CHECK(s.PostEffects().HasScreenEffect(kImpactEffectSlot));
+	CHECK(s.CameraShakeStrength() > 0.0f);
+	api.impactPulse(api.hostContext, std::nanf(""), 0.3f, 0.0f, 0.4f); // ignored, the running pulse stays
+	CHECK_NEAR(s.EffectivePostSettings().bloomIntensity, baseBloom + 1.5f, 1e-4f);
+
+	// A look preset by name; unknown names change nothing; Stop brings the scene's look back
+	CHECK(api.setLookPreset(api.hostContext, "Dark Moody"));
+	CHECK(s.PostSettings().saturation < 1.0f);
+	CHECK(!api.setLookPreset(api.hostContext, "No Such Look"));
+	CHECK(!api.setLookPreset(api.hostContext, nullptr));
+	s.StopPlayMode();
+	CHECK_NEAR(s.PostSettings().saturation, 1.0f, 1e-6f);
+	CHECK_NEAR(s.EffectivePostSettings().bloomIntensity, baseBloom, 1e-5f); // Stop ends the pulse too
+	CHECK(!s.PostEffects().HasScreenEffect(kImpactEffectSlot));
+	s.PostSettings() = PostProcessSettings{};
+}
+
+TEST_CASE(Post, SceneViewPreviewShowsTheGameLook)
+{
+	BuildBaselineScene(s);
+	A::State(s) = EditorSceneState::Edit;
+	A::EditorCam(s).translation = { 0.0f, 4.0f, -12.0f };
+	A::EditorCam(s).rotation = { 0.25f, 0.0f, 0.0f };
+	s.PostSettings() = PostProcessSettings{};
+	s.PostSettings().enabled = true;
+	s.PostSettings().exposure = 0.1f; // a much darker look
+	auto mean = [](const std::vector<float>& v) {
+		double sum = 0.0;
+		for (float x : v) sum += x;
+		return v.empty() ? 0.0 : sum / static_cast<double>(v.size());
+	};
+	A::ScenePostPreview(s) = false;
+	const double raw = mean(CaptureViewSignature(s, A::EditViewRT(s)));
+	A::ScenePostPreview(s) = true;
+	const double previewed = mean(CaptureViewSignature(s, A::EditViewRT(s)));
+	CHECK_MSG(raw > 20.0 && previewed < raw * 0.6, std::format("scene view {:.1f} raw, {:.1f} with the game look", raw, previewed));
+	A::ScenePostPreview(s) = false;
+	CHECK_NEAR(mean(CaptureViewSignature(s, A::EditViewRT(s))), raw, 2.0);
+	s.PostSettings() = PostProcessSettings{};
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+TEST_CASE(Post, ScreenEffectStudioFindsTheBuiltInShaders)
+{
+	const std::vector<std::string> shaders = ListScreenEffectShaders("shaders");
+	const auto has = [&](const char* name) { return std::find(shaders.begin(), shaders.end(), name) != shaders.end(); };
+	CHECK(has("ScreenEffect.RadialBlur.PS.hlsl"));
+	CHECK(has("ScreenEffect.Slash.PS.hlsl"));
+	CHECK(!has("Post.Composite.PS.hlsl"));
+	CHECK(std::is_sorted(shaders.begin(), shaders.end()));
+	CHECK(ListScreenEffectShaders("no/such/folder").empty());
+	// The comment at the top of a shader explains its parameters
+	const std::string hint = ScreenEffectShaderHint("shaders/ScreenEffect.RadialBlur.PS.hlsl");
+	CHECK_MSG(hint.find("gParams[0].xy = center") != std::string::npos, hint);
+	CHECK(hint.find("#include") == std::string::npos);
+	CHECK(ScreenEffectShaderHint("no/such/file.hlsl").empty());
 }
 
 TEST_CASE(Baseline, RenderedSceneMatchesReference)
@@ -6348,6 +6520,226 @@ TEST_CASE(Vfx, LegacyParticleSystemLoadsAsGpuParticles)
 	REQUIRE(again != nullptr);
 	CHECK(again->spawnBurst == 9);
 	CHECK(again->uprightBillboard);
+}
+
+TEST_CASE(Effects, TimingPhasesLengthAndPreviewMotion)
+{
+	// A layer waits for its delay, emits for its duration, then is done; duration 0 = until the effect ends
+	CHECK(EffectLayerPhase(0.5f, 1.0f, 0.2f) == EffectPhase::Waiting);
+	CHECK(EffectLayerPhase(0.5f, 1.0f, 0.5f) == EffectPhase::Emitting);
+	CHECK(EffectLayerPhase(0.5f, 1.0f, 1.49f) == EffectPhase::Emitting);
+	CHECK(EffectLayerPhase(0.5f, 1.0f, 1.5f) == EffectPhase::Done);
+	CHECK(EffectLayerPhase(0.0f, 0.0f, 100.0f) == EffectPhase::Emitting);
+
+	// Length = the last layer to finish, including how long its last particles live
+	const std::vector<EffectLayerWindow> layers = { { 0.0f, 0.2f, 0.9f }, { 0.1f, 0.6f, 4.0f }, { 0.0f, 0.1f, 0.0f } };
+	CHECK_NEAR(EffectLength(layers), 4.7f, 1e-5f);
+	CHECK_NEAR(EffectLength(layers, false), 0.7f, 1e-5f); // a loop starts over when the last layer stops emitting
+	CHECK(std::isinf(EffectLength({ { 0.0f, 0.0f, 1.0f } }))); // emits forever
+	CHECK_NEAR(EffectLength({}), 0.0f, 1e-6f);
+
+	// Advancing: a one-shot effect finishes once, a looping one starts over
+	const EffectClock once = AdvanceEffect(0.9f, 0.2f, 1.0f, false);
+	CHECK(once.finished && !once.restarted);
+	CHECK_NEAR(once.time, 1.0f, 1e-6f);
+	const EffectClock looped = AdvanceEffect(0.9f, 0.2f, 1.0f, true);
+	CHECK(looped.restarted && !looped.finished);
+	CHECK_NEAR(looped.time, 0.1f, 1e-5f);
+	const EffectClock forever = AdvanceEffect(5.0f, 1.0f, std::numeric_limits<float>::infinity(), true);
+	CHECK(!forever.restarted && !forever.finished);
+	CHECK_NEAR(forever.time, 6.0f, 1e-5f);
+	CHECK(!AdvanceEffect(0.0f, std::nanf(""), 1.0f, false).finished); // a broken frame time changes nothing
+
+	// Preview motion stays inside its radius; None stays put
+	for (int motion = 0; motion < static_cast<int>(EffectPreviewMotion::Count); ++motion) {
+		for (float t = 0.0f; t < 3.0f; t += 0.1f) {
+			const Vector3 o = EffectPreviewOffset(static_cast<EffectPreviewMotion>(motion), 2.0f, 0.5f, t);
+			CHECK(std::sqrt(o.x * o.x + o.y * o.y + o.z * o.z) <= 2.0f + 1e-4f);
+			if (motion == 0) CHECK(o.x == 0.0f && o.y == 0.0f && o.z == 0.0f);
+		}
+	}
+	const Vector3 a = EffectPreviewOffset(EffectPreviewMotion::Circle, 2.0f, 0.5f, 0.0f);
+	const Vector3 b = EffectPreviewOffset(EffectPreviewMotion::Circle, 2.0f, 0.5f, 1.0f); // half a turn later at 0.5 turns per second
+	CHECK_NEAR(a.x, -b.x, 1e-4f);
+}
+
+namespace {
+	GpuParticlesComponent* Particles(EditorSuite& s, uint32_t id)
+	{
+		GameObject* obj = s.FindGameObjectById(id, false);
+		return obj ? obj->components.Get<GpuParticlesComponent>(kGpuParticlesComponent) : nullptr;
+	}
+	uint32_t ChildNamed(EditorSuite& s, uint32_t root, const char* name)
+	{
+		const GameObject* obj = s.FindGameObjectById(root, false);
+		if (!obj) return 0;
+		for (uint32_t child : obj->childrenIds) {
+			const GameObject* c = s.FindGameObjectById(child, false);
+			if (c && c->name == name) return child;
+		}
+		return 0;
+	}
+	/// Root and every descendant
+	std::vector<uint32_t> Subtree(EditorSuite& s, uint32_t root)
+	{
+		std::vector<uint32_t> ids = { root };
+		for (size_t i = 0; i < ids.size(); ++i) {
+			if (const GameObject* o = s.FindGameObjectById(ids[i], false)) ids.insert(ids.end(), o->childrenIds.begin(), o->childrenIds.end());
+		}
+		return ids;
+	}
+	int PendingBursts(EditorSuite& s, uint32_t root)
+	{
+		int total = 0;
+		for (uint32_t id : Subtree(s, root)) {
+			if (const auto* p = Particles(s, id)) total += p->burst;
+		}
+		return total;
+	}
+	void ConsumeBursts(EditorSuite& s, uint32_t root)
+	{
+		for (uint32_t id : Subtree(s, root)) {
+			if (auto* p = Particles(s, id)) p->burst = 0;
+		}
+	}
+}
+
+TEST_CASE(Effects, EffectTimingDrivesEmittersInPlay)
+{
+	s.PostSettings() = PostProcessSettings{};
+	s.PostSettings().enabled = true;
+	const float baseBloom = s.PostSettings().bloomIntensity;
+	const uint32_t root = s.CreateEffectFromTemplate("Explosion", { 0.0f, 1.0f, 0.0f });
+	REQUIRE(root != 0);
+	const uint32_t fireball = ChildNamed(s, root, "Fireball");
+	const uint32_t smoke = ChildNamed(s, root, "Smoke");
+	REQUIRE(Particles(s, fireball) != nullptr && Particles(s, smoke) != nullptr);
+	A::State(s) = EditorSceneState::Play;
+	s.ResetEffects();
+
+	// Start: the fireball bursts once, the smoke waits for its delay, the pulse flashes
+	s.UpdateEffects(0.0f);
+	CHECK(Particles(s, fireball)->effectGate == kEffectGateOn);
+	CHECK(Particles(s, fireball)->spawnBurst > 0);
+	CHECK(Particles(s, fireball)->burst == Particles(s, fireball)->spawnBurst);
+	CHECK(Particles(s, smoke)->effectGate == kEffectGateOff);
+	CHECK(s.EffectivePostSettings().bloomIntensity > baseBloom);
+	ConsumeBursts(s, root); // what the renderer does with them
+	s.UpdateEffects(0.05f);
+	CHECK(Particles(s, fireball)->burst == 0); // once only
+
+	s.UpdateEffects(0.15f);
+	CHECK(Particles(s, smoke)->effectGate == kEffectGateOn);
+	s.UpdateEffects(1.0f);
+	CHECK(Particles(s, fireball)->effectGate == kEffectGateOff);
+
+	// Done: a one-shot effect removes itself after its last particles died
+	for (int i = 0; i < 20 && s.FindGameObjectById(root, false); ++i) {
+		s.UpdateEffects(0.5f);
+		s.ProcessPendingSpawns();
+		s.ProcessPendingDeletes(); // the effect is not a prefab instance: it is deleted, not pooled
+	}
+	const GameObject* gone = s.FindGameObjectById(root, false);
+	CHECK(gone == nullptr || !gone->isActive);
+
+	// A looping effect keeps going and bursts again on every round
+	const uint32_t aura = s.CreateEffectFromTemplate("Magic Aura", { 0.0f, 0.0f, 0.0f });
+	REQUIRE(aura != 0);
+	s.UpdateEffects(0.0f);
+	ConsumeBursts(s, aura);
+	bool burstAgain = false;
+	for (int i = 0; i < 20; ++i) {
+		s.UpdateEffects(0.5f);
+		burstAgain |= PendingBursts(s, aura) > 0;
+		ConsumeBursts(s, aura);
+	}
+	s.ProcessPendingSpawns();
+	REQUIRE(s.FindGameObjectById(aura, false) != nullptr);
+	CHECK(s.FindGameObjectById(aura, false)->isActive);
+	CHECK(burstAgain);
+
+	// The effect state is runtime only: it never reaches the scene file
+	CHECK(s.SerializeSceneToString().find("effectGate") == std::string::npos);
+	A::State(s) = EditorSceneState::Edit;
+	s.ResetEffects();
+	CHECK(Particles(s, ChildNamed(s, aura, "Aura"))->effectGate == kEffectGateNone);
+	s.QueueDeleteGameObjectById(aura);
+	s.ProcessPendingDeletes();
+	s.PostSettings() = PostProcessSettings{};
+	s.ResetScriptRuntimeState();
+}
+
+TEST_CASE(Effects, EffectPrefabsStartOverOnEverySpawn)
+{
+	A::ProjectRoot(s) = A::TempRoot() / "EffectProject";
+	const uint32_t root = s.CreateEffectFromTemplate("Hit Spark", { 0.0f, 0.0f, 0.0f });
+	REQUIRE(root != 0);
+	REQUIRE(s.SavePrefab(root, "HitSparkFx"));
+	A::State(s) = EditorSceneState::Play;
+	ScriptGameObjectView* view = s.QueuePrefabSpawn("HitSparkFx", { 2.0f, 0.0f, 0.0f });
+	REQUIRE(view != nullptr);
+	const uint32_t instance = view->id;
+	s.ProcessPendingSpawns();
+	s.UpdateEffects(0.0f);
+	const int first = PendingBursts(s, instance);
+	CHECK_MSG(first > 0, "first spawn burst " + std::to_string(first));
+
+	// Reused from the pool: the same burst again, not twice (spawn burst + timing)
+	s.QueueDespawn(instance);
+	s.ProcessPendingSpawns();
+	REQUIRE(s.QueuePrefabSpawn("HitSparkFx", { 0.0f, 0.0f, 0.0f }) != nullptr);
+	s.ProcessPendingSpawns();
+	REQUIRE(s.FindGameObjectById(instance, false) != nullptr);
+	ConsumeBursts(s, instance);
+	s.UpdateEffects(0.0f);
+	CHECK_MSG(PendingBursts(s, instance) == first, "reuse burst " + std::to_string(PendingBursts(s, instance)) + " vs " + std::to_string(first));
+	A::State(s) = EditorSceneState::Edit;
+	s.ResetPrefabPools();
+	s.ResetEffects();
+}
+
+TEST_CASE(Effects, EditorPreviewMovesOnlyThePicture)
+{
+	const uint32_t root = s.CreateEffectFromTemplate("Slash Trail", { 1.0f, 2.0f, 3.0f });
+	REQUIRE(root != 0);
+	REQUIRE(s.FindGameObjectById(root, false)->components.Get<TrailComponent>(kTrailComponent) != nullptr);
+	A::State(s) = EditorSceneState::Edit;
+
+	// Preview with motion: the picture moves, the saved position does not
+	s.StartEffectPreview(root);
+	s.SetEffectPreviewMotion(EffectPreviewMotion::Circle, 2.0f, 0.5f);
+	for (int i = 0; i < 10; ++i) s.UpdateEffectPreview(0.05f);
+	s.UpdateWorldMatrices();
+	const GameObject* obj = s.FindGameObjectById(root, false);
+	CHECK_NEAR(obj->translation.x, 1.0f, 1e-6f);
+	CHECK_NEAR(obj->translation.z, 3.0f, 1e-6f);
+	const float dx = obj->worldMatrix.m[3][0] - 1.0f, dz = obj->worldMatrix.m[3][2] - 3.0f;
+	CHECK_MSG(std::sqrt(dx * dx + dz * dz) > 1.0f, std::format("moved {:.2f}", std::sqrt(dx * dx + dz * dz)));
+
+	// Trails draw in Edit while previewing
+	for (int i = 0; i < 10; ++i) {
+		s.UpdateEffectPreview(0.05f);
+		s.UpdateWorldMatrices();
+		s.UpdateTrails();
+	}
+	CHECK(s.FindGameObjectById(root, false)->components.Get<TrailComponent>(kTrailComponent)->ribbon.PointCount() > 2);
+
+	// Stopping puts everything back
+	s.StopEffectPreview();
+	s.UpdateWorldMatrices();
+	s.UpdateTrails();
+	obj = s.FindGameObjectById(root, false);
+	CHECK_NEAR(obj->worldMatrix.m[3][0], 1.0f, 1e-5f);
+	CHECK_NEAR(obj->worldMatrix.m[3][2], 3.0f, 1e-5f);
+	CHECK(obj->components.Get<TrailComponent>(kTrailComponent)->ribbon.PointCount() == 0);
+	for (uint32_t id : Subtree(s, root)) {
+		if (const auto* p = Particles(s, id)) CHECK(p->effectGate == kEffectGateNone);
+	}
+	CHECK(s.CreateEffectFromTemplate("No Such Effect", {}) == 0);
+	for (const char* name : kEffectTemplates) {
+		const uint32_t id = s.CreateEffectFromTemplate(name, {});
+		CHECK_MSG(id != 0 && s.FindGameObjectById(id, false)->components.Has(kEffectTimingComponent), name);
+	}
 }
 
 TEST_CASE(Vfx, GpuParticleGradientAndDrawOrder)

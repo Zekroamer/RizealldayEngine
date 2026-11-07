@@ -43,9 +43,10 @@ struct PostProcessSettings {
 /// Usage per view: Prepare (off-screen passes), bind the output target, Composite. UI is drawn after that.
 class PostProcess {
 public:
-	static constexpr int kMaxScreenEffects = 4;
+	static constexpr int kMaxScreenEffects = 5; // the editor keeps the last one for its impact pulse
 	static constexpr int kBloomLevels = 5;
 	static constexpr int kScreenEffectParams = 16;
+	static constexpr uint32_t kRtvCount = 2 + 1 + kBloomLevels + 2; // effect ping-pong, FXAA source, bloom chain, SSAO
 
 	/// The camera of the next Prepare (ambient occlusion rebuilds positions from depth)
 	void SetCamera(float tanHalfFovX, float tanHalfFovY, float nearZ, float farZ, bool perspective);
@@ -53,7 +54,8 @@ public:
 	void SetCameraHeight(float worldY, float rightY, float upY, float forwardY);
 
 	~PostProcess();
-	void Initialize(DirectXCommon* dxCommon, DXCManager* dxc);
+	/// `rtvBase`: first of the kRtvCount render target descriptors this instance owns
+	void Initialize(DirectXCommon* dxCommon, DXCManager* dxc, uint32_t rtvBase);
 	/// Recreates the size-dependent targets when the size changed
 	void Resize(uint32_t width, uint32_t height);
 
@@ -109,6 +111,7 @@ private:
 
 	DirectXCommon* dxCommon_ = nullptr;
 	DXCManager* dxc_ = nullptr;
+	uint32_t rtvBase_ = 0;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> rootSignature_;
 	Microsoft::WRL::ComPtr<IDxcBlob> vertexShader_;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> compositeFinal_, compositeTemp_, fxaaFinal_, bloomDown_, bloomUp_, ssaoPass_, ssaoBlur_;

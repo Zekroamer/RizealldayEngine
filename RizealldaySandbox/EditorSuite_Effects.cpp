@@ -1,0 +1,494 @@
+﻿#include "EditorSuiteInternal.h"
+
+// Layered effects (Effect Editor plan, Fase C): an effect is a prefab whose root has an "Effect Timing" component.
+// Every object of the root's hierarchy with GPU Particles or a Trail is a layer. A layer uses its own Effect Timing
+// when it has one (start delay, duration, pulse), else the root's. The pure timing rules are in EffectTiming.h.
+
+void EditorSuite::RegisterEffectComponents()
+{
+	ComponentInfo& timing = RegisterDataComponent<EffectTimingComponent>(kEffectTimingComponent, "Rendering", {
+		RIZE_FIELD(EffectTimingComponent, startDelay, ComponentFieldType::Float, 0.0f, 60.0f),
+		RIZE_FIELD(EffectTimingComponent, duration, ComponentFieldType::Float, 0.0f, 600.0f),
+		RIZE_FIELD(EffectTimingComponent, loop, ComponentFieldType::Bool, 0.0f, 0.0f),
+		RIZE_FIELD(EffectTimingComponent, despawnWhenDone, ComponentFieldType::Bool, 0.0f, 0.0f),
+		RIZE_FIELD(EffectTimingComponent, pulseBloom, ComponentFieldType::Float, 0.0f, 10.0f),
+		RIZE_FIELD(EffectTimingComponent, pulseBlur, ComponentFieldType::Float, 0.0f, 1.0f),
+		RIZE_FIELD(EffectTimingComponent, pulseShake, ComponentFieldType::Float, 0.0f, 2.0f),
+		RIZE_FIELD(EffectTimingComponent, pulseSeconds, ComponentFieldType::Float, 0.01f, 5.0f) });
+	for (ComponentField& field : timing.fields) {
+		const std::string_view name = field.name;
+		if (name == "duration") field.tooltip = "How long this layer emits. 0 = until the effect is removed.";
+		else if (name == "loop") field.tooltip = "On the effect's root: start over when every layer stopped emitting.";
+		else if (name == "despawnWhenDone") field.tooltip = "On the effect's root, in Play: remove the instance when its last particles died.";
+		else if (name == "pulseBloom") field.tooltip = "Impact pulse fired when this layer starts: extra bloom, radial blur and camera shake.";
+	}
+#ifdef USE_IMGUI
+	timing.drawExtra = [](EditorSuite& suite, GameObject&, ComponentData&) {
+		if (ImGui::Button(TrId("Open Effect Editor"))) suite.showEffectEditor_ = true;
+	};
+#endif
+}
+
+uint32_t EditorSuite::EffectRootOf(uint32_t id)
+{
+	uint32_t root = 0;
+	for (const GameObject* obj = FindGameObjectById(id, false); obj; ) {
+		if (obj->components.Has(kEffectTimingComponent)) root = obj->id;
+		obj = obj->parentId >= 0 ? FindGameObjectById(static_cast<uint32_t>(obj->parentId), false) : nullptr;
+	}
+	return root;
+}
+
+namespace {
+	struct EffectLayer {
+		uint32_t id = 0;
+		EffectLayerWindow window;
+		const EffectTimingComponent* timing = nullptr; // the layer's own, or the root's
+		GpuParticlesComponent* particles = nullptr;
+		TrailComponent* trail = nullptr;
+	};
+}
+
+void EditorSuite::AdvanceEffectRoot(GameObject& root, float deltaTime, bool inPlay)
+{
+	auto* rootTiming = root.components.Get<EffectTimingComponent>(kEffectTimingComponent);
+	if (!rootTiming || rootTiming->finished) return;
+	const uint32_t rootId = root.id;
+
+	// The layers: the root and its descendants that emit something or carry their own timing
+	std::vector<EffectLayer> layers;
+	std::vector<uint32_t> ids = { rootId };
+	for (size_t i = 0; i < ids.size(); ++i) {
+		GameObject* obj = FindGameObjectById(ids[i], false);
+		if (!obj) continue;
+		ids.insert(ids.end(), obj->childrenIds.begin(), obj->childrenIds.end());
+		EffectLayer layer{ obj->id };
+		layer.particles = obj->components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+		layer.trail = obj->components.Get<TrailComponent>(kTrailComponent);
+		const auto* own = obj->components.Get<EffectTimingComponent>(kEffectTimingComponent);
+		if (!own && !layer.particles && !layer.trail) continue;
+		layer.timing = own ? own : rootTiming;
+		layer.window.startDelay = (std::max)(layer.timing->startDelay, 0.0f);
+		layer.window.duration = (std::max)(layer.timing->duration, 0.0f);
+		if (layer.particles) layer.window.tail = (std::max)(layer.particles->lifeMax, 0.0f);
+		if (layer.trail) layer.window.tail = (std::max)(layer.window.tail, layer.trail->lifetime);
+		layers.push_back(layer);
+	}
+	std::vector<EffectLayerWindow> windows;
+	for (const EffectLayer& layer : layers) windows.push_back(layer.window);
+	const float period = EffectLength(windows, !rootTiming->loop);
+
+	const EffectClock clock = AdvanceEffect(rootTiming->time, deltaTime, period, rootTiming->loop);
+	rootTiming->time = clock.time;
+	if (clock.restarted) rootTiming->started.clear();
+
+	for (const EffectLayer& layer : layers) {
+		const EffectPhase phase = clock.finished ? EffectPhase::Done
+			: EffectLayerPhase(layer.window.startDelay, layer.window.duration, rootTiming->time);
+		const int gate = (phase == EffectPhase::Emitting) ? kEffectGateOn : kEffectGateOff;
+		if (layer.particles) layer.particles->effectGate = gate;
+		if (layer.trail) layer.trail->effectGate = gate;
+		const bool alreadyStarted = std::find(rootTiming->started.begin(), rootTiming->started.end(), layer.id) != rootTiming->started.end();
+		if (phase == EffectPhase::Waiting || alreadyStarted || clock.finished) continue;
+		rootTiming->started.push_back(layer.id);
+		if (layer.particles && layer.particles->spawnBurst > 0) {
+			layer.particles->burst = std::clamp(layer.particles->burst + layer.particles->spawnBurst, 0, (std::max)(layer.particles->capacity, 1));
+		}
+		const EffectTimingComponent& t = *layer.timing;
+		const bool ownTiming = layer.timing != rootTiming || layer.id == rootId; // a layer without its own timing does not repeat the root's pulse
+		if (ownTiming && (t.pulseBloom > 0.0f || t.pulseBlur > 0.0f || t.pulseShake > 0.0f)) {
+			ImpactPulse pulse;
+			pulse.bloomBoost = t.pulseBloom;
+			pulse.radialBlur = t.pulseBlur;
+			pulse.shake = t.pulseShake;
+			pulse.seconds = t.pulseSeconds;
+			TriggerImpactPulse(pulse);
+		}
+	}
+
+	if (clock.finished) {
+		rootTiming->finished = true;
+		if (inPlay && rootTiming->despawnWhenDone) QueueDespawn(rootId);
+	}
+}
+
+void EditorSuite::UpdateEffects(float deltaTime)
+{
+	const bool inPlay = sceneState_ != EditorSceneState::Edit || IsStandaloneMode();
+	// Ids first: QueueDespawn and the timing never add objects, but a root found later may sit inside an earlier one
+	std::vector<uint32_t> roots;
+	for (const GameObject& obj : gameObjects_) {
+		if (obj.isActive && obj.components.Has(kEffectTimingComponent) && EffectRootOf(obj.id) == obj.id) roots.push_back(obj.id);
+	}
+	for (uint32_t id : roots) {
+		if (GameObject* root = FindGameObjectById(id, false)) AdvanceEffectRoot(*root, deltaTime, inPlay);
+	}
+}
+
+void EditorSuite::ResetEffects()
+{
+	effectPreviewRoot_ = 0;
+	effectPreviewPlaying_ = false;
+	effectPreviewClock_ = 0.0;
+	for (GameObject& obj : gameObjects_) {
+		if (auto* t = obj.components.Get<EffectTimingComponent>(kEffectTimingComponent)) {
+			t->time = 0.0f;
+			t->finished = false;
+			t->started.clear();
+		}
+		if (auto* p = obj.components.Get<GpuParticlesComponent>(kGpuParticlesComponent)) p->effectGate = kEffectGateNone;
+		if (auto* trail = obj.components.Get<TrailComponent>(kTrailComponent)) trail->effectGate = kEffectGateNone;
+	}
+}
+
+void EditorSuite::StartEffectPreview(uint32_t rootId)
+{
+	ResetEffects();
+	if (!FindGameObjectById(rootId, false) || EffectRootOf(rootId) != rootId) return;
+	effectPreviewRoot_ = rootId;
+	effectPreviewPlaying_ = true;
+}
+
+void EditorSuite::StopEffectPreview()
+{
+	ResetEffects();
+}
+
+void EditorSuite::UpdateEffectPreview(float realDeltaTime)
+{
+	if (effectPreviewRoot_ == 0) return;
+	GameObject* root = FindGameObjectById(effectPreviewRoot_, false);
+	if (!root || sceneState_ != EditorSceneState::Edit) {
+		StopEffectPreview();
+		return;
+	}
+	if (!effectPreviewPlaying_ || !std::isfinite(realDeltaTime) || realDeltaTime <= 0.0f) return;
+	const float dt = realDeltaTime * std::clamp(effectPreviewSpeed_, 0.05f, 4.0f);
+	effectPreviewClock_ += dt;
+	AdvanceEffectRoot(*root, dt, false);
+}
+
+void EditorSuite::SetEffectPreviewMotion(EffectPreviewMotion motion, float radius, float cyclesPerSecond)
+{
+	effectPreviewMotion_ = (static_cast<int>(motion) >= 0 && motion < EffectPreviewMotion::Count) ? motion : EffectPreviewMotion::None;
+	effectPreviewRadius_ = std::isfinite(radius) ? std::clamp(radius, 0.0f, 100.0f) : 0.0f;
+	effectPreviewCycles_ = std::isfinite(cyclesPerSecond) ? std::clamp(cyclesPerSecond, 0.0f, 10.0f) : 0.0f;
+}
+
+uint32_t EditorSuite::CreateEffectFromTemplate(const std::string& name, const Vector3& position)
+{
+	if (std::find_if(std::begin(kEffectTemplates), std::end(kEffectTemplates), [&](const char* t) { return name == t; }) == std::end(kEffectTemplates)) return 0;
+
+	const auto make = [&](const std::string& objectName, uint32_t parent) {
+		GameObject& obj = CreateGameObject(objectName, GameObjectType::Empty);
+		const uint32_t id = obj.id;
+		if (parent != 0) ReparentGameObject(id, static_cast<int>(parent), false);
+		if (GameObject* o = FindGameObjectById(id, false)) o->translation = parent != 0 ? Vector3{ 0.0f, 0.0f, 0.0f } : position;
+		return id;
+	};
+	const auto timing = [&](uint32_t id) -> EffectTimingComponent* {
+		GameObject* obj = FindGameObjectById(id, false);
+		if (!obj || !AddComponentByName(*obj, kEffectTimingComponent)) return nullptr;
+		return FindGameObjectById(id, false)->components.Get<EffectTimingComponent>(kEffectTimingComponent);
+	};
+	const auto particles = [&](uint32_t id, const char* preset) -> GpuParticlesComponent* {
+		GameObject* obj = FindGameObjectById(id, false);
+		if (!obj || !AddComponentByName(*obj, kGpuParticlesComponent)) return nullptr;
+		auto* p = FindGameObjectById(id, false)->components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+		if (p) ApplyGpuParticlePreset(*p, preset);
+		return p;
+	};
+	const auto burstOnly = [](GpuParticlesComponent* p, int count, int capacity) {
+		if (!p) return;
+		p->emitRate = 0.0f;
+		p->spawnBurst = count;
+		p->capacity = capacity;
+	};
+
+	const uint32_t root = make(name, 0);
+	EffectTimingComponent* t = timing(root);
+	if (!t) return 0;
+	if (name == "Hit Spark") {
+		t->duration = 0.1f;
+		t->pulseBloom = 0.4f;
+		t->pulseShake = 0.03f;
+		t->pulseSeconds = 0.15f;
+		burstOnly(particles(make("Sparks", root), "Sparks"), 40, 200);
+		if (GpuParticlesComponent* flash = particles(make("Flash", root), "Explosion")) {
+			burstOnly(flash, 3, 16);
+			flash->speedMin = flash->speedMax = 0.0f;
+			flash->lifeMin = 0.08f;
+			flash->lifeMax = 0.15f;
+			flash->sizeStart = 1.2f;
+			flash->sizeEnd = 0.0f;
+		}
+	} else if (name == "Explosion") {
+		t->duration = 0.2f;
+		t->pulseBloom = 1.5f;
+		t->pulseBlur = 0.25f;
+		t->pulseShake = 0.3f;
+		t->pulseSeconds = 0.35f;
+		burstOnly(particles(make("Fireball", root), "Explosion"), 150, 400);
+		const uint32_t smoke = make("Smoke", root);
+		particles(smoke, "Smoke");
+		if (EffectTimingComponent* st = timing(smoke)) {
+			st->startDelay = 0.1f;
+			st->duration = 0.6f;
+		}
+		if (auto* p = FindGameObjectById(smoke, false)->components.Get<GpuParticlesComponent>(kGpuParticlesComponent)) p->emitRate = 40.0f;
+		burstOnly(particles(make("Shockwave", root), "Shockwave Ring"), 200, 400);
+	} else if (name == "Magic Aura") {
+		t->loop = true;
+		t->despawnWhenDone = false;
+		t->duration = 1.5f;
+		particles(make("Aura", root), "Magic");
+		burstOnly(particles(make("Pulse Ring", root), "Shockwave Ring"), 80, 200);
+	} else if (name == "Slash Trail") {
+		t->loop = true;
+		t->despawnWhenDone = false;
+		t->duration = 0.6f;
+		GameObject* rootObj = FindGameObjectById(root, false);
+		if (rootObj && AddComponentByName(*rootObj, kTrailComponent)) {
+			if (auto* trail = FindGameObjectById(root, false)->components.Get<TrailComponent>(kTrailComponent)) {
+				trail->lifetime = 0.35f;
+				trail->widthStart = 0.4f;
+				trail->widthEnd = 0.0f;
+				trail->colorStart = { 0.5f, 0.9f, 1.0f, 1.0f };
+				trail->colorEnd = { 0.2f, 0.4f, 1.0f, 0.0f };
+				trail->intensity = 3.0f;
+			}
+		}
+		if (GpuParticlesComponent* sparks = particles(make("Sparks", root), "Sparks")) sparks->emitRate = 60.0f;
+	}
+
+	RebuildHierarchyLinks();
+	UpdateWorldMatrices();
+	selectedObjectIndex_ = FindGameObjectIndexById(root);
+	extraSelection_.clear();
+	isSceneDirty_ = true;
+	PushUndoSnapshot();
+	return root;
+}
+
+void EditorSuite::DrawEffectEditorWindow()
+{
+#ifdef USE_IMGUI
+	ImGui::SetNextWindowSize(ImVec2(460.0f, 560.0f), ImGuiCond_FirstUseEver);
+	if (!ImGui::Begin(TrId("Effect Editor"), &showEffectEditor_)) {
+		ImGui::End();
+		return;
+	}
+	if (!showEffectEditor_ && effectPreviewRoot_ != 0) StopEffectPreview();
+
+	// New effect from a template (at the Scene camera's focus point would need a pick: the origin is predictable)
+	if (ImGui::BeginCombo(TrId("New Effect"), Tr("Choose..."))) {
+		for (const char* name : kEffectTemplates) {
+			if (ImGui::Selectable(Tr(name))) {
+				if (const uint32_t id = CreateEffectFromTemplate(name, { 0.0f, 1.0f, 0.0f }); id != 0) StartEffectPreview(id);
+			}
+		}
+		ImGui::EndCombo();
+	}
+	// After the combo: a new effect is the selection now
+	const GameObject* selected = (selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size())) ? &gameObjects_[selectedObjectIndex_] : nullptr;
+	const uint32_t rootId = selected ? EffectRootOf(selected->id) : 0;
+	if (rootId == 0) {
+		ImGui::TextWrapped("%s", Tr("Select an effect (an object with Effect Timing, or one of its layers), or create one from a template."));
+		if (selected && ImGui::Button(TrId("Make Selected an Effect"))) {
+			if (GameObject* obj = FindGameObjectById(selected->id, false)) AddComponentByName(*obj, kEffectTimingComponent);
+		}
+		if (effectPreviewRoot_ != 0) StopEffectPreview();
+		ImGui::End();
+		return;
+	}
+	GameObject* root = FindGameObjectById(rootId, false);
+	auto* rootTiming = root ? root->components.Get<EffectTimingComponent>(kEffectTimingComponent) : nullptr;
+	if (!rootTiming) {
+		ImGui::End();
+		return;
+	}
+	if (effectPreviewRoot_ != 0 && effectPreviewRoot_ != rootId) StopEffectPreview(); // another effect got selected
+	const bool inEdit = sceneState_ == EditorSceneState::Edit;
+	ImGui::TextUnformatted(std::format("{}: {}", Tr("Effect"), root->name).c_str());
+
+	// Transport
+	ImGui::BeginDisabled(!inEdit);
+	const bool previewing = effectPreviewRoot_ == rootId;
+	if (ImGui::Button(TrId(previewing && effectPreviewPlaying_ ? "Pause##FxPlay" : "Play##FxPlay"))) {
+		if (!previewing) StartEffectPreview(rootId);
+		else effectPreviewPlaying_ = !effectPreviewPlaying_;
+	}
+	ImGui::SameLine();
+	if (ImGui::Button(TrId("Restart"))) StartEffectPreview(rootId);
+	ImGui::SetItemTooltip("%s", Tr("From 0 s again: bursts and the impact pulse fire again"));
+	ImGui::SameLine();
+	if (ImGui::Button(TrId("Stop"))) StopEffectPreview();
+	ImGui::EndDisabled();
+	if (!inEdit) ImGui::TextDisabled("%s", Tr("The preview runs in Edit mode. In Play the effect runs on game time."));
+	ImGui::SliderFloat(TrId("Speed"), &effectPreviewSpeed_, 0.1f, 2.0f, "%.2fx");
+	bool changed = ImGui::Checkbox(TrId("Loop"), &rootTiming->loop);
+	ImGui::SameLine();
+	if (ImGui::Checkbox(TrId("Post FX"), &scenePostPreview_)) Localization::SetEditorSettingBool("scenePostPreview", scenePostPreview_);
+	ImGui::SetItemTooltip("%s", Tr("Preview the game's post-processing (bloom, grading, screen effects) in the Scene view"));
+
+	// Layers on a time line
+	struct Lane { uint32_t id; std::string name; float start, end, tail; bool emitting; };
+	std::vector<Lane> lanes;
+	float timeline = 0.0f;
+	std::vector<uint32_t> ids = { rootId };
+	for (size_t i = 0; i < ids.size(); ++i) {
+		const GameObject* obj = FindGameObjectById(ids[i], false);
+		if (!obj) continue;
+		ids.insert(ids.end(), obj->childrenIds.begin(), obj->childrenIds.end());
+		const auto* p = obj->components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+		const auto* trail = obj->components.Get<TrailComponent>(kTrailComponent);
+		const auto* own = obj->components.Get<EffectTimingComponent>(kEffectTimingComponent);
+		if (!p && !trail && !own) continue;
+		const EffectTimingComponent& t = own ? *own : *rootTiming;
+		const float duration = t.duration > 0.0f ? t.duration : 5.0f; // open-ended layers draw 5 s
+		const float tail = p ? p->lifeMax : (trail ? trail->lifetime : 0.0f);
+		const int gate = p ? p->effectGate : (trail ? trail->effectGate : kEffectGateNone);
+		lanes.push_back({ obj->id, obj->name, t.startDelay, t.startDelay + duration, tail, gate == kEffectGateOn });
+		timeline = (std::max)(timeline, t.startDelay + duration + tail);
+	}
+	timeline = (std::max)(timeline, 0.1f);
+	ImGui::Spacing();
+	ImGui::TextDisabled("%s", std::format("{}  {:.2f} / {:.2f} s", Tr("Layers"), rootTiming->time, timeline).c_str());
+	const float laneHeight = 18.0f;
+	const float nameWidth = 110.0f;
+	ImDrawList* draw = ImGui::GetWindowDrawList();
+	const float width = (std::max)(ImGui::GetContentRegionAvail().x - nameWidth, 50.0f);
+	for (const Lane& lane : lanes) {
+		const ImVec2 at = ImGui::GetCursorScreenPos();
+		const bool isSelected = effectEditorLayer_ == lane.id;
+		ImGui::PushID(static_cast<int>(lane.id));
+		if (ImGui::Selectable(lane.name.c_str(), isSelected, 0, ImVec2(nameWidth - 6.0f, laneHeight))) {
+			effectEditorLayer_ = lane.id;
+			selectedObjectIndex_ = FindGameObjectIndexById(lane.id);
+			extraSelection_.clear();
+		}
+		ImGui::PopID();
+		const float x0 = at.x + nameWidth;
+		const auto x = [&](float seconds) { return x0 + width * std::clamp(seconds / timeline, 0.0f, 1.0f); };
+		draw->AddRectFilled(ImVec2(x0, at.y + 2.0f), ImVec2(x0 + width, at.y + laneHeight - 2.0f), IM_COL32(40, 40, 46, 255));
+		draw->AddRectFilled(ImVec2(x(lane.end), at.y + 6.0f), ImVec2(x(lane.end + lane.tail), at.y + laneHeight - 6.0f), IM_COL32(255, 150, 40, 70));
+		draw->AddRectFilled(ImVec2(x(lane.start), at.y + 3.0f), ImVec2((std::max)(x(lane.end), x(lane.start) + 2.0f), at.y + laneHeight - 3.0f),
+			lane.emitting ? IM_COL32(255, 170, 60, 255) : IM_COL32(200, 120, 40, 170));
+		const float cursor = x(rootTiming->time);
+		draw->AddLine(ImVec2(cursor, at.y), ImVec2(cursor, at.y + laneHeight), IM_COL32(255, 255, 255, 220), 1.5f);
+	}
+
+	// Preview motion: moves the picture only, so trails can be judged without Play
+	ImGui::Spacing();
+	int motion = static_cast<int>(effectPreviewMotion_);
+	float radius = effectPreviewRadius_;
+	float cycles = effectPreviewCycles_;
+	bool motionChanged = false;
+	if (ImGui::BeginCombo(TrId("Preview Motion"), Tr(kEffectPreviewMotionNames[motion]))) {
+		for (int i = 0; i < static_cast<int>(EffectPreviewMotion::Count); ++i) {
+			if (ImGui::Selectable(Tr(kEffectPreviewMotionNames[i]), i == motion)) {
+				motion = i;
+				motionChanged = true;
+			}
+		}
+		ImGui::EndCombo();
+	}
+	ImGui::SetItemTooltip("%s", Tr("Moves the effect in the Scene view while previewing. The saved position does not change."));
+	motionChanged |= ImGui::DragFloat(TrId("Motion Radius"), &radius, 0.05f, 0.0f, 20.0f);
+	motionChanged |= ImGui::DragFloat(TrId("Rounds per Second"), &cycles, 0.01f, 0.0f, 5.0f);
+	if (motionChanged) SetEffectPreviewMotion(static_cast<EffectPreviewMotion>(motion), radius, cycles);
+
+	// The chosen layer: timing, and the particles' size curve and colour gradient
+	GameObject* layer = FindGameObjectById(effectEditorLayer_, false);
+	if (!layer || EffectRootOf(layer->id) != rootId) layer = root;
+	ImGui::SeparatorText(layer->name.c_str());
+	if (auto* own = layer->components.Get<EffectTimingComponent>(kEffectTimingComponent)) {
+		changed |= ImGui::DragFloat(TrId("Start Delay"), &own->startDelay, 0.01f, 0.0f, 60.0f, "%.2f s");
+		changed |= ImGui::DragFloat(TrId("Duration"), &own->duration, 0.01f, 0.0f, 600.0f, "%.2f s");
+		changed |= ImGui::DragFloat(TrId("Pulse Bloom"), &own->pulseBloom, 0.05f, 0.0f, 10.0f);
+		changed |= ImGui::SliderFloat(TrId("Pulse Blur"), &own->pulseBlur, 0.0f, 1.0f);
+		changed |= ImGui::DragFloat(TrId("Pulse Shake"), &own->pulseShake, 0.01f, 0.0f, 2.0f);
+		changed |= ImGui::DragFloat(TrId("Pulse Seconds"), &own->pulseSeconds, 0.01f, 0.01f, 5.0f);
+	} else if (ImGui::Button(TrId("Own Timing"))) {
+		AddComponentByName(*layer, kEffectTimingComponent);
+		layer = FindGameObjectById(effectEditorLayer_ != 0 ? effectEditorLayer_ : rootId, false);
+	}
+	if (layer) {
+		if (auto* p = layer->components.Get<GpuParticlesComponent>(kGpuParticlesComponent)) {
+			changed |= ImGui::DragInt(TrId("Spawn Burst"), &p->spawnBurst, 1.0f, 0, 100000);
+			changed |= ImGui::DragFloat(TrId("Emit Rate"), &p->emitRate, 1.0f, 0.0f, 100000.0f);
+
+			// Size over lifetime: drag the keys up and down (the middle one also left and right)
+			ImGui::TextDisabled("%s", Tr("Size over Lifetime"));
+			const ImVec2 box = ImGui::GetCursorScreenPos();
+			const ImVec2 size(ImGui::GetContentRegionAvail().x, 90.0f);
+			const float top = (std::max)({ p->sizeStart, p->sizeEnd, p->useMiddleKey ? p->sizeMiddle : 0.0f, 0.1f }) * 1.25f;
+			draw->AddRectFilled(box, ImVec2(box.x + size.x, box.y + size.y), IM_COL32(30, 30, 36, 255));
+			const auto point = [&](float t, float value) { return ImVec2(box.x + size.x * t, box.y + size.y * (1.0f - value / top)); };
+			const float middleTime = std::clamp(p->middleTime, 0.01f, 0.99f);
+			if (p->useMiddleKey) {
+				draw->AddLine(point(0.0f, p->sizeStart), point(middleTime, p->sizeMiddle), IM_COL32(255, 170, 60, 255), 2.0f);
+				draw->AddLine(point(middleTime, p->sizeMiddle), point(1.0f, p->sizeEnd), IM_COL32(255, 170, 60, 255), 2.0f);
+			} else {
+				draw->AddLine(point(0.0f, p->sizeStart), point(1.0f, p->sizeEnd), IM_COL32(255, 170, 60, 255), 2.0f);
+			}
+			const auto key = [&](const char* id, float t, float& value, float* time) {
+				const ImVec2 at = point(t, value);
+				ImGui::SetCursorScreenPos(ImVec2(at.x - 6.0f, at.y - 6.0f));
+				ImGui::InvisibleButton(id, ImVec2(12.0f, 12.0f));
+				const bool active = ImGui::IsItemActive();
+				draw->AddCircleFilled(at, 5.0f, active || ImGui::IsItemHovered() ? IM_COL32(255, 255, 255, 255) : IM_COL32(255, 200, 120, 255));
+				if (active) {
+					const ImVec2 delta = ImGui::GetIO().MouseDelta;
+					value = (std::max)(0.0f, value - delta.y / size.y * top);
+					if (time) *time = std::clamp(*time + delta.x / size.x, 0.01f, 0.99f);
+					return true;
+				}
+				return false;
+			};
+			changed |= key("##SizeStart", 0.0f, p->sizeStart, nullptr);
+			changed |= key("##SizeEnd", 1.0f, p->sizeEnd, nullptr);
+			if (p->useMiddleKey) changed |= key("##SizeMiddle", middleTime, p->sizeMiddle, &p->middleTime);
+			ImGui::SetCursorScreenPos(ImVec2(box.x, box.y + size.y + 4.0f));
+			changed |= ImGui::Checkbox(TrId("Use Middle Key"), &p->useMiddleKey);
+
+			// Colour over lifetime: the gradient the particles go through, alpha drawn as darkness
+			ImGui::TextDisabled("%s", Tr("Color over Lifetime"));
+			const ImVec2 bar = ImGui::GetCursorScreenPos();
+			const float barWidth = ImGui::GetContentRegionAvail().x;
+			const auto color = [](const Vector4& c) {
+				const auto u8 = [](float v) { return static_cast<int>(std::clamp(v, 0.0f, 1.0f) * 255.0f); };
+				return IM_COL32(u8(c.x * c.w), u8(c.y * c.w), u8(c.z * c.w), 255);
+			};
+			const float split = p->useMiddleKey ? middleTime : 0.5f;
+			const ImU32 mid = color(p->useMiddleKey ? p->colorMiddle : Vector4{ (p->colorStart.x + p->colorEnd.x) * 0.5f, (p->colorStart.y + p->colorEnd.y) * 0.5f,
+				(p->colorStart.z + p->colorEnd.z) * 0.5f, (p->colorStart.w + p->colorEnd.w) * 0.5f });
+			draw->AddRectFilledMultiColor(bar, ImVec2(bar.x + barWidth * split, bar.y + 18.0f), color(p->colorStart), mid, mid, color(p->colorStart));
+			draw->AddRectFilledMultiColor(ImVec2(bar.x + barWidth * split, bar.y), ImVec2(bar.x + barWidth, bar.y + 18.0f), mid, color(p->colorEnd), color(p->colorEnd), mid);
+			ImGui::Dummy(ImVec2(barWidth, 20.0f));
+			changed |= ImGui::ColorEdit4(TrId("Start##FxColor"), &p->colorStart.x, ImGuiColorEditFlags_NoInputs);
+			ImGui::SameLine();
+			if (p->useMiddleKey) {
+				changed |= ImGui::ColorEdit4(TrId("Middle##FxColor"), &p->colorMiddle.x, ImGuiColorEditFlags_NoInputs);
+				ImGui::SameLine();
+			}
+			changed |= ImGui::ColorEdit4(TrId("End##FxColor"), &p->colorEnd.x, ImGuiColorEditFlags_NoInputs);
+			changed |= ImGui::DragFloat(TrId("Intensity"), &p->intensity, 0.05f, 0.0f, 100.0f);
+			ImGui::SetItemTooltip("%s", Tr("Above 1 the particles glow through the bloom"));
+		} else if (layer->components.Has(kTrailComponent)) {
+			ImGui::TextDisabled("%s", Tr("Trail layer: edit it in the Inspector. Pick a Preview Motion to see it in Edit mode."));
+		}
+	}
+
+	ImGui::Separator();
+	if (ImGui::Button(TrId("Save as Prefab"))) {
+		if (SavePrefab(rootId, root->name)) LogMessage("[Effect] Saved prefab " + root->name, 0);
+	}
+	ImGui::SetItemTooltip("%s", Tr("Scripts spawn it with InstantiatePrefab; every spawn plays the effect from the start."));
+	if (changed) {
+		isSceneDirty_ = true;
+		PushUndoSnapshot();
+	}
+	ImGui::End();
+#endif
+}
