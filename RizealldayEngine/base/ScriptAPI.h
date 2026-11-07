@@ -307,7 +307,7 @@ struct EngineAPI {
 	bool (*getComponentField)(void* ctx, uint32_t id, const char* component, const char* field, ScriptComponentValue* out) = nullptr;
 	bool (*setComponentField)(void* ctx, uint32_t id, const char* component, const char* field, const ScriptComponentValue* value) = nullptr; // kind must match the field
 
-	// Particle System component. Both take effect at the end of the frame.
+	// GPU Particles component. Both take effect at the end of the frame.
 	void (*emitParticles)(void* ctx, uint32_t id, int count) = nullptr;
 	void (*setParticlesEmitting)(void* ctx, uint32_t id, bool emitting) = nullptr;
 
@@ -1029,11 +1029,11 @@ public:
 	}
 
 	// ---- Particles & timers -------------------------------------------------
-	/// One-shot burst from a Particle System component (end of frame)
+	/// One-shot burst from a GPU Particles component (end of frame, at most its capacity)
 	void EmitParticles(int count, uint32_t id = 0) const {
 		if (engineApi_ && engineApi_->emitParticles) engineApi_->emitParticles(engineApi_->hostContext, ResolveId(id), count);
 	}
-	/// Turns continuous emission on/off ("Emit Continuously" in the Inspector)
+	/// Turns continuous emission on/off ("Emitting" in the Inspector)
 	void SetParticlesEmitting(bool emitting, uint32_t id = 0) const {
 		if (engineApi_ && engineApi_->setParticlesEmitting) engineApi_->setParticlesEmitting(engineApi_->hostContext, ResolveId(id), emitting);
 	}

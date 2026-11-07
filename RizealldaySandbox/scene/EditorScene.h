@@ -1,7 +1,6 @@
 ﻿#pragma once
 #include <RizeEngine.h>
 #include "EditorSuite.h"
-#include "ParticleQuad.h"
 #include <memory>
 
 /**
@@ -25,9 +24,6 @@ public:
 private:
 	Camera gameCamera_{};
 	std::unique_ptr<LightGroup> lights_;
-	uint32_t circleTextureHandle_ = 0;
-	std::unique_ptr<ParticleQuad> particleQuads_;
-	bool showParticleQuads_ = true;
 	std::unique_ptr<EditorSuite> editorSuite_;
 	float lastDeltaTime_ = 0.016f;
 };

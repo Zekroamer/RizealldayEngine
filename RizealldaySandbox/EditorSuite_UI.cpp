@@ -1,6 +1,6 @@
 ﻿#include "EditorSuiteInternal.h"
 
-void EditorSuite::DrawEditorUI(float deltaTime, bool& showParticles)
+void EditorSuite::DrawEditorUI(float deltaTime)
 {
 	RIZE_PROFILE_CPU("Editor UI");
 	if (!dxCommon_ || dxCommon_->IsDeviceLost()) {
@@ -41,7 +41,7 @@ void EditorSuite::DrawEditorUI(float deltaTime, bool& showParticles)
 	DrawHierarchyPanel();
 	DrawViewportsPanel();
 	DrawProjectAndConsolePanel();
-	DrawInspectorAndDetailsPanel(showParticles);
+	DrawInspectorAndDetailsPanel();
 
 	if (showScriptGenModal_) DrawCppScriptGeneratorModal();
 	if (showNewProjectModal_) DrawNewProjectModal();
@@ -769,8 +769,7 @@ void EditorSuite::DrawHierarchyCreationMenu()
 	if (ImGui::BeginMenu(TrId("Visual Effects"))) {
 		if (ImGui::MenuItem(TrId("Particle System"))) {
 			auto& ps = CreateGameObject("Particle System", GameObjectType::ParticleSystem);
-			ps.hasParticleSystem = true;
-			EnsureParticleQuadInitialized(ps);
+			AddComponentByName(ps, kGpuParticlesComponent);
 			isSceneDirty_ = true;
 			PushUndoSnapshot();
 		}

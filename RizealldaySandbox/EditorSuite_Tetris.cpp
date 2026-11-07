@@ -103,12 +103,15 @@ void EditorSuite::LoadTetrisTemplate()
 	}
 
 	// 6. Row Clear Particle Explosion System
-	if (particleSystem_) {
+	{
 		auto& ps = CreateGameObject("Row Clear Fireworks", GameObjectType::ParticleSystem);
 		ps.translation = { 4.5f, 10.0f, 0.0f };
-		ps.hasParticleSystem = true;
-		ps.particlePreset = 3; // Fireworks preset
-		particleSystem_->ApplyPreset(3);
+		if (AddComponentByName(ps, kGpuParticlesComponent)) {
+			if (auto* p = ps.components.Get<GpuParticlesComponent>(kGpuParticlesComponent)) {
+				ApplyGpuParticlePreset(*p, "Explosion");
+				p->emitting = false; // bursts when a row clears
+			}
+		}
 	}
 
 	RestartTetrisGame();
@@ -247,9 +250,11 @@ void EditorSuite::UpdateTetrisGame(float deltaTime, Input* input)
 
 				if (rowFull) {
 					clearedRows++;
-					if (particleSystem_) {
-						particleSystem_->emitter.translate = { 4.5f, static_cast<float>(y), 0.0f };
-						particleSystem_->EmitBurst(35);
+					for (GameObject& fx : gameObjects_) {
+						auto* p = fx.name == "Row Clear Fireworks" ? fx.components.Get<GpuParticlesComponent>(kGpuParticlesComponent) : nullptr;
+						if (!p) continue;
+						fx.translation = { 4.5f, static_cast<float>(y), 0.0f };
+						p->burst += 35;
 					}
 
 					for (int x = 0; x < 10; ++x) {

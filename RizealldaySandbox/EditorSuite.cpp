@@ -86,36 +86,6 @@ GameObject::GameObject(const GameObject& other) {
 	lightShadowBias = other.lightShadowBias;
 	lightShadowStrength = other.lightShadowStrength;
 	lightShadowNormalBias = other.lightShadowNormalBias;
-	hasParticleSystem = other.hasParticleSystem;
-	attachToIndex = other.attachToIndex;
-	attachedParentId = other.attachedParentId;
-	localOffset = other.localOffset;
-	particlePreset = other.particlePreset;
-	particleShape = other.particleShape;
-	particleSpawnRadius = other.particleSpawnRadius;
-	particleBoxExtents = other.particleBoxExtents;
-	particleConeAngle = other.particleConeAngle;
-	particleSpawnRate = other.particleSpawnRate;
-	particleMaxParticles = other.particleMaxParticles;
-	particleBurstCount = other.particleBurstCount;
-	particleEmitContinuously = other.particleEmitContinuously;
-	particleDirection = other.particleDirection;
-	particleSpreadAngle = other.particleSpreadAngle;
-	particleSpeedMin = other.particleSpeedMin;
-	particleSpeedMax = other.particleSpeedMax;
-	particleGravity = other.particleGravity;
-	particleDrag = other.particleDrag;
-	particleWindEnabled = other.particleWindEnabled;
-	particleWindAcceleration = other.particleWindAcceleration;
-	particleLifetimeMin = other.particleLifetimeMin;
-	particleLifetimeMax = other.particleLifetimeMax;
-	particleStartScale = other.particleStartScale;
-	particleEndScale = other.particleEndScale;
-	particleStartColor = other.particleStartColor;
-	particleEndColor = other.particleEndColor;
-	particleBlendMode = other.particleBlendMode;
-	particleBillboardMode = other.particleBillboardMode;
-	particleQuad = nullptr;
 	hasMapchip = other.hasMapchip;
 	hasAudioSource = other.hasAudioSource;
 	audioClipName = other.audioClipName;
@@ -230,36 +200,6 @@ GameObject& GameObject::operator=(const GameObject& other) {
 		lightShadowBias = other.lightShadowBias;
 		lightShadowStrength = other.lightShadowStrength;
 		lightShadowNormalBias = other.lightShadowNormalBias;
-		hasParticleSystem = other.hasParticleSystem;
-		attachToIndex = other.attachToIndex;
-		attachedParentId = other.attachedParentId;
-		localOffset = other.localOffset;
-		particlePreset = other.particlePreset;
-		particleShape = other.particleShape;
-		particleSpawnRadius = other.particleSpawnRadius;
-		particleBoxExtents = other.particleBoxExtents;
-		particleConeAngle = other.particleConeAngle;
-		particleSpawnRate = other.particleSpawnRate;
-		particleMaxParticles = other.particleMaxParticles;
-		particleBurstCount = other.particleBurstCount;
-		particleEmitContinuously = other.particleEmitContinuously;
-		particleDirection = other.particleDirection;
-		particleSpreadAngle = other.particleSpreadAngle;
-		particleSpeedMin = other.particleSpeedMin;
-		particleSpeedMax = other.particleSpeedMax;
-		particleGravity = other.particleGravity;
-		particleDrag = other.particleDrag;
-		particleWindEnabled = other.particleWindEnabled;
-		particleWindAcceleration = other.particleWindAcceleration;
-		particleLifetimeMin = other.particleLifetimeMin;
-		particleLifetimeMax = other.particleLifetimeMax;
-		particleStartScale = other.particleStartScale;
-		particleEndScale = other.particleEndScale;
-		particleStartColor = other.particleStartColor;
-		particleEndColor = other.particleEndColor;
-		particleBlendMode = other.particleBlendMode;
-		particleBillboardMode = other.particleBillboardMode;
-		particleQuad = nullptr;
 		hasMapchip = other.hasMapchip;
 		hasAudioSource = other.hasAudioSource;
 		audioClipName = other.audioClipName;
@@ -344,8 +284,7 @@ EditorSuite::~EditorSuite()
 void EditorSuite::Initialize(
 	DirectXCommon* dxCommon,
 	Camera* gameCamera,
-	LightGroup* lights,
-	ParticleQuad* particleSystem)
+	LightGroup* lights)
 {
 	RegisterBuiltinComponents();
 	smokeFramesLeft_ = _wtoi(EngineUpdate::CommandLineValue(L"--smoke-frames").c_str());
@@ -356,7 +295,6 @@ void EditorSuite::Initialize(
 	dxCommon_ = dxCommon;
 	gameCamera_ = gameCamera;
 	lights_ = lights;
-	particleSystem_ = particleSystem;
 
 	if (lights_) {
 		Object3d::StaticSetLightGroup(lights_);
@@ -404,7 +342,6 @@ void EditorSuite::Initialize(
 	}
 
 	dxc_.Initialize();
-	particleTextureHandle_ = TextureManager::GetInstance()->LoadTexture("Resources/circle.png");
 
 	// Setup Editor Camera (Free navigation camera)
 	editorCamera_.Initialize();
@@ -780,39 +717,6 @@ void EditorSuite::Update(float deltaTime, Input* input)
 		}
 	}
 
-	// 1. Particle System Parent Attachment & World-Space Simulation Update
-	for (auto& obj : gameObjects_) {
-		if (obj.isActive && obj.hasParticleSystem) {
-			if (obj.attachedParentId != -1) {
-				bool parentFound = false;
-				for (const auto& parent : gameObjects_) {
-					if (parent.id == static_cast<uint32_t>(obj.attachedParentId)) {
-						obj.translation = parent.translation + obj.localOffset;
-						parentFound = true;
-						break;
-					}
-				}
-				if (!parentFound) {
-					// Fall back to None (World) safely if parent was deleted
-					obj.attachedParentId = -1;
-					obj.localOffset = { 0.0f, 0.0f, 0.0f };
-				}
-			}
-			EnsureParticleQuadInitialized(obj);
-			// Emit from the world position (hierarchy children: translation is local to the parent)
-			const Vector3 emitterPos = (obj.parentId != -1)
-				? Vector3{ obj.worldMatrix.m[3][0], obj.worldMatrix.m[3][1], obj.worldMatrix.m[3][2] }
-				: obj.translation;
-			if (obj.particleQuad) {
-				obj.particleQuad->emitter.translate = emitterPos;
-				obj.particleQuad->Simulate(deltaTime);
-			}
-			if (particleSystem_) {
-				particleSystem_->emitter.translate = emitterPos;
-			}
-		}
-	}
-
 	// 2. 3D Tetris Game Loop
 	if (isTetrisActive_) {
 		UpdateTetrisGame(deltaTime, input);
@@ -1014,20 +918,5 @@ void EditorSuite::RefreshAssetBrowser()
 void EditorSuite::DrawDirectoryTreeNode(const std::filesystem::path& dirPath)
 {
 	if (!std::filesystem::exists(dirPath)) return;
-}
-
-bool EditorSuite::HasActiveParticleSystem(Vector3* outEmitterPos) const
-{
-	for (const auto& obj : gameObjects_) {
-		if (obj.isActive && obj.hasParticleSystem) {
-			if (outEmitterPos) {
-				*outEmitterPos = (obj.parentId != -1)
-					? Vector3{ obj.worldMatrix.m[3][0], obj.worldMatrix.m[3][1], obj.worldMatrix.m[3][2] }
-					: obj.translation;
-			}
-			return true;
-		}
-	}
-	return false;
 }
 

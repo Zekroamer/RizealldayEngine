@@ -90,6 +90,13 @@ struct EditorSuiteTestAccess {
 		s.UpdateWorldMatrices();
 		s.UpdateAudio();
 	}
+	static void AimGameCamera(EditorSuite& s, const Vector3& position, const Vector3& rotation)
+	{
+		s.gameCamera_->translation = position;
+		s.gameCamera_->rotation = rotation;
+		s.gameCamera_->Update();
+		s.UpdateWorldMatrices();
+	}
 	static RenderTexture& GameViewRT(EditorSuite& s) { return s.gameViewRT_; }
 	static void RunAudio(EditorSuite& s, float dt) { s.UpdateWorldMatrices(); s.UpdateAudio(dt); }
 	static int ScriptFaults(const EditorSuite& s) { return s.scriptFaultCount_; }
@@ -2628,44 +2635,49 @@ TEST_CASE(ScriptAPI, ParticleBurstsAndOneShotPrefabs)
 	EngineAPI& api = A::Api(s);
 	A::ProjectRoot(s) = A::TempRoot() / "ParticleProject";
 	GameObject& fx = s.CreateGameObject("Spark", GameObjectType::Empty);
-	fx.hasParticleSystem = true;
-	fx.particleEmitContinuously = false;
-	fx.particleBurstCount = 12;
-	fx.particleMaxParticles = 64;
-	fx.particleLifetimeMin = 5.0f;
-	fx.particleLifetimeMax = 5.0f;
+	REQUIRE(s.AddComponentByName(fx, kGpuParticlesComponent));
+	{
+		auto* p = fx.components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+		REQUIRE(p != nullptr);
+		p->emitting = false;
+		p->spawnBurst = 12;
+		p->capacity = 64;
+	}
 	const uint32_t fxId = fx.id;
 	REQUIRE(s.SavePrefab(fxId, "Spark"));
 	A::State(s) = EditorSceneState::Play;
+	const auto pendingBurst = [&](uint32_t id) {
+		const GameObject* obj = s.FindGameObjectById(id, false);
+		const auto* p = obj ? obj->components.Get<GpuParticlesComponent>(kGpuParticlesComponent) : nullptr;
+		return p ? p->burst : -1;
+	};
 
-	// EmitParticles on a scene object (deferred to the end of the frame)
+	// EmitParticles on a scene object (deferred to the end of the frame, clamped to the capacity)
 	api.emitParticles(&s, fxId, 5);
-	GameObject* sceneFx = s.FindGameObjectById(fxId, false);
-	CHECK(!sceneFx->particleQuad || sceneFx->particleQuad->GetActiveCount() == 0);
+	CHECK(pendingBurst(fxId) == 0);
 	s.ProcessPendingSpawns();
-	sceneFx = s.FindGameObjectById(fxId, false);
-	REQUIRE(sceneFx->particleQuad != nullptr);
-	CHECK(sceneFx->particleQuad->GetActiveCount() == 5);
+	CHECK(pendingBurst(fxId) == 5);
+	api.emitParticles(&s, fxId, 500);
+	s.ProcessPendingSpawns();
+	CHECK_MSG(pendingBurst(fxId) == 64, "clamped burst: " + std::to_string(pendingBurst(fxId)));
 
-	// One-shot prefab: bursts particleBurstCount on spawn, and again (fresh) when reused from the pool
+	// One-shot prefab: bursts spawnBurst on spawn, and again when reused from the pool
 	ScriptGameObjectView* view = s.QueuePrefabSpawn("Spark", { 3.0f, 0.0f, 0.0f });
 	REQUIRE(view != nullptr);
 	const uint32_t instance = view->id;
 	s.ProcessPendingSpawns();
-	GameObject* inst = s.FindGameObjectById(instance, false);
-	REQUIRE(inst != nullptr);
-	REQUIRE(inst->particleQuad != nullptr);
-	CHECK_MSG(inst->particleQuad->GetActiveCount() == 12, "spawn burst: " + std::to_string(inst->particleQuad->GetActiveCount()));
+	CHECK_MSG(pendingBurst(instance) == 12, "spawn burst: " + std::to_string(pendingBurst(instance)));
 	s.QueueDespawn(instance);
 	s.ProcessPendingSpawns();
 	REQUIRE(s.QueuePrefabSpawn("Spark", { 0.0f, 0.0f, 0.0f }) != nullptr);
 	s.ProcessPendingSpawns();
-	inst = s.FindGameObjectById(instance, false);
-	CHECK_MSG(inst->particleQuad->GetActiveCount() == 12, "reuse burst: " + std::to_string(inst->particleQuad->GetActiveCount()));
+	CHECK_MSG(pendingBurst(instance) == 12, "reuse burst: " + std::to_string(pendingBurst(instance)));
 
 	// Continuous flag from script
 	api.setParticlesEmitting(&s, fxId, true);
-	CHECK(s.FindGameObjectById(fxId, false)->particleEmitContinuously);
+	const auto* emitter = s.FindGameObjectById(fxId, false)->components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+	REQUIRE(emitter != nullptr);
+	CHECK(emitter->emitting);
 	A::State(s) = EditorSceneState::Edit;
 	s.ResetPrefabPools();
 }
@@ -2711,7 +2723,7 @@ TEST_CASE(Components, RegistryDrivesBuiltins)
 {
 	const ComponentRegistry& registry = ComponentRegistry::Get();
 	const char* expected[] = { "Mesh Filter & Renderer", "Box Collider", "Sphere Collider", "Rigidbody", "Camera",
-		"Light", "Particle System", "Mapchip Level Editor", "Audio Source" };
+		"Light", "Mapchip Level Editor", "Audio Source" };
 	REQUIRE(registry.All().size() >= std::size(expected));
 	for (size_t i = 0; i < std::size(expected); ++i) {
 		CHECK_MSG(registry.All()[i].name == expected[i], "registry[" + std::to_string(i) + "] = " + registry.All()[i].name);
@@ -3869,7 +3881,7 @@ std::vector<float> CaptureGameViewSignature(EditorSuite& s)
 	RizeEngine::EndFrame();
 	RizeEngine::BeginFrame();
 	ID3D12GraphicsCommandList* cmdList = A::Dx(s)->GetCommandList();
-	s.RenderViewports(cmdList, false);
+	s.RenderViewports(cmdList);
 	const bool recorded = rt.RecordReadback(cmdList, readback, rowPitch);
 	RizeEngine::EndFrame();
 	A::Dx(s)->SignalAndWaitFence();
@@ -6060,7 +6072,7 @@ TEST_CASE(Vfx, GpuParticleShapeFollowsTheObject)
 namespace {
 	struct LitArea {
 		int cells = 0, columns = 0, rows = 0;
-		float brightest = 0.0f, centreGain = 0.0f;
+		float brightest = 0.0f, centreGain = 0.0f, total = 0.0f;
 		bool centre = false;    // the two middle cells of the middle row
 		bool belowMiddle = false; // anything under the middle row
 	};
@@ -6075,6 +6087,7 @@ namespace {
 				const size_t i = static_cast<size_t>(y * kSignatureColumns + x) * 3;
 				const float gain = signature[i] + signature[i + 1] + signature[i + 2] - baseline[i] - baseline[i + 1] - baseline[i + 2];
 				area.brightest = (std::max)(area.brightest, gain);
+				area.total += (std::max)(gain, 0.0f);
 				if (y == kSignatureRows / 2 && (x == 7 || x == 8)) area.centreGain = (std::max)(area.centreGain, gain);
 				if (gain < threshold) continue;
 				++area.cells;
@@ -6187,6 +6200,154 @@ TEST_CASE(Vfx, GpuParticleShapesAndStretchOnScreen)
 
 	A::State(s) = EditorSceneState::Edit;
 	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+TEST_CASE(Vfx, UprightBillboardsStandOnTheGround)
+{
+	// Looking almost straight down: camera-facing quads face the lens, upright ones are seen edge-on
+	A::AimGameCamera(s, { 0.0f, 20.0f, 0.0f }, { 1.4f, 0.0f, 0.0f });
+	A::State(s) = EditorSceneState::Play;
+	A::GameTime(s) = 0.0;
+	CaptureGameViewSignature(s);
+	const std::vector<float> empty = CaptureGameViewSignature(s);
+	const auto shoot = [&](bool upright, double start) {
+		GameObject& obj = s.CreateGameObject("Upright Test", GameObjectType::Empty);
+		const uint32_t id = obj.id;
+		s.AddComponentByName(obj, kGpuParticlesComponent);
+		auto* p = obj.components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+		LitArea area;
+		if (p) {
+			p->emitting = false;
+			p->burst = 400;
+			p->capacity = 400;
+			p->lifeMin = p->lifeMax = 5.0f;
+			p->speedMin = p->speedMax = 0.0f;
+			p->shape = static_cast<int>(GpuParticleShape::Box);
+			p->boxExtents = { 3.0f, 0.0f, 2.0f };
+			p->sizeStart = p->sizeEnd = 0.6f;
+			p->colorStart = p->colorEnd = { 1.0f, 1.0f, 1.0f, 1.0f };
+			p->intensity = 2.0f;
+			p->uprightBillboard = upright;
+			s.UpdateWorldMatrices();
+			CaptureGameViewSignature(s);
+			A::GameTime(s) = start + 0.05;
+			area = LitCells(CaptureGameViewSignature(s), empty);
+		}
+		s.QueueDeleteGameObjectById(id);
+		s.ProcessPendingDeletes();
+		CaptureGameViewSignature(s);
+		return area;
+	};
+	const LitArea facing = shoot(false, 0.0);
+	const LitArea upright = shoot(true, 1.0);
+	CHECK_MSG(facing.total > 0.0f && upright.total < facing.total * 0.5f, std::format("upright light {:.0f} vs facing {:.0f}", upright.total, facing.total));
+	A::State(s) = EditorSceneState::Edit;
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+TEST_CASE(Vfx, LegacyParticleSystemLoadsAsGpuParticles)
+{
+	const uint32_t boxId = s.CreateGameObject("Legacy Box", GameObjectType::Empty).id;
+	const uint32_t coneId = s.CreateGameObject("Legacy Cone", GameObjectType::Empty).id;
+	const uint32_t plainId = s.CreateGameObject("Legacy Plain", GameObjectType::Empty).id;
+	nlohmann::json scene = nlohmann::json::parse(s.SerializeSceneToString());
+	for (auto& o : scene["gameObjects"]) {
+		const std::string name = o.value("name", "");
+		if (name == "Legacy Box") {
+			o["hasParticleSystem"] = true;
+			o["particleShape"] = 2;
+			o["particleBoxExtents"] = { 2.0f, 4.0f, 6.0f };
+			o["particleSpawnRate"] = 33.0f;
+			o["particleMaxParticles"] = 77;
+			o["particleBurstCount"] = 9;
+			o["particleEmitContinuously"] = false;
+			o["particleDirection"] = { 1.0f, 0.0f, 0.0f };
+			o["particleSpreadAngle"] = 60.0f;
+			o["particleSpeedMin"] = 2.0f;
+			o["particleSpeedMax"] = 5.0f;
+			o["particleGravity"] = -9.8f;
+			o["particleDrag"] = 0.3f;
+			o["particleWindEnabled"] = true;
+			o["particleWindAcceleration"] = { 1.0f, 0.0f, 2.0f };
+			o["particleLifetimeMin"] = 0.7f;
+			o["particleLifetimeMax"] = 1.9f;
+			o["particleStartScale"] = 0.4f;
+			o["particleEndScale"] = 0.1f;
+			o["particleStartColor"] = { 1.0f, 0.5f, 0.25f, 1.0f };
+			o["particleEndColor"] = { 0.0f, 0.0f, 1.0f, 0.0f };
+			o["particleBlendMode"] = 1;
+			o["particleBillboardMode"] = 1;
+		} else if (name == "Legacy Cone") {
+			o["hasParticleSystem"] = true;
+			o["particleShape"] = 3;
+			o["particleSpawnRadius"] = 0.5f;
+			o["particleConeAngle"] = 45.0f;
+			o["particleSpreadAngle"] = 180.0f;
+			o["particleBillboardMode"] = 2;
+			o["attachedParentId"] = static_cast<int>(boxId); // the old attach option becomes a hierarchy parent
+			o["localOffset"] = { 0.0f, 1.0f, 0.0f };
+		} else if (name == "Legacy Plain") {
+			o["hasParticleSystem"] = false;
+			o["particleShape"] = 2;
+		}
+	}
+	REQUIRE(s.DeserializeSceneFromString(scene.dump()));
+
+	const GameObject* box = s.FindGameObjectById(boxId, false);
+	REQUIRE(box != nullptr);
+	const auto* b = box->components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+	REQUIRE(b != nullptr);
+	CHECK(b->capacity == 77);
+	CHECK_NEAR(b->emitRate, 33.0f, 1e-5f);
+	CHECK(!b->emitting);
+	CHECK(b->spawnBurst == 9);
+	CHECK(b->shape == static_cast<int>(GpuParticleShape::Box));
+	CHECK_NEAR(b->boxExtents.x, 1.0f, 1e-5f); // the old box was a full size, the new one is half
+	CHECK_NEAR(b->boxExtents.z, 3.0f, 1e-5f);
+	CHECK_NEAR(b->direction.x, 1.0f, 1e-5f);
+	CHECK_NEAR(b->spreadDegrees, 30.0f, 1e-4f); // the old spread was the whole cone, the new one is half of it
+	CHECK_NEAR(b->speedMax, 5.0f, 1e-5f);
+	CHECK_NEAR(b->gravity.x, 1.0f, 1e-5f); // wind adds to gravity
+	CHECK_NEAR(b->gravity.y, -9.8f, 1e-5f);
+	CHECK_NEAR(b->gravity.z, 2.0f, 1e-5f);
+	CHECK_NEAR(b->drag, 0.3f, 1e-5f);
+	CHECK_NEAR(b->lifeMin, 0.7f, 1e-5f);
+	CHECK_NEAR(b->lifeMax, 1.9f, 1e-5f);
+	CHECK_NEAR(b->sizeStart, 0.4f, 1e-5f);
+	CHECK_NEAR(b->sizeEnd, 0.1f, 1e-5f);
+	CHECK_NEAR(b->colorStart.y, 0.5f, 1e-5f);
+	CHECK_NEAR(b->colorEnd.z, 1.0f, 1e-5f);
+	CHECK(b->additive);
+	CHECK(b->uprightBillboard);
+	CHECK_NEAR(b->stretchFactor, 0.0f, 1e-6f);
+
+	const GameObject* cone = s.FindGameObjectById(coneId, false);
+	REQUIRE(cone != nullptr);
+	const auto* c = cone->components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+	REQUIRE(c != nullptr);
+	CHECK(c->shape == static_cast<int>(GpuParticleShape::Cone));
+	CHECK_NEAR(c->shapeRadius, 0.5f, 1e-4f); // tan(45 deg) x 0.5
+	CHECK_NEAR(c->spreadDegrees, 180.0f, 1e-4f);
+	CHECK(c->stretchFactor > 0.0f); // velocity-aligned quads become short streaks
+	CHECK(!c->additive);
+	CHECK(c->emitting);
+	CHECK(c->spawnBurst == 0);
+	CHECK(cone->parentId == static_cast<int>(boxId));
+	CHECK_NEAR(cone->translation.y, 1.0f, 1e-5f);
+
+	const GameObject* plain = s.FindGameObjectById(plainId, false);
+	REQUIRE(plain != nullptr);
+	CHECK(plain->components.Get<GpuParticlesComponent>(kGpuParticlesComponent) == nullptr);
+
+	// Saved again: only the new component, so a second load converts nothing twice
+	const std::string saved = s.SerializeSceneToString();
+	CHECK(saved.find("hasParticleSystem") == std::string::npos);
+	CHECK(saved.find("particleShape") == std::string::npos);
+	REQUIRE(s.DeserializeSceneFromString(saved));
+	const auto* again = s.FindGameObjectById(boxId, false)->components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+	REQUIRE(again != nullptr);
+	CHECK(again->spawnBurst == 9);
+	CHECK(again->uprightBillboard);
 }
 
 TEST_CASE(Vfx, GpuParticleGradientAndDrawOrder)

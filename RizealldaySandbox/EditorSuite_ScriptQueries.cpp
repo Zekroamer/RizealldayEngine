@@ -501,8 +501,8 @@ void EditorSuite::TickScriptTimers(float deltaTime)
 void EditorSuite::BurstOneShotParticles(uint32_t id)
 {
 	const GameObject* obj = FindGameObjectById(id, false);
-	if (!obj || !obj->isActive || !obj->hasParticleSystem || obj->particleEmitContinuously) return;
-	pendingParticleBursts_.push_back({ id, obj->particleBurstCount, true });
+	const auto* p = obj && obj->isActive ? obj->components.Get<GpuParticlesComponent>(kGpuParticlesComponent) : nullptr;
+	if (p && p->spawnBurst > 0) pendingParticleBursts_.push_back({ id, p->spawnBurst });
 }
 
 void EditorSuite::ProcessDeferredScriptRequests()
@@ -523,16 +523,13 @@ void EditorSuite::ProcessDeferredScriptRequests()
 	if (!pendingParticleBursts_.empty()) {
 		std::vector<PendingParticleBurst> bursts;
 		bursts.swap(pendingParticleBursts_);
-		UpdateWorldMatrices(); // emit from the current world position (children of spawned prefabs)
 		for (const auto& b : bursts) {
 			GameObject* obj = FindGameObjectById(b.id, false);
-			if (!obj || !obj->isActive || !obj->hasParticleSystem) continue;
-			EnsureParticleQuadInitialized(*obj);
-			if (!obj->particleQuad) continue;
-			if (b.restart) obj->particleQuad->ClearParticles();
-			obj->particleQuad->emitter.translate = GetWorldPositionOf(*obj);
-			const int count = std::clamp(b.count, 1, (std::max)(1, obj->particleMaxParticles));
-			obj->particleQuad->EmitBurst(static_cast<uint32_t>(count));
+			auto* p = obj && obj->isActive ? obj->components.Get<GpuParticlesComponent>(kGpuParticlesComponent) : nullptr;
+			if (!p) continue;
+			// Fired by the next UpdateGpuParticles from the object's world position then
+			const int capacity = (std::max)(1, p->capacity);
+			p->burst = std::clamp((std::max)(p->burst, 0) + b.count, 1, capacity);
 		}
 	}
 }
@@ -810,13 +807,12 @@ void EditorSuite::SetupEngineAPIExtensions()
 
 	// ---- Particles & timers ----
 	engineApi_.emitParticles = [](void* ctx, uint32_t id, int count) {
-		if (ctx && id != 0 && count > 0) static_cast<EditorSuite*>(ctx)->pendingParticleBursts_.push_back({ id, count, false });
+		if (ctx && id != 0 && count > 0) static_cast<EditorSuite*>(ctx)->pendingParticleBursts_.push_back({ id, count });
 	};
 	engineApi_.setParticlesEmitting = [](void* ctx, uint32_t id, bool emitting) {
 		if (!ctx) return;
-		if (GameObject* obj = static_cast<EditorSuite*>(ctx)->FindGameObjectById(id, false)) {
-			obj->particleEmitContinuously = emitting;
-		}
+		GameObject* obj = static_cast<EditorSuite*>(ctx)->FindGameObjectById(id, false);
+		if (auto* p = obj ? obj->components.Get<GpuParticlesComponent>(kGpuParticlesComponent) : nullptr) p->emitting = emitting;
 	};
 	engineApi_.despawnAfter = [](void* ctx, uint32_t id, float seconds) {
 		auto* self = static_cast<EditorSuite*>(ctx);

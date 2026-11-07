@@ -45,6 +45,7 @@ struct GpuParticleSettings {
 	Vector3 shapeAxisY{ 0.0f, 0.5f, 0.0f };
 	Vector3 shapeAxisZ{ 0.0f, 0.0f, 0.5f };
 	float stretch = 0.0f; // 0 = round billboards; > 0 = streaks along the velocity, length x (1 + speed * stretch)
+	bool upright = false; // quads stand on world Y and only turn about it (grass, flames seen from above stay thin)
 };
 
 enum class GpuParticleShape : uint32_t { Point = 0, Sphere = 1, Box = 2, Cone = 3, Ring = 4, Count };

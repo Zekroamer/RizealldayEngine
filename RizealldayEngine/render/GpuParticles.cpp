@@ -37,7 +37,7 @@ namespace {
 		float sizeMiddle;
 		float middleTime; // < 0: two keys
 		float stretch;    // 0 = camera-facing squares
-		float pad;
+		float upright;    // 1 = stands on world Y
 	};
 	static_assert(sizeof(DrawConstants) == 160, "keep in sync with the DrawConstants cbuffer in GpuParticle.hlsli");
 
@@ -300,6 +300,7 @@ void GpuParticles::Draw(ID3D12GraphicsCommandList* cmdList, const Camera& camera
 		constants.sizeMiddle = emitter.settings.sizeMiddle;
 		constants.middleTime = emitter.settings.useMiddleKey ? std::clamp(emitter.settings.middleTime, 0.001f, 0.999f) : -1.0f;
 		constants.stretch = std::isfinite(emitter.settings.stretch) ? (std::max)(emitter.settings.stretch, 0.0f) : 0.0f;
+		constants.upright = emitter.settings.upright ? 1.0f : 0.0f;
 		const D3D12_GPU_VIRTUAL_ADDRESS address = dxCommon_->UploadConstants(constants);
 		if (address == 0) continue;
 		cmdList->SetPipelineState(emitter.settings.additive ? additivePso_.Get() : alphaPso_.Get());

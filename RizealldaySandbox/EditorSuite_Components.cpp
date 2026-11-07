@@ -47,10 +47,6 @@ void EditorSuite::RegisterBuiltinComponents()
 		[](const GameObject& o) { return o.hasLight; },
 		[](EditorSuite&, GameObject& o) { o.hasLight = true; },
 		[](EditorSuite& s, GameObject& o) { s.DrawLightComponentInspector(o); });
-	builtin("Particle System", "Effects", ComponentKind::ParticleSystem,
-		[](const GameObject& o) { return o.hasParticleSystem; },
-		[](EditorSuite& s, GameObject& o) { o.hasParticleSystem = true; s.EnsureParticleQuadInitialized(o); },
-		[](EditorSuite& s, GameObject& o) { s.DrawParticleSystemComponentInspector(o); });
 	builtin("Mapchip Level Editor", "", ComponentKind::Mapchip,
 		[](const GameObject& o) { return o.hasMapchip || o.type == GameObjectType::MapchipGrid; },
 		[](EditorSuite&, GameObject& o) { o.hasMapchip = true; },

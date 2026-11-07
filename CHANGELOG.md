@@ -2,6 +2,13 @@
 
 ## [Belum dirilis]
 
+## [2.7.0] — 2026-11-07
+
+### Perubahan
+- **Particle System (CPU) digabung ke GPU Particles.** Hanya ada satu komponen partikel. Scene dan prefab lama otomatis dimuat sebagai GPU Particles dengan nilai terdekat; opsi "Attach To" lama menjadi parent di Hierarchy.
+- GPU Particles mendapat **Upright Billboard** (partikel berdiri di sumbu Y, untuk api dan rumput) dan **Spawn Burst** (prefab menyemburkan partikel saat di-spawn atau diambil dari pool).
+- `EmitParticles()` dan `SetParticlesEmitting()` sekarang bekerja pada GPU Particles. Script tidak perlu diubah.
+
 ## [2.6.0] — 2026-11-07
 
 ### Fitur Baru

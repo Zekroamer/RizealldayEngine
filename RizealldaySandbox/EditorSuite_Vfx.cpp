@@ -94,12 +94,16 @@ void EditorSuite::RegisterVfxComponents()
 		RIZE_FIELD(GpuParticlesComponent, velocityMode, ComponentFieldType::Int, 0.0f, 1.0f),
 		RIZE_FIELD(GpuParticlesComponent, shapeRadius, ComponentFieldType::Float, 0.0f, 1000.0f),
 		RIZE_FIELD(GpuParticlesComponent, boxExtents, ComponentFieldType::Vector3, 0.0f, 0.0f),
-		RIZE_FIELD(GpuParticlesComponent, stretchFactor, ComponentFieldType::Float, 0.0f, 10.0f) });
+		RIZE_FIELD(GpuParticlesComponent, stretchFactor, ComponentFieldType::Float, 0.0f, 10.0f),
+		RIZE_FIELD(GpuParticlesComponent, uprightBillboard, ComponentFieldType::Bool, 0.0f, 0.0f),
+		RIZE_FIELD(GpuParticlesComponent, spawnBurst, ComponentFieldType::Int, 0.0f, 1000000.0f) });
 	for (ComponentField& field : particles.fields) {
 		const std::string_view name = field.name;
 		if (name == "shape") field.tooltip = "0 Point, 1 Sphere, 2 Box, 3 Cone (base disc), 4 Ring. Turns and scales with the object.";
 		else if (name == "velocityMode") field.tooltip = "0 Direction: a cone around Direction. 1 Radial: away from the centre of the shape.";
 		else if (name == "stretchFactor") field.tooltip = "0 = round. Above 0 particles stretch along their velocity (sparks, rain).";
+		else if (name == "uprightBillboard") field.tooltip = "Quads stand on the world Y axis and only turn around it (flames, grass).";
+		else if (name == "spawnBurst") field.tooltip = "Prefab instances fire this many particles when spawned or reused.\nScripts: EmitParticles() / SetParticlesEmitting().";
 	}
 #ifdef USE_IMGUI
 	particles.drawExtra = [](EditorSuite& suite, GameObject&, ComponentData& data) {

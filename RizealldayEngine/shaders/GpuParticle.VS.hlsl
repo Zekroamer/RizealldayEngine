@@ -40,6 +40,14 @@ GpuParticleVSOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_Insta
     float3 across = gCameraRight;
     float3 along = gCameraUp;
     float stretchLength = 1.0f;
+    if (gUpright > 0.5f)
+    {
+        // Faces the camera's horizontal right; a camera looking straight down falls back to world X
+        const float3 flatRight = float3(gCameraRight.x, 0.0f, gCameraRight.z);
+        const float flatLength = sqrt(dot(flatRight, flatRight));
+        across = flatLength > 0.001f ? flatRight / flatLength : float3(1.0f, 0.0f, 0.0f);
+        along = float3(0.0f, 1.0f, 0.0f);
+    }
     // Streak: the quad's long side follows the velocity as seen on screen; too slow or flying straight at the camera stays square
     const float2 onScreen = float2(dot(p.velocity, gCameraRight), dot(p.velocity, gCameraUp));
     const float screenSpeed = sqrt(dot(onScreen, onScreen));

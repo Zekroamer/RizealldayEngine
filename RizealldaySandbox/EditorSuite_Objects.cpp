@@ -305,9 +305,6 @@ void EditorSuite::ProcessPendingDeletes()
 			Audio::GetInstance()->StopAudio(obj.runtimeVoiceHandle);
 			obj.runtimeVoiceHandle = 0;
 		}
-		if (obj.particleQuad) {
-			obj.particleQuad.reset();
-		}
 	}
 
 	// 5. Erase from highest index to lowest index so remaining indices remain valid during erasure
@@ -382,45 +379,6 @@ void EditorSuite::ProcessPendingDeletes()
 			}
 			if (obj.parentIndex == -1) {
 				obj.parentId = -1;
-			}
-		}
-
-		// Particle parent attachment sanitization
-		if (obj.attachedParentId != -1 && deletedIds.count(static_cast<uint32_t>(obj.attachedParentId)) > 0) {
-			obj.attachToIndex = -1;
-			obj.attachedParentId = -1;
-			obj.localOffset = { 0.0f, 0.0f, 0.0f };
-		} else if (obj.attachToIndex >= 0) {
-			if (deleteIndices.count(obj.attachToIndex) > 0) {
-				obj.attachToIndex = -1;
-				obj.attachedParentId = -1;
-				obj.localOffset = { 0.0f, 0.0f, 0.0f };
-			} else {
-				int countBelow = 0;
-				for (int d : sortedAscending) {
-					if (d < obj.attachToIndex) countBelow++;
-				}
-				obj.attachToIndex -= countBelow;
-				if (obj.attachToIndex >= 0 && obj.attachToIndex < static_cast<int>(gameObjects_.size())) {
-					obj.attachedParentId = static_cast<int>(gameObjects_[obj.attachToIndex].id);
-				} else {
-					obj.attachToIndex = -1;
-					obj.attachedParentId = -1;
-					obj.localOffset = { 0.0f, 0.0f, 0.0f };
-				}
-			}
-		} else if (obj.attachedParentId != -1) {
-			// Resync attachToIndex from attachedParentId
-			obj.attachToIndex = -1;
-			for (size_t p = 0; p < gameObjects_.size(); ++p) {
-				if (gameObjects_[p].id == static_cast<uint32_t>(obj.attachedParentId)) {
-					obj.attachToIndex = static_cast<int>(p);
-					break;
-				}
-			}
-			if (obj.attachToIndex == -1) {
-				obj.attachedParentId = -1;
-				obj.localOffset = { 0.0f, 0.0f, 0.0f };
 			}
 		}
 

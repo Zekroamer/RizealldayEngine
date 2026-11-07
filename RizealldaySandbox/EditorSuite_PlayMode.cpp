@@ -220,12 +220,8 @@ void EditorSuite::RestorePlayModeSnapshot()
 					if (existing.id == copyObj.id) {
 						copyObj.editObject3d = std::move(existing.editObject3d);
 						copyObj.gameObject3d = std::move(existing.gameObject3d);
-						copyObj.particleQuad = std::move(existing.particleQuad);
 						break;
 					}
-				}
-				if (copyObj.hasParticleSystem) {
-					EnsureParticleQuadInitialized(copyObj);
 				}
 				restored.push_back(std::move(copyObj));
 			}
@@ -241,7 +237,6 @@ void EditorSuite::RestorePlayModeSnapshot()
 				copyObj.editObject3d = std::move(gameObjects_[i].editObject3d);
 				copyObj.gameObject3d = std::move(gameObjects_[i].gameObject3d);
 				copyObj.shadowTransform = std::move(gameObjects_[i].shadowTransform);
-				copyObj.particleQuad = std::move(gameObjects_[i].particleQuad);
 				gameObjects_[i] = std::move(copyObj);
 			}
 		}
@@ -257,9 +252,6 @@ void EditorSuite::RestorePlayModeSnapshot()
 				obj.velocity = { 0.0f, 0.0f, 0.0f };
 				obj.isGrounded = s.isGrounded;
 				obj.isColliding = false;
-				if (obj.hasParticleSystem && obj.particleQuad) {
-					SyncGameObjectToParticleQuad(obj);
-				}
 				break;
 			}
 		}
@@ -268,19 +260,6 @@ void EditorSuite::RestorePlayModeSnapshot()
 	// Rebuild hierarchy parent/child indices cleanly
 	RebuildHierarchyLinks();
 	UpdateWorldMatrices();
-	for (size_t i = 0; i < gameObjects_.size(); ++i) {
-		gameObjects_[i].attachToIndex = -1;
-	}
-	for (size_t i = 0; i < gameObjects_.size(); ++i) {
-		if (gameObjects_[i].attachedParentId != -1) {
-			for (size_t p = 0; p < gameObjects_.size(); ++p) {
-				if (gameObjects_[p].id == static_cast<uint32_t>(gameObjects_[i].attachedParentId)) {
-					gameObjects_[i].attachToIndex = static_cast<int>(p);
-					break;
-				}
-			}
-		}
-	}
 
 	if (selectedObjectIndex_ >= static_cast<int>(gameObjects_.size())) {
 		selectedObjectIndex_ = gameObjects_.empty() ? -1 : static_cast<int>(gameObjects_.size()) - 1;

@@ -58,6 +58,8 @@ struct GpuParticlesComponent {
 	float shapeRadius = 0.5f;
 	Vector3 boxExtents{ 0.5f, 0.5f, 0.5f };
 	float stretchFactor = 0.0f; // > 0: streaks along the velocity (sparks, rain)
+	bool uprightBillboard = false; // quads stand on world Y (flames, grass) instead of facing the camera
+	int spawnBurst = 0;            // prefab instances fire this many when spawned or reused from the pool
 
 	// Runtime, not saved
 	float emitCarry = 0.0f;
@@ -82,6 +84,7 @@ inline void ApplyGpuParticleShape(const GpuParticlesComponent& p, const Matrix4x
 	s.shapeAxisY = scaled(row(1), (std::max)(p.boxExtents.y, 0.0f));
 	s.shapeAxisZ = scaled(row(2), (std::max)(p.boxExtents.z, 0.0f));
 	s.stretch = std::isfinite(p.stretchFactor) ? (std::max)(p.stretchFactor, 0.0f) : 0.0f;
+	s.upright = p.uprightBillboard;
 }
 
 /// Starting points of the Inspector's Preset menu
@@ -105,6 +108,7 @@ inline bool ApplyGpuParticlePreset(GpuParticlesComponent& p, const char* name)
 		p.shapeRadius = 0.5f;
 		p.boxExtents = { 0.5f, 0.5f, 0.5f };
 		p.stretchFactor = 0.0f;
+		p.uprightBillboard = false;
 	};
 	const auto shaped = [&](GpuParticleShape shape, GpuParticleVelocity mode, float radius, float stretch) {
 		p.shape = static_cast<int>(shape);

@@ -1,6 +1,6 @@
 ﻿#include "EditorSuiteInternal.h"
 
-void EditorSuite::DrawInspectorAndDetailsPanel(bool& showParticles)
+void EditorSuite::DrawInspectorAndDetailsPanel()
 {
 #ifdef USE_IMGUI
 	ImGuiIO& io = ImGui::GetIO();
@@ -743,14 +743,6 @@ void EditorSuite::RemoveComponent(GameObject& obj, ComponentKind kind)
 		name = "Light";
 		obj.hasLight = false;
 		clearTypeIf({ GameObjectType::DirectionalLight, GameObjectType::PointLight, GameObjectType::SpotLight });
-		break;
-	case ComponentKind::ParticleSystem:
-		name = "Particle System";
-		obj.hasParticleSystem = false;
-		obj.particleQuad.reset(); // GPU resources go through DeferRelease in ~ParticleQuad
-		obj.attachedParentId = -1;
-		obj.attachToIndex = -1;
-		clearTypeIf({ GameObjectType::ParticleSystem });
 		break;
 	case ComponentKind::AudioSource:
 		name = "Audio Source";

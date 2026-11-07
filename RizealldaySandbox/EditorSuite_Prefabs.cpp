@@ -600,10 +600,6 @@ uint32_t EditorSuite::InstantiatePrefabNow(const std::string& prefabName, const 
 			auto parent = (obj.parentId >= 0) ? idMap.find(static_cast<uint32_t>(obj.parentId)) : idMap.end();
 			obj.parentId = (parent != idMap.end()) ? static_cast<int>(parent->second) : static_cast<int>(newIds[0]);
 		}
-		if (obj.attachedParentId >= 0) {
-			auto attached = idMap.find(static_cast<uint32_t>(obj.attachedParentId));
-			obj.attachedParentId = (attached != idMap.end()) ? static_cast<int>(attached->second) : -1;
-		}
 		RemapJointTarget(obj, idMap);
 		gameObjects_.push_back(std::move(obj));
 	}

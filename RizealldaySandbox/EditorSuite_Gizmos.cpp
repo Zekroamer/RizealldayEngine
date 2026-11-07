@@ -402,7 +402,6 @@ void EditorSuite::DrawTransformGizmo(const ImVec2& vpPos, const ImVec2& vpSize)
 			gizmoRotatePrevMouse_ = mousePos;
 			gizmoRotateSweep_ = 0.0f;
 			gizmoStartScale_ = sel.scale;
-			gizmoStartLocalOffset_ = sel.localOffset;
 		}
 	} else {
 		if (io.MouseDown[0]) {
@@ -417,23 +416,7 @@ void EditorSuite::DrawTransformGizmo(const ImVec2& vpPos, const ImVec2& vpSize)
 				if (snap) moveMeters = SnapValue(moveMeters, gizmoMoveSnap_);
 				const Vector3 worldDelta = activeWorldAxis * moveMeters;
 
-				if (sel.hasParticleSystem && sel.attachedParentId != -1) {
-					int pIdx = -1;
-					for (size_t p = 0; p < gameObjects_.size(); ++p) {
-						if (gameObjects_[p].id == static_cast<uint32_t>(sel.attachedParentId)) {
-							pIdx = static_cast<int>(p);
-							break;
-						}
-					}
-					if (pIdx >= 0) {
-						sel.localOffset = gizmoStartLocalOffset_ + worldDelta;
-						sel.translation = gameObjects_[pIdx].translation + sel.localOffset;
-					} else {
-						sel.attachedParentId = -1;
-						sel.localOffset = { 0.0f, 0.0f, 0.0f };
-						sel.translation = gizmoStartTranslation_ + worldDelta;
-					}
-				} else if (sel.parentId == -1) {
+				if (sel.parentId == -1) {
 					sel.translation = gizmoStartTranslation_ + worldDelta;
 				} else {
 					Matrix4x4 parentWorld = Mathematics::MakeIdentity4x4();

@@ -6,6 +6,87 @@ using EditorSuiteDetail::SceneNameFromPath;
 using EditorSuiteDetail::IsSceneFile;
 
 namespace {
+	// Scenes and prefabs saved before 2.7.0 had a CPU "Particle System" component with flat "particle*" keys.
+	// It becomes a GPU Particles component with the closest settings; the old keys are not written again.
+	void ConvertLegacyParticleSystem(const SceneJson::Json& j, GameObject& obj)
+	{
+		bool had = false;
+		SceneJson::Read(j, "hasParticleSystem", had);
+		if (!had || obj.components.Has(kGpuParticlesComponent)) return;
+		// Old defaults, so missing keys mean what they meant then
+		int shape = 1, maxParticles = 100, burstCount = 15, blendMode = 0, billboardMode = 0, attachedParentId = -1;
+		float spawnRadius = 0.5f, coneAngle = 25.0f, spawnRate = 20.0f, spread = 30.0f, speedMin = 1.0f, speedMax = 3.0f;
+		float gravity = 0.0f, drag = 0.05f, lifeMin = 1.5f, lifeMax = 3.0f, startScale = 0.25f, endScale = 0.5f;
+		bool emitContinuously = true, windEnabled = false;
+		Vector3 boxExtents{ 1.0f, 1.0f, 1.0f }, direction{ 0.0f, 1.0f, 0.0f }, wind{ 15.0f, 0.0f, 0.0f }, localOffset{ 0.0f, 0.0f, 0.0f };
+		Vector4 startColor{ 1.0f, 1.0f, 1.0f, 1.0f }, endColor{ 1.0f, 1.0f, 1.0f, 0.0f };
+		SceneJson::Read(j, "particleShape", shape);
+		SceneJson::Read(j, "particleSpawnRadius", spawnRadius);
+		SceneJson::Read(j, "particleBoxExtents", boxExtents);
+		SceneJson::Read(j, "particleConeAngle", coneAngle);
+		SceneJson::Read(j, "particleSpawnRate", spawnRate);
+		SceneJson::Read(j, "particleMaxParticles", maxParticles);
+		SceneJson::Read(j, "particleBurstCount", burstCount);
+		SceneJson::Read(j, "particleEmitContinuously", emitContinuously);
+		SceneJson::Read(j, "particleDirection", direction);
+		SceneJson::Read(j, "particleSpreadAngle", spread);
+		SceneJson::Read(j, "particleSpeedMin", speedMin);
+		SceneJson::Read(j, "particleSpeedMax", speedMax);
+		SceneJson::Read(j, "particleGravity", gravity);
+		SceneJson::Read(j, "particleDrag", drag);
+		SceneJson::Read(j, "particleWindEnabled", windEnabled);
+		SceneJson::Read(j, "particleWindAcceleration", wind);
+		SceneJson::Read(j, "particleLifetimeMin", lifeMin);
+		SceneJson::Read(j, "particleLifetimeMax", lifeMax);
+		SceneJson::Read(j, "particleStartScale", startScale);
+		SceneJson::Read(j, "particleEndScale", endScale);
+		SceneJson::Read(j, "particleStartColor", startColor);
+		SceneJson::Read(j, "particleEndColor", endColor);
+		SceneJson::Read(j, "particleBlendMode", blendMode);
+		SceneJson::Read(j, "particleBillboardMode", billboardMode);
+		SceneJson::Read(j, "attachedParentId", attachedParentId);
+		SceneJson::Read(j, "localOffset", localOffset);
+
+		const ComponentInfo* info = ComponentRegistry::Get().Find(kGpuParticlesComponent);
+		if (!info || !info->create) return;
+		auto data = info->create();
+		auto& p = *static_cast<GpuParticlesComponent*>(data->Data());
+		p.capacity = std::clamp(maxParticles, 1, 1000000);
+		p.emitRate = (std::max)(spawnRate, 0.0f);
+		p.emitting = emitContinuously;
+		p.spawnBurst = emitContinuously ? 0 : (std::max)(burstCount, 0);
+		p.shape = (shape >= 0 && shape <= 3) ? shape : 0; // Point, Sphere, Box and Cone keep their numbers
+		p.shapeRadius = (std::max)(spawnRadius, 0.0f);
+		if (p.shape == static_cast<int>(GpuParticleShape::Cone)) {
+			p.shapeRadius *= std::tan(std::clamp(coneAngle, 0.0f, 89.0f) * 3.14159265f / 180.0f); // the old cone's base disc
+		}
+		p.boxExtents = { boxExtents.x * 0.5f, boxExtents.y * 0.5f, boxExtents.z * 0.5f }; // full size -> half
+		p.direction = direction;
+		p.spreadDegrees = spread >= 179.0f ? 180.0f : std::clamp(spread, 0.0f, 180.0f) * 0.5f; // whole cone -> half angle
+		p.speedMin = speedMin;
+		p.speedMax = speedMax;
+		p.gravity = { 0.0f, gravity, 0.0f };
+		if (windEnabled) p.gravity = { wind.x, gravity + wind.y, wind.z };
+		p.drag = (std::max)(drag, 0.0f);
+		p.lifeMin = lifeMin;
+		p.lifeMax = lifeMax;
+		p.sizeStart = startScale;
+		p.sizeEnd = endScale;
+		p.colorStart = startColor;
+		p.colorEnd = endColor;
+		p.intensity = 1.0f;
+		p.additive = blendMode == 1;
+		p.uprightBillboard = billboardMode == 1;
+		p.stretchFactor = billboardMode == 2 ? 0.05f : 0.0f; // velocity-aligned quads: short streaks
+		obj.components.Add(kGpuParticlesComponent, std::move(data));
+
+		// The old "attach to" option followed another object: now a hierarchy parent
+		if (attachedParentId >= 0 && obj.parentId == -1 && static_cast<uint32_t>(attachedParentId) != obj.id) {
+			obj.parentId = attachedParentId;
+			obj.translation = localOffset;
+		}
+	}
+
 	// Writes `guidKey` next to an asset path when the asset is managed by the asset database (inside Assets/)
 	void WriteAssetGuid(AssetDatabase& db, SceneJson::Json& o, const char* guidKey, const std::string& path)
 	{
@@ -231,36 +312,6 @@ void EditorSuite::WriteGameObjectJson(const GameObject& obj, void* outJson) cons
 	o["lightShadowStrength"] = Num(obj.lightShadowStrength);
 	o["lightShadowNormalBias"] = Num(obj.lightShadowNormalBias);
 
-	// Particle System
-	o["hasParticleSystem"] = obj.hasParticleSystem;
-	o["attachedParentId"] = obj.attachedParentId;
-	o["localOffset"] = Arr(obj.localOffset);
-	o["particlePreset"] = obj.particlePreset;
-	o["particleShape"] = obj.particleShape;
-	o["particleSpawnRadius"] = Num(obj.particleSpawnRadius);
-	o["particleBoxExtents"] = Arr(obj.particleBoxExtents);
-	o["particleConeAngle"] = Num(obj.particleConeAngle);
-	o["particleSpawnRate"] = Num(obj.particleSpawnRate);
-	o["particleMaxParticles"] = obj.particleMaxParticles;
-	o["particleBurstCount"] = obj.particleBurstCount;
-	o["particleEmitContinuously"] = obj.particleEmitContinuously;
-	o["particleDirection"] = Arr(obj.particleDirection);
-	o["particleSpreadAngle"] = Num(obj.particleSpreadAngle);
-	o["particleSpeedMin"] = Num(obj.particleSpeedMin);
-	o["particleSpeedMax"] = Num(obj.particleSpeedMax);
-	o["particleGravity"] = Num(obj.particleGravity);
-	o["particleDrag"] = Num(obj.particleDrag);
-	o["particleWindEnabled"] = obj.particleWindEnabled;
-	o["particleWindAcceleration"] = Arr(obj.particleWindAcceleration);
-	o["particleLifetimeMin"] = Num(obj.particleLifetimeMin);
-	o["particleLifetimeMax"] = Num(obj.particleLifetimeMax);
-	o["particleStartScale"] = Num(obj.particleStartScale);
-	o["particleEndScale"] = Num(obj.particleEndScale);
-	o["particleStartColor"] = Arr(obj.particleStartColor);
-	o["particleEndColor"] = Arr(obj.particleEndColor);
-	o["particleBlendMode"] = obj.particleBlendMode;
-	o["particleBillboardMode"] = obj.particleBillboardMode;
-
 	// Mapchip, Audio, Animation & Scripts
 	o["hasMapchip"] = obj.hasMapchip;
 	o["hasAudioSource"] = obj.hasAudioSource;
@@ -398,7 +449,7 @@ bool EditorSuite::DeserializeSceneFromString(const std::string& content)
 	// Parse individual GameObjects
 	const Json* objectsJson = SceneJson::Find(root, "gameObjects");
 	if (objectsJson && objectsJson->is_array()) {
-		// Pass 1: claim the saved IDs so links (parentId / attachedParentId) survive the round trip.
+		// Pass 1: claim the saved IDs so links (parentId) survive the round trip.
 		// 0, missing and duplicate IDs get a fresh one in pass 2.
 		std::vector<uint32_t> savedIds(objectsJson->size(), 0);
 		std::unordered_set<uint32_t> usedIds;
@@ -434,22 +485,9 @@ bool EditorSuite::DeserializeSceneFromString(const std::string& content)
 		}
 	}
 
-	// Sync parentIndex, childrenIds, and attachToIndex for loaded objects
+	// Sync parentIndex and childrenIds for loaded objects
 	RebuildHierarchyLinks();
 	UpdateWorldMatrices();
-	for (size_t i = 0; i < gameObjects_.size(); ++i) {
-		gameObjects_[i].attachToIndex = -1;
-	}
-	for (size_t i = 0; i < gameObjects_.size(); ++i) {
-		if (gameObjects_[i].attachedParentId != -1) {
-			for (size_t p = 0; p < gameObjects_.size(); ++p) {
-				if (gameObjects_[p].id == static_cast<uint32_t>(gameObjects_[i].attachedParentId)) {
-					gameObjects_[i].attachToIndex = static_cast<int>(p);
-					break;
-				}
-			}
-		}
-	}
 
 
 	EnsureEditModeScriptInstances();
@@ -697,36 +735,6 @@ void EditorSuite::ReadGameObjectJson(const void* json, GameObject& obj)
 		}
 	}
 
-	// Particle System
-	SceneJson::Read(j, "hasParticleSystem", obj.hasParticleSystem);
-	SceneJson::Read(j, "attachedParentId", obj.attachedParentId);
-	SceneJson::Read(j, "localOffset", obj.localOffset);
-	SceneJson::Read(j, "particlePreset", obj.particlePreset);
-	SceneJson::Read(j, "particleShape", obj.particleShape);
-	SceneJson::Read(j, "particleSpawnRadius", obj.particleSpawnRadius);
-	SceneJson::Read(j, "particleBoxExtents", obj.particleBoxExtents);
-	SceneJson::Read(j, "particleConeAngle", obj.particleConeAngle);
-	SceneJson::Read(j, "particleSpawnRate", obj.particleSpawnRate);
-	SceneJson::Read(j, "particleMaxParticles", obj.particleMaxParticles);
-	SceneJson::Read(j, "particleBurstCount", obj.particleBurstCount);
-	SceneJson::Read(j, "particleEmitContinuously", obj.particleEmitContinuously);
-	SceneJson::Read(j, "particleDirection", obj.particleDirection);
-	SceneJson::Read(j, "particleSpreadAngle", obj.particleSpreadAngle);
-	SceneJson::Read(j, "particleSpeedMin", obj.particleSpeedMin);
-	SceneJson::Read(j, "particleSpeedMax", obj.particleSpeedMax);
-	SceneJson::Read(j, "particleGravity", obj.particleGravity);
-	SceneJson::Read(j, "particleDrag", obj.particleDrag);
-	SceneJson::Read(j, "particleWindEnabled", obj.particleWindEnabled);
-	SceneJson::Read(j, "particleWindAcceleration", obj.particleWindAcceleration);
-	SceneJson::Read(j, "particleLifetimeMin", obj.particleLifetimeMin);
-	SceneJson::Read(j, "particleLifetimeMax", obj.particleLifetimeMax);
-	SceneJson::Read(j, "particleStartScale", obj.particleStartScale);
-	SceneJson::Read(j, "particleEndScale", obj.particleEndScale);
-	SceneJson::Read(j, "particleStartColor", obj.particleStartColor);
-	SceneJson::Read(j, "particleEndColor", obj.particleEndColor);
-	SceneJson::Read(j, "particleBlendMode", obj.particleBlendMode);
-	SceneJson::Read(j, "particleBillboardMode", obj.particleBillboardMode);
-
 	// Mapchip, Audio, Animation & Scripts
 	SceneJson::Read(j, "hasMapchip", obj.hasMapchip);
 	SceneJson::Read(j, "hasAudioSource", obj.hasAudioSource);
@@ -827,9 +835,7 @@ void EditorSuite::ReadGameObjectJson(const void* json, GameObject& obj)
 		obj.scriptClassName = obj.scripts.front().className;
 	}
 
-	if (obj.hasParticleSystem) {
-		EnsureParticleQuadInitialized(obj);
-	}
+	ConvertLegacyParticleSystem(j, obj);
 }
 
 bool EditorSuite::SaveScene(const std::string& filePath)
@@ -1221,9 +1227,6 @@ void EditorSuite::ApplyUndoCommand(const UndoCommand& cmd, bool undo)
 
 	// 4. Re-derive caches that depend on indices / links
 	RebuildHierarchyLinks();
-	for (auto& obj : gameObjects_) {
-		obj.attachToIndex = (obj.attachedParentId != -1) ? findIndex(static_cast<uint32_t>(obj.attachedParentId)) : -1;
-	}
 	UpdateWorldMatrices();
 	EnsureEditModeScriptInstances();
 	RefreshAllScriptObjectViews();

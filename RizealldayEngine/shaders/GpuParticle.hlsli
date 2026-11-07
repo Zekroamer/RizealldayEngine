@@ -11,7 +11,7 @@
     float gSizeMiddle;
     float gMiddleTime; // < 0: two keys only
     float gStretch;    // 0 = camera-facing squares; > 0 = streaks along the velocity
-    float gPad;
+    float gUpright;    // 1 = quads stand on world Y and turn only about it
 };
 
 struct GpuParticleVSOutput

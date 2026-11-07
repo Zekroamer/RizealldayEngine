@@ -21,17 +21,11 @@ void EditorScene::Initialize() {
 	lights_->GetDirectionalLight().direction = { 0.5f, -1.0f, 0.5f };
 	lights_->GetDirectionalLight().color = { 1.0f, 0.95f, 0.9f, 1.0f };
 
-	// 3. 3D Particle System
-	circleTextureHandle_ = TextureManager::GetInstance()->LoadTexture("Resources/circle.png");
-	particleQuads_ = std::make_unique<ParticleQuad>();
-	particleQuads_->Initialize(RizeEngine::GetDirectXCommon(), RizeEngine::GetDXCManager(), circleTextureHandle_, 100);
-	showParticleQuads_ = true;
-
-	// 4. Initialize Editor Suite
+	// 3. Initialize Editor Suite
 	editorSuite_ = std::make_unique<EditorSuite>();
-	editorSuite_->Initialize(RizeEngine::GetDirectXCommon(), &gameCamera_, lights_.get(), particleQuads_.get());
+	editorSuite_->Initialize(RizeEngine::GetDirectXCommon(), &gameCamera_, lights_.get());
 
-	// 5. Hook up transition callback back to TitleScene
+	// 4. Hook up transition callback back to TitleScene
 	editorSuite_->SetOnRequestTitleScene([this]() {
 		if (sceneManager_) {
 			sceneManager_->ChangeScene(std::make_unique<TitleScene>());
@@ -50,11 +44,6 @@ void EditorScene::Update(float deltaTime) {
 	if (lights_) {
 		lights_->Update();
 	}
-
-	// Particle Physics Simulation
-	if (editorSuite_->HasActiveParticleSystem() && particleQuads_) {
-		particleQuads_->Simulate(deltaTime);
-	}
 }
 
 void EditorScene::Draw() {
@@ -62,10 +51,10 @@ void EditorScene::Draw() {
 
 	// Render Offscreen Viewports (Edit View & Game View) then restore to Main BackBuffer
 	auto* cmdList = RizeEngine::GetDirectXCommon()->GetCommandList();
-	editorSuite_->RenderViewports(cmdList, showParticleQuads_);
+	editorSuite_->RenderViewports(cmdList);
 
 	// Draw ImGui Editor Workspace
-	editorSuite_->DrawEditorUI(lastDeltaTime_, showParticleQuads_);
+	editorSuite_->DrawEditorUI(lastDeltaTime_);
 }
 
 void EditorScene::Finalize() {
@@ -76,7 +65,6 @@ void EditorScene::Finalize() {
 	// Tear down EditorSuite first (joins build thread, destroys script instances, unloads DLL, releases RTs)
 	editorSuite_.reset();
 
-	// Clean up scene-local lighting and particles
+	// Clean up scene-local lighting
 	lights_.reset();
-	particleQuads_.reset();
 }

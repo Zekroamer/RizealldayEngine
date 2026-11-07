@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="base">
@@ -81,9 +81,6 @@
     <ClCompile Include="EditorSuite_Scripting.cpp">
       <Filter>editor</Filter>
     </ClCompile>
-    <ClCompile Include="EditorSuite_Particles.cpp">
-      <Filter>editor</Filter>
-    </ClCompile>
     <ClCompile Include="EditorSuite_Environment.cpp">
       <Filter>editor</Filter>
     </ClCompile>
@@ -144,9 +141,6 @@
     <ClCompile Include="ComponentRegistry.cpp">
       <Filter>editor</Filter>
     </ClCompile>
-    <ClCompile Include="ParticleQuad.cpp">
-      <Filter>3d</Filter>
-    </ClCompile>
     <ClCompile Include="scene\EditorScene.cpp">
       <Filter>scene</Filter>
     </ClCompile>
@@ -193,9 +187,6 @@
     </ClInclude>
     <ClInclude Include="ComponentRegistry.h">
       <Filter>editor</Filter>
-    </ClInclude>
-    <ClInclude Include="ParticleQuad.h">
-      <Filter>3d</Filter>
     </ClInclude>
     <ClInclude Include="scene\EditorScene.h">
       <Filter>scene</Filter>

@@ -1,8 +1,8 @@
 ﻿#pragma once
 #include <d3d12.h>
-#include "ParticleQuad.h"
 #include "base/RenderTexture.h"
 #include "base/DirectXCommon.h"
+#include "math/VertexData.h"
 #include "render/PostProcess.h"
 #include "physics/PhysicsWorld.h"
 #include "render/EnvironmentProbe.h"
@@ -212,50 +212,6 @@ struct GameObject {
 	float lightShadowStrength = 1.0f;
 	float lightShadowNormalBias = 0.02f;
 
-	// Particle System Component
-	bool hasParticleSystem = false;
-	int attachToIndex = -1;
-	int attachedParentId = -1;
-	Vector3 localOffset = { 0.0f, 0.0f, 0.0f };
-	int particlePreset = 0; // 0: Custom, 1: Smoke, 2: Water Fountain, 3: Fireworks, 4: Explosion, 5: Torch
-
-	// Particle System Parameters
-	int particleShape = 1; // 0: Point, 1: Sphere, 2: Box, 3: Cone
-	float particleSpawnRadius = 0.5f;
-	Vector3 particleBoxExtents = { 1.0f, 1.0f, 1.0f };
-	float particleConeAngle = 25.0f; // degrees
-
-	float particleSpawnRate = 20.0f; // particles per second
-	int particleMaxParticles = 100;
-	int particleBurstCount = 15;
-	// Off: no continuous spawning; prefab instances burst particleBurstCount on spawn, scripts call EmitParticles
-	bool particleEmitContinuously = true;
-
-	Vector3 particleDirection = { 0.0f, 1.0f, 0.0f };
-	float particleSpreadAngle = 30.0f; // degrees (0-180)
-	float particleSpeedMin = 1.0f;
-	float particleSpeedMax = 3.0f;
-
-	float particleGravity = 0.0f;
-	float particleDrag = 0.05f;
-
-	bool particleWindEnabled = false;
-	Vector3 particleWindAcceleration = { 15.0f, 0.0f, 0.0f };
-
-	float particleLifetimeMin = 1.5f;
-	float particleLifetimeMax = 3.0f;
-
-	float particleStartScale = 0.25f;
-	float particleEndScale = 0.5f;
-
-	Vector4 particleStartColor = { 1.0f, 1.0f, 1.0f, 1.0f };
-	Vector4 particleEndColor = { 1.0f, 1.0f, 1.0f, 0.0f };
-
-	int particleBlendMode = 0; // 0: Normal Alpha, 1: Additive Glow
-	int particleBillboardMode = 0; // 0: Camera Facing, 1: Y-Axis Cylindrical, 2: Velocity Aligned
-
-	std::shared_ptr<ParticleQuad> particleQuad;
-
 	// Mapchip Component
 	bool hasMapchip = false;
 
@@ -343,17 +299,16 @@ public:
 	void Initialize(
 		DirectXCommon* dxCommon,
 		Camera* gameCamera,
-		LightGroup* lights,
-		ParticleQuad* particleSystem
+		LightGroup* lights
 	);
 
 	void Update(float deltaTime, Input* input);
 
 	// Render scene to EditViewRenderTexture and GameViewRenderTexture
-	void RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showParticles);
+	void RenderViewports(ID3D12GraphicsCommandList* cmdList);
 
 	// Draw all Editor GUI panels (Hierarchy, Inspector, Viewports, Project, Console)
-	void DrawEditorUI(float deltaTime, bool& showParticles);
+	void DrawEditorUI(float deltaTime);
 
 	EditorSceneState GetSceneState() const { return sceneState_; }
 	Camera& GetEditorCamera() { return editorCamera_; }
@@ -389,7 +344,6 @@ public:
 		if (msg) LogMessage(msg, logType);
 	}
 
-	bool HasActiveParticleSystem(Vector3* outEmitterPos = nullptr) const;
 	void StartPlayMode();
 	void StopPlayMode();
 	void UpdateScripts(float deltaTime);
@@ -858,10 +812,10 @@ private:
 	void DrawMainMenuBar();
 	void DrawTopPlayBar();
 	void DrawHierarchyPanel();
-	void DrawInspectorAndDetailsPanel(bool& showParticles);
+	void DrawInspectorAndDetailsPanel();
 
 	// Removable Inspector components (Transform and Scripts are handled separately)
-	enum class ComponentKind { Mesh, BoxCollider, SphereCollider, Rigidbody, Camera, Light, ParticleSystem, AudioSource, Mapchip };
+	enum class ComponentKind { Mesh, BoxCollider, SphereCollider, Rigidbody, Camera, Light, AudioSource, Mapchip };
 	/// Component header with a close (x) button and a right-click "Remove Component" menu.
 	/// A removal is only queued here and applied after the Inspector finished drawing.
 	bool DrawComponentHeader(const char* label, ComponentKind kind);
@@ -880,7 +834,6 @@ private:
 	void DrawRigidbodyComponentInspector(GameObject& obj);
 	void DrawCameraComponentInspector(GameObject& obj);
 	void DrawLightComponentInspector(GameObject& obj);
-	void DrawParticleSystemComponentInspector(GameObject& obj);
 	void DrawAudioSourceComponentInspector(GameObject& obj);
 public:
 	// By registry name, built-in or data component. Add/Remove record undo like the Inspector does.
@@ -950,7 +903,6 @@ private:
 	Camera* gameCamera_ = nullptr;
 	Camera editorCamera_{};
 	LightGroup* lights_ = nullptr;
-	ParticleQuad* particleSystem_ = nullptr;
 	Input* currentInput_ = nullptr;
 	float currentDeltaTime_ = 0.016f;  // scaled by timeScale_ while the game runs
 	float unscaledDeltaTime_ = 0.016f;
@@ -1035,12 +987,6 @@ public:
 	static bool ScreenRayToPlaneY(const Matrix4x4& viewProjection, float ndcX, float ndcY, float planeY, Vector3& outPoint);
 private:
 	DXCManager dxc_{};
-	uint32_t particleTextureHandle_ = 0;
-
-	// Particle System Helpers
-	void EnsureParticleQuadInitialized(GameObject& obj);
-	void SyncGameObjectToParticleQuad(GameObject& obj);
-	void ApplyParticlePreset(GameObject& obj, int presetIndex);
 
 	RenderTexture editViewRT_{};
 	RenderTexture gameViewRT_{};
@@ -1269,7 +1215,6 @@ private:
 	Vector3 gizmoStartTranslation_{};
 	Vector3 gizmoStartRotation_{};
 	Vector3 gizmoStartScale_{};
-	Vector3 gizmoStartLocalOffset_{};
 
 	bool showGrid_ = true;
 	bool showGizmos_ = true;
@@ -1323,7 +1268,6 @@ private:
 	struct PendingParticleBurst {
 		uint32_t id = 0;
 		int count = 0;
-		bool restart = false; // clear live particles first (pooled one-shot effects)
 	};
 	std::vector<PendingParticleBurst> pendingParticleBursts_;
 	// Pairs dispatched by the last DispatchCollisionEvents() (counted even when no script listens)

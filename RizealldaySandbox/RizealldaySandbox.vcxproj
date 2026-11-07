@@ -180,7 +180,6 @@ if exist "$(ProjectDir)Resources" xcopy "$(ProjectDir)Resources" "$(OutDir)Resou
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="ParticleQuad.cpp" />
     <ClCompile Include="EditorSuite.cpp" />
     <ClCompile Include="EditorSuite_Objects.cpp" />
     <ClCompile Include="EditorSuite_SceneIO.cpp" />
@@ -227,7 +226,6 @@ if exist "$(ProjectDir)Resources" xcopy "$(ProjectDir)Resources" "$(OutDir)Resou
     <ClCompile Include="Localization.cpp" />
     <ClCompile Include="ComponentRegistry.cpp" />
     <ClCompile Include="EditorSuite_ScriptQueries.cpp" />
-    <ClCompile Include="EditorSuite_Particles.cpp" />
     <ClCompile Include="EditorSuite_Environment.cpp" />
     <ClCompile Include="EditorSuite_Hierarchy.cpp" />
     <ClCompile Include="EditorSuite_Tests.cpp" />
@@ -252,7 +250,6 @@ if exist "$(ProjectDir)Resources" xcopy "$(ProjectDir)Resources" "$(OutDir)Resou
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="ParticleQuad.h" />
     <ClInclude Include="PhysicsComponents.h" />
     <ClInclude Include="PbrMaterial.h" />
     <ClInclude Include="VfxComponents.h" />

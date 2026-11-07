@@ -116,10 +116,6 @@ std::vector<uint32_t> EditorSuite::DuplicateObjects(const std::vector<uint32_t>&
 			} else {
 				copy.parentId = static_cast<int>(idMap[static_cast<uint32_t>(copy.parentId)]);
 			}
-			if (copy.attachedParentId >= 0) {
-				const auto attached = idMap.find(static_cast<uint32_t>(copy.attachedParentId));
-				if (attached != idMap.end()) copy.attachedParentId = static_cast<int>(attached->second);
-			}
 			RemapJointTarget(copy, idMap);
 			copies.push_back(std::move(copy));
 		}

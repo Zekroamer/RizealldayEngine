@@ -482,7 +482,7 @@ bool EditorSuite::ReceivesDecals(const GameObject& obj, const Model* model)
 	return !obj.hasRigidbody && !(model && model->HasBones());
 }
 
-void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showParticles)
+void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList)
 {
 	if (!dxCommon_ || dxCommon_->IsDeviceLost() || !cmdList) {
 		return;
@@ -492,8 +492,6 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 
 	UpdateWorldMatrices();
 	UpdateGpuParticles(cmdList);
-
-	bool activeParticles = HasActiveParticleSystem() && showParticles;
 
 	environmentProbe_.Update(cmdList, skybox_);
 	if (lights_) lights_->SetEnvironment(postSettings_.environmentIntensity, environmentProbe_.GetMaxMip());
@@ -533,14 +531,6 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 			{ 0.25f, 0.45f, 0.90f, 0.85f }); // Z axis (x = 0)
 		PrimitiveDrawer::GetInstance()->Render(cmdList, editorCamera_);
 	}
-	if (activeParticles) {
-		for (auto& obj : gameObjects_) {
-			if (obj.isActive && obj.hasParticleSystem && obj.particleQuad) {
-				obj.particleQuad->PrepareForCamera(editorCamera_, ParticleQuad::kPassScene);
-				obj.particleQuad->Draw(cmdList, ParticleQuad::kPassScene);
-			}
-		}
-	}
 	DrawEffects(cmdList, editorCamera_, editSceneRT_);
 	editSceneRT_.EndRender();
 	// The Scene view shows the scene itself: post-processing is the game's look
@@ -564,14 +554,6 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 		skybox_.Draw(cmdList, *gameCamera_);
 		RenderScene3D(cmdList, *gameCamera_, false);
 		DrawDecals(cmdList, *gameCamera_, gameSceneRT_);
-		if (activeParticles) {
-			for (auto& obj : gameObjects_) {
-				if (obj.isActive && obj.hasParticleSystem && obj.particleQuad) {
-					obj.particleQuad->PrepareForCamera(*gameCamera_, ParticleQuad::kPassGame);
-					obj.particleQuad->Draw(cmdList, ParticleQuad::kPassGame);
-				}
-			}
-		}
 		DrawEffects(cmdList, *gameCamera_, gameSceneRT_);
 	}
 	gameSceneRT_.EndRender();
@@ -650,14 +632,6 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList, bool showP
 		skybox_.Draw(cmdList, *gameCamera_);
 		RenderScene3D(cmdList, *gameCamera_, true);
 		DrawDecals(cmdList, *gameCamera_, gameSceneRT_);
-		if (activeParticles) {
-			for (auto& obj : gameObjects_) {
-				if (obj.isActive && obj.hasParticleSystem && obj.particleQuad) {
-					obj.particleQuad->PrepareForCamera(*gameCamera_, ParticleQuad::kPassGame);
-					obj.particleQuad->Draw(cmdList, ParticleQuad::kPassGame);
-				}
-			}
-		}
 		DrawEffects(cmdList, *gameCamera_, gameSceneRT_);
 	}
 	gameSceneRT_.EndRender();
