@@ -7579,6 +7579,71 @@ TEST_CASE(Vfx, ParticleGraphParametersFromObjectAndScript)
 	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
 }
 
+TEST_CASE(Graph, ParticleEditorModelKeepsOutputsParametersAndKeys)
+{
+	const NodeLibrary& lib = NodeLibrary::Effects();
+	GraphEditorModel m;
+	m.Reset(MakeParticleTemplate("Blank"));
+	REQUIRE(m.graph.nodes.size() == 2u);
+
+	// Both outputs survive Delete and are not duplicated
+	m.selection = { m.graph.nodes[0].id, m.graph.nodes[1].id };
+	m.DeleteSelection();
+	CHECK(m.graph.nodes.size() == 2u);
+	CHECK(m.Duplicate().empty());
+
+	// Parameters: a new one gets a free name; adding is one undo step
+	const std::string first = m.AddParameter("Strength", PinType::Float);
+	const std::string second = m.AddParameter("Strength", PinType::Float3);
+	CHECK(first == "Strength");
+	CHECK(second == "Strength 1");
+	REQUIRE(m.graph.parameters.size() == 2u);
+	CHECK(m.graph.parameters[1].type == PinType::Float3);
+	REQUIRE(m.Undo());
+	CHECK(m.graph.parameters.size() == 1u);
+
+	// Renaming follows into every Parameter node; a clash or an empty name is refused with a reason
+	const uint32_t reader = m.AddNode("Parameter", -200.0f, 0.0f);
+	m.graph.FindMutable(reader)->texts["Name"] = "Strength";
+	m.Commit();
+	m.AddParameter("Other", PinType::Float);
+	std::string why;
+	CHECK(!m.RenameParameter("Strength", "Other", &why));
+	CHECK(!why.empty());
+	CHECK(!m.RenameParameter("Strength", "  ", &why));
+	REQUIRE_MSG(m.RenameParameter("Strength", "Power", &why), why);
+	CHECK(m.graph.FindParameter("Power") == 0);
+	CHECK(m.graph.Find(reader)->texts.at("Name") == "Power");
+	REQUIRE(m.Undo());
+	CHECK(m.graph.Find(reader)->texts.at("Name") == "Strength");
+	REQUIRE(m.Redo());
+	// The window passes the parameter's own name: the nodes must still follow
+	REQUIRE(m.RenameParameter(m.graph.parameters[0].name, "Force", &why));
+	CHECK(m.graph.Find(reader)->texts.at("Name") == "Force");
+	REQUIRE(m.Undo());
+
+	// Removing one: the node that still reads it reports the problem (it does not silently read another slot)
+	REQUIRE(m.RemoveParameter("Power"));
+	const uint32_t out = m.FindOutputNode(); // the first output (Spawn Output)
+	REQUIRE(m.Connect(reader, "Value", out, "Color", &why));
+	GeneratedGraphCode code = GenerateGraphCode(m.graph, lib, kDomainParticleSpawn);
+	CHECK(!code.ok);
+	CHECK(!code.errors.empty() && code.errors.front().nodeId == reader);
+	CHECK(!m.RemoveParameter("Power")); // already gone
+	m.Undo();
+	m.Undo();
+	CHECK(m.graph.FindParameter("Power") == 0);
+
+	// Curve keys: one undo step per edit
+	const uint32_t curve = m.AddNode("Curve", 0.0f, 200.0f);
+	const std::vector<GraphKey> before = ReadGraphKeys(*m.graph.Find(curve), "Curve");
+	REQUIRE(m.SetKeys(curve, "Curve", { { 0.0f, { 0.2f, 0, 0, 0 } }, { 0.5f, { 2.0f, 0, 0, 0 } }, { 1.0f, { 0.0f, 0, 0, 0 } } }));
+	CHECK(ReadGraphKeys(*m.graph.Find(curve), "Curve").size() == 3u);
+	REQUIRE(m.Undo());
+	CHECK(ReadGraphKeys(*m.graph.Find(curve), "Curve").size() == before.size());
+	CHECK(!m.SetKeys(987654u, "Curve", before)); // no such node
+}
+
 TEST_CASE(Graph, EditorModelUndoRedoAndAutoConnect)
 {
 	GraphEditorModel m;
@@ -7765,6 +7830,46 @@ TEST_CASE(Vfx, ParticleTemplatesMakeFilesThatPlay)
 	}
 	A::State(s) = EditorSceneState::Edit;
 	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+TEST_CASE(Vfx, ParticleGraphEditorOpensEditsAndSaves)
+{
+	A::ProjectRoot(s) = A::TempRoot() / "ParticleGraphEditorProject";
+	std::filesystem::remove_all(A::ProjectRoot(s) / "Assets" / "Effects");
+	const std::string path = s.CreateParticleGraph("Edit Me", "Blank");
+	REQUIRE(!path.empty());
+	const EffectMaterialEntry* before = s.GetParticleGraph(path);
+	REQUIRE(before != nullptr);
+	REQUIRE(before->ok);
+	const uint64_t oldKey = before->key;
+	CHECK(before->parameters.empty());
+
+	// The same window opens particle graphs: an edit is saved and used at once (no waiting for the file check)
+	REQUIRE(s.OpenMaterialGraph(path));
+	GraphEditorModel& m = A::MaterialEditor(s);
+	CHECK(m.graph.kind == GraphKind::Particle);
+	const std::string name = m.AddParameter("Pull", PinType::Float3);
+	const uint32_t reader = m.AddNode("Parameter", -200.0f, 0.0f);
+	m.graph.FindMutable(reader)->texts["Name"] = name;
+	std::string why;
+	REQUIRE(m.Connect(reader, "Value", m.FindOutputNode(), "Velocity", &why));
+	REQUIRE(s.SaveMaterialGraph());
+	const EffectMaterialEntry* after = s.GetParticleGraph(path);
+	REQUIRE(after != nullptr);
+	CHECK_MSG(after->ok, after->errors.empty() ? std::string() : after->errors.front().message);
+	CHECK(after->key != oldKey);
+	REQUIRE(after->parameters.size() == 1u);
+	CHECK(after->parameters[0].name == "Pull");
+
+	// The file keeps being a particle graph (another program or a restart reads it the same way)
+	std::ifstream in(A::ProjectRoot(s) / path);
+	std::stringstream text;
+	text << in.rdbuf();
+	NodeGraph saved;
+	REQUIRE(NodeGraph::FromJson(text.str(), saved, &why));
+	CHECK(saved.kind == GraphKind::Particle);
+	CHECK(saved.parameters.size() == 1u);
+	A::CloseMaterialGraph(s);
 }
 
 TEST_CASE(Vfx, MaterialEditorCreatesOpensAndSaves)
@@ -7987,6 +8092,96 @@ TEST_CASE(Vfx, MaterialPreviewShowsTheMaterial)
 	REQUIRE(!bluePicture.empty());
 	CHECK_MSG(lead(bluePicture, 2, 0) > 60.0f, std::format("blue preview: blue over red by {:.0f}", lead(bluePicture, 2, 0)));
 	CHECK_MSG(lead(bluePicture, 0, 1) < 30.0f, "the red particles of the last material are gone");
+	A::CloseMaterialGraph(s);
+	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
+}
+
+TEST_CASE(Vfx, GpuParticlesInspectorShowsOnlyTheFieldsInUse)
+{
+	(void)s;
+	const ComponentInfo* info = ComponentRegistry::Get().Find(kGpuParticlesComponent);
+	REQUIRE(info && info->fieldShown);
+	GpuParticlesComponent p{};
+	const auto shown = [&](std::string_view name) {
+		for (const ComponentField& f : info->fields) {
+			if (name == f.name) return !f.hidden && info->fieldShown(&p, f);
+		}
+		return false;
+	};
+	// Without a graph: the fixed settings; size and colour are edited as a curve and a gradient instead of numbers
+	for (const char* keep : { "lifeMin", "speedMax", "shape", "gravity", "drag", "collideWithFloor", "intensity", "direction" }) CHECK_MSG(shown(keep), keep);
+	for (const char* gone : { "sizeStart", "sizeMiddle", "sizeEnd", "colorStart", "colorMiddle", "colorEnd", "middleTime", "useMiddleKey" }) CHECK_MSG(!shown(gone), gone);
+	// With a graph: only what the graph still reads (direction = the graph's Emitter Direction)
+	strcpy_s(p.graph, "Assets/Effects/x.vfxparticle.json");
+	for (const char* keep : { "capacity", "emitRate", "burst", "emitting", "spawnBurst", "additive", "texture", "material", "stretchFactor",
+		"uprightBillboard", "graph", "direction" }) CHECK_MSG(shown(keep), keep);
+	for (const char* gone : { "lifeMin", "lifeMax", "speedMin", "speedMax", "spreadDegrees", "gravity", "drag", "collideWithFloor", "floorHeight",
+		"bounce", "intensity", "shape", "velocityMode", "shapeRadius", "boxExtents", "sizeStart", "colorEnd" }) CHECK_MSG(!shown(gone), gone);
+}
+
+TEST_CASE(Vfx, EffectGraphsThatDoNotCompileAreReported)
+{
+	// What the exported game's smoke run (--smoke-frames) checks before it reports OK
+	A::ProjectRoot(s) = A::TempRoot() / "GraphProblemsProject";
+	s.NewScene();
+	const std::string fountain = s.CreateParticleGraph("Smoke Fountain", "Fountain");
+	const std::string glow = s.CreateEffectMaterial("Smoke Glow", "Soft Glow");
+	REQUIRE(!fountain.empty() && !glow.empty());
+	GameObject& a = s.CreateGameObject("Sparks", GameObjectType::Empty);
+	REQUIRE(s.AddComponentByName(a, kGpuParticlesComponent));
+	auto* p = a.components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+	strcpy_s(p->graph, fountain.c_str());
+	strcpy_s(p->material, glow.c_str());
+	CHECK_MSG(s.EffectGraphProblem().empty(), s.EffectGraphProblem());
+
+	// A material file that is not a graph: named with its object, so the report says where to look
+	const std::filesystem::path broken = A::ProjectRoot(s) / "Assets" / "Effects" / "Broken.vfxmat.json";
+	std::ofstream(broken, std::ios::trunc) << "{ this is not a graph";
+	const uint32_t bId = s.CreateGameObject("Embers", GameObjectType::Empty).id;
+	GameObject* b = s.FindGameObjectById(bId, false);
+	REQUIRE(b && s.AddComponentByName(*b, kGpuParticlesComponent));
+	strcpy_s(b->components.Get<GpuParticlesComponent>(kGpuParticlesComponent)->material, "Assets/Effects/Broken.vfxmat.json");
+	const std::string why = s.EffectGraphProblem();
+	CHECK_MSG(why.find("Broken.vfxmat.json") != std::string::npos && why.find("Embers") != std::string::npos, why);
+
+	// A missing file is a problem too (an export that left it out)
+	strcpy_s(b->components.Get<GpuParticlesComponent>(kGpuParticlesComponent)->material, "Assets/Effects/Gone.vfxmat.json");
+	CHECK_MSG(s.EffectGraphProblem().find("Gone.vfxmat.json") != std::string::npos, s.EffectGraphProblem());
+	s.NewScene();
+}
+
+TEST_CASE(Vfx, ParticleGraphPreviewShowsTheGraph)
+{
+	A::ProjectRoot(s) = A::TempRoot() / "ParticleGraphPreviewProject";
+	A::ShowEffectEditor(s) = false;
+	// Particles that stand still in a box around the emitter, in one colour
+	const auto solid = [&](const char* name, Vector4 color) {
+		NodeGraph g = TestParticleGraph({ 2.0f, 2.0f, 0.2f });
+		for (GraphNode& n : g.nodes) {
+			if (n.type == "Spawn Output") n.values["Color"] = color;
+		}
+		return WriteParticleGraph(s, name, g);
+	};
+	const std::string red = solid("PreviewRed", { 1.0f, 0.0f, 0.0f, 1.0f });
+	const std::string blue = solid("PreviewBlue", { 0.0f, 0.0f, 1.0f, 1.0f });
+	const auto lead = [](const std::vector<float>& picture, int strong, int weak) {
+		float best = -255.0f;
+		for (size_t i = 0; i + 2 < picture.size(); i += 3) best = (std::max)(best, picture[i + strong] - picture[i + weak]);
+		return best;
+	};
+	const auto look = [&](const std::string& path) {
+		if (!s.OpenMaterialGraph(path)) return std::vector<float>{};
+		std::vector<float> picture;
+		for (int i = 0; i < 8; ++i) picture = CaptureViewSignature(s, A::PreviewRT(s));
+		return picture;
+	};
+	const std::vector<float> redPicture = look(red);
+	REQUIRE(!redPicture.empty());
+	CHECK_MSG(lead(redPicture, 0, 1) > 60.0f, std::format("red graph: red over green by {:.0f}", lead(redPicture, 0, 1)));
+	const std::vector<float> bluePicture = look(blue);
+	REQUIRE(!bluePicture.empty());
+	CHECK_MSG(lead(bluePicture, 2, 0) > 60.0f, std::format("blue graph: blue over red by {:.0f}", lead(bluePicture, 2, 0)));
+	CHECK_MSG(lead(bluePicture, 0, 1) < 30.0f, "the red particles of the last graph are gone");
 	A::CloseMaterialGraph(s);
 	CHECK(A::Dx(s)->GetDevice()->GetDeviceRemovedReason() == S_OK);
 }

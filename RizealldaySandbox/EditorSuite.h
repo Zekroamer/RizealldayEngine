@@ -439,7 +439,7 @@ public:
 	/// The Effect Editor shows the effect it previews in its own panel (shares the asset preview target, which a model
 	/// preview or the Material Graph's preview take first)
 	bool EffectPanelPreviewActive() const;
-	void RenderEffectPreview(ID3D12GraphicsCommandList* cmdList);
+	void RenderPreviewPanel(ID3D12GraphicsCommandList* cmdList); // graph window or Effect Editor preview, into modelPreviewRT_
 	/// Decals, then the objects RenderScene3D held back (decalExcluded_). Call right after RenderScene3D.
 	void DrawDecals(ID3D12GraphicsCommandList* cmdList, const Camera& camera, RenderTexture& target);
 	/// Moving things (Rigidbody, skinned models) are drawn after the decals, so a mark on the floor never paints a character
@@ -651,6 +651,8 @@ public:
 	const EffectMaterialEntry* GetEffectMaterial(const std::string& assetPath);
 	/// A particle graph (.vfxparticle.json) built into a compute shader, checked again twice a second like materials
 	const EffectMaterialEntry* GetParticleGraph(const std::string& assetPath);
+	/// The first material or particle graph used in the scene that is missing or does not compile ("" = all fine)
+	std::string EffectGraphProblem();
 	/// A script's value for one parameter of the object's particle graph (until Stop / scene load). False when the
 	/// object has no GPU Particles with a graph that has this parameter.
 	bool SetEffectParameter(uint32_t objectId, const std::string& name, const Vector4& value);
@@ -658,6 +660,7 @@ public:
 	std::string CreateParticleGraph(const std::string& name, const std::string& templateName);
 	/// Inspector rows of GPU Particles under its Graph field: status, one row per parameter, New Particle Graph...
 	void DrawParticleGraphRows(GameObject& obj, GpuParticlesComponent& particles);
+	bool DrawParticleLifetimeCurves(GpuParticlesComponent& particles); // size curve + colour gradient, true while changed
 	// Material Graph window (EditorSuite_MaterialGraph.cpp)
 	/// A new material from one of kMaterialTemplates in Assets/Effects ("Fire 1" when "Fire" exists); "" without a project
 	std::string CreateEffectMaterial(const std::string& name, const std::string& templateName);
@@ -670,12 +673,14 @@ public:
 	/// Texture settings follow their GUID to where the file is now (the graph file itself is not rewritten)
 	void ResolveGraphTextures(NodeGraph& graph);
 	void DrawMaterialGraphWindow();
+	/// Particle graphs: the list of their parameters (name, type, default) in the graph window
+	void DrawGraphParametersPanel();
+	std::string graphParameterProblem_; // why the last rename was refused
 	/// Inspector row of GPU Particles / Trail: Edit Material, problems, New Material... (made from a template, given, opened)
 	void DrawMaterialRow(GameObject& obj, char* material, size_t capacity);
 	/// The Material Graph shows its material on a small cloud of particles (shares the asset preview target)
 	bool MaterialPreviewActive() const;
 	void SimulateMaterialPreview(ID3D12GraphicsCommandList* cmdList, double wallClock);
-	void RenderMaterialPreview(ID3D12GraphicsCommandList* cmdList);
 	const PostProcess& PostEffects() const { return postProcess_; }
 	// Script entry point: hidden instances go into the pool in ProcessPendingSpawns (no Initialize until they are spawned)
 	bool QueuePrefabPrewarm(const char* prefabName, int count);
@@ -700,6 +705,8 @@ public:
 	bool CreateSurvivorsDemo();
 	/// Fixed load for performance runs: 300 chasing enemies + 500 bullets (scripts BenchScripts.*, not in the sample menu)
 	bool CreateBenchmarkScene();
+	/// Two GPU Particles objects, one with a material graph and one with a particle graph (export smoke test: --sample effects)
+	bool CreateEffectGraphSample();
 	bool CreateThirdPersonDemo();
 	bool CancelPendingSpawn(uint32_t id);
 	void ProcessPendingSpawns();

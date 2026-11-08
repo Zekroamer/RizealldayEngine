@@ -70,6 +70,19 @@ Copy-Item "$repo\Tools\README_TEAM.md", "$repo\Tools\GUIDE_JA.md", "$repo\CHANGE
 $built = (Get-Date).ToString('yyyy-MM-dd')
 Set-Content -Encoding ASCII "$out\engine.json" "{ `"version`": `"$version`", `"scriptApi`": $scriptApi, `"built`": `"$built`", `"commit`": `"$commit`" }"
 
+# The zip's own editor exports the samples and runs them with the zip's runtime (from a copy: nothing it writes lands in the zip)
+$check = Join-Path ([IO.Path]::GetTempPath()) "RizeReleaseCheck_$version"
+if (Test-Path $check) { Remove-Item -Recurse -Force $check }
+Copy-Item -Recurse $out $check
+try {
+    foreach ($sample in 'survivors', 'effects') {
+        & powershell -ExecutionPolicy Bypass -File "$repo\Tools\SmokeTestExport.ps1" -EditorExe "$check\Editor\RizealldaySandbox.exe" -Sample $sample
+        if ($LASTEXITCODE -ne 0) { throw "Smoke test of the '$sample' sample failed: no zip was made." }
+    }
+} finally {
+    Remove-Item -Recurse -Force $check -ErrorAction SilentlyContinue
+}
+
 # tar.exe (Windows 10/11) writes "/" separators, which the editor's updater (also tar.exe) reads back
 $zip = "$dist\$name.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }

@@ -26,7 +26,9 @@ public:
 	/// Changes with every recorded step, undo and redo (the window regenerates its code when it changes)
 	uint64_t Revision() const { return revision_; }
 
+	/// The first output node (a particle graph has two: Spawn Output and Update Output)
 	uint32_t FindOutputNode() const;
+	bool IsOutputNode(uint32_t id) const;
 	uint32_t AddNode(const std::string& type, float x, float y);
 	/// A link was dragged from a pin and dropped on empty space, and `type` was picked: the new node is
 	/// connected through its first pin that fits. `fromIsOutput` = the drag started at an output. 0 + why when nothing fits.
@@ -37,6 +39,16 @@ public:
 	void DeleteSelection();
 	/// Copies of the selected nodes with the links between them, placed next to them; they become the selection
 	std::vector<uint32_t> Duplicate();
+
+	// Parameters of a particle graph (each change is one undo step)
+	/// Adds a parameter called `name` ("name 1" when taken) and returns the name it got; "" when the graph is full
+	std::string AddParameter(const std::string& name, PinType type);
+	/// Renames it and every Parameter node that reads it; false with a reason for an empty or taken name
+	bool RenameParameter(const std::string& from, const std::string& to, std::string* why);
+	/// Nodes that still read it then report the missing parameter
+	bool RemoveParameter(const std::string& name);
+	/// Replaces the keys of a Curve / Gradient setting
+	bool SetKeys(uint32_t node, const std::string& param, const std::vector<GraphKey>& keys);
 
 private:
 	std::vector<std::string> history_; // graph JSON per step

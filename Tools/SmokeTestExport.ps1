@@ -3,6 +3,7 @@
 # Needs both configurations built, or pass the editor of an unpacked release zip.
 #   powershell -ExecutionPolicy Bypass -File Tools\SmokeTestExport.ps1 [-EditorExe <path>] [-Warp] [-KeepFiles]
 #   Performance run: add -Sample benchmark -Frames 900 (300 enemies + 500 bullets); prints the frame timings.
+#   Effect graphs: -Sample effects (a material graph and a particle graph; the run fails when one does not compile).
 param([string]$EditorExe, [switch]$Warp, [switch]$KeepFiles, [int]$Frames = 120, [string]$Sample = 'survivors')
 $ErrorActionPreference = 'Stop'
 

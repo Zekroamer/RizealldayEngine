@@ -116,13 +116,31 @@ void EditorSuite::RegisterVfxComponents()
 		else if (name == "stretchFactor") field.tooltip = "0 = round. Above 0 particles stretch along their velocity (sparks, rain).";
 		else if (name == "uprightBillboard") field.tooltip = "Quads stand on the world Y axis and only turn around it (flames, grass).";
 		else if (name == "material") field.tooltip = "A material graph (.vfxmat.json) that decides the colour of every pixel. Empty = Texture x Color.";
-		else if (name == "graph") field.tooltip = "A particle graph (.vfxparticle.json) that decides how particles start and move.\nWhile it is set, Life, Speed, Shape, Gravity, Size and Color above are not used.";
+		else if (name == "graph") field.tooltip = "A particle graph (.vfxparticle.json) that decides how particles start and move.\nWhile it is set, the settings the graph replaces are hidden.";
+		else if (name == "intensity") field.tooltip = "Above 1 the particles glow through the bloom";
 		else if (name == "parameters") field.hidden = true; // drawn as one row per parameter below
 		else if (name == "spawnBurst") field.tooltip = "Prefab instances fire this many particles when spawned or reused.\nScripts: EmitParticles() / SetParticlesEmitting().";
 	}
+	particles.fieldShown = [](const void* data, const ComponentField& field) {
+		const auto* p = static_cast<const GpuParticlesComponent*>(data);
+		const std::string_view name = field.name;
+		const auto any = [&](std::initializer_list<std::string_view> names) { return std::find(names.begin(), names.end(), name) != names.end(); };
+		// Size and colour keys are edited as a curve and a gradient below the fields
+		if (any({ "sizeStart", "sizeMiddle", "sizeEnd", "colorStart", "colorMiddle", "colorEnd", "middleTime", "useMiddleKey" })) return false;
+		if (p->graph[0] == '\0') return true;
+		// A graph decides start, motion, size and colour: only emission and the look stay
+		return any({ "capacity", "emitRate", "burst", "emitting", "spawnBurst", "additive", "texture", "material", "stretchFactor",
+			"uprightBillboard", "graph", "direction" });
+	};
 #ifdef USE_IMGUI
 	particles.drawExtra = [](EditorSuite& suite, GameObject& obj, ComponentData& data) {
 		auto* p = static_cast<GpuParticlesComponent*>(data.Data());
+		if (p->graph[0] == '\0') {
+			if (suite.DrawParticleLifetimeCurves(*p)) {
+				suite.isSceneDirty_ = true;
+				suite.PushUndoSnapshot(); // edits of the same object within 0.6 s merge into one step
+			}
+		}
 		suite.DrawMaterialRow(obj, p->material, sizeof(p->material));
 		suite.DrawParticleGraphRows(obj, *p);
 		if (ImGui::BeginCombo(TrId("Preset"), Tr("Choose..."))) {
@@ -139,6 +157,73 @@ void EditorSuite::RegisterVfxComponents()
 	};
 #else
 	(void)particles;
+#endif
+}
+
+bool EditorSuite::DrawParticleLifetimeCurves(GpuParticlesComponent& p)
+{
+#ifdef USE_IMGUI
+	bool changed = false;
+	ImDrawList* draw = ImGui::GetWindowDrawList();
+	// Size over lifetime: drag the keys up and down (the middle one also left and right)
+	ImGui::TextDisabled("%s", Tr("Size over Lifetime"));
+	const ImVec2 box = ImGui::GetCursorScreenPos();
+	const ImVec2 size(ImGui::GetContentRegionAvail().x, 90.0f);
+	const float top = (std::max)({ p.sizeStart, p.sizeEnd, p.useMiddleKey ? p.sizeMiddle : 0.0f, 0.1f }) * 1.25f;
+	draw->AddRectFilled(box, ImVec2(box.x + size.x, box.y + size.y), IM_COL32(30, 30, 36, 255));
+	const auto point = [&](float t, float value) { return ImVec2(box.x + size.x * t, box.y + size.y * (1.0f - value / top)); };
+	const float middleTime = std::clamp(p.middleTime, 0.01f, 0.99f);
+	if (p.useMiddleKey) {
+		draw->AddLine(point(0.0f, p.sizeStart), point(middleTime, p.sizeMiddle), IM_COL32(255, 170, 60, 255), 2.0f);
+		draw->AddLine(point(middleTime, p.sizeMiddle), point(1.0f, p.sizeEnd), IM_COL32(255, 170, 60, 255), 2.0f);
+	} else {
+		draw->AddLine(point(0.0f, p.sizeStart), point(1.0f, p.sizeEnd), IM_COL32(255, 170, 60, 255), 2.0f);
+	}
+	const auto key = [&](const char* id, float t, float& value, float* time) {
+		const ImVec2 at = point(t, value);
+		ImGui::SetCursorScreenPos(ImVec2(at.x - 6.0f, at.y - 6.0f));
+		ImGui::InvisibleButton(id, ImVec2(12.0f, 12.0f));
+		const bool active = ImGui::IsItemActive();
+		draw->AddCircleFilled(at, 5.0f, active || ImGui::IsItemHovered() ? IM_COL32(255, 255, 255, 255) : IM_COL32(255, 200, 120, 255));
+		if (active) {
+			const ImVec2 delta = ImGui::GetIO().MouseDelta;
+			value = (std::max)(0.0f, value - delta.y / size.y * top);
+			if (time) *time = std::clamp(*time + delta.x / size.x, 0.01f, 0.99f);
+			return true;
+		}
+		return false;
+	};
+	changed |= key("##SizeStart", 0.0f, p.sizeStart, nullptr);
+	changed |= key("##SizeEnd", 1.0f, p.sizeEnd, nullptr);
+	if (p.useMiddleKey) changed |= key("##SizeMiddle", middleTime, p.sizeMiddle, &p.middleTime);
+	ImGui::SetCursorScreenPos(ImVec2(box.x, box.y + size.y + 4.0f));
+	changed |= ImGui::Checkbox(TrId("Use Middle Key"), &p.useMiddleKey);
+
+	// Colour over lifetime: the gradient the particles go through, alpha drawn as darkness
+	ImGui::TextDisabled("%s", Tr("Color over Lifetime"));
+	const ImVec2 bar = ImGui::GetCursorScreenPos();
+	const float barWidth = ImGui::GetContentRegionAvail().x;
+	const auto color = [](const Vector4& c) {
+		const auto u8 = [](float v) { return static_cast<int>(std::clamp(v, 0.0f, 1.0f) * 255.0f); };
+		return IM_COL32(u8(c.x * c.w), u8(c.y * c.w), u8(c.z * c.w), 255);
+	};
+	const float split = p.useMiddleKey ? middleTime : 0.5f;
+	const ImU32 mid = color(p.useMiddleKey ? p.colorMiddle : Vector4{ (p.colorStart.x + p.colorEnd.x) * 0.5f, (p.colorStart.y + p.colorEnd.y) * 0.5f,
+		(p.colorStart.z + p.colorEnd.z) * 0.5f, (p.colorStart.w + p.colorEnd.w) * 0.5f });
+	draw->AddRectFilledMultiColor(bar, ImVec2(bar.x + barWidth * split, bar.y + 18.0f), color(p.colorStart), mid, mid, color(p.colorStart));
+	draw->AddRectFilledMultiColor(ImVec2(bar.x + barWidth * split, bar.y), ImVec2(bar.x + barWidth, bar.y + 18.0f), mid, color(p.colorEnd), color(p.colorEnd), mid);
+	ImGui::Dummy(ImVec2(barWidth, 20.0f));
+	changed |= ImGui::ColorEdit4(TrId("Start##FxColor"), &p.colorStart.x, ImGuiColorEditFlags_NoInputs);
+	ImGui::SameLine();
+	if (p.useMiddleKey) {
+		changed |= ImGui::ColorEdit4(TrId("Middle##FxColor"), &p.colorMiddle.x, ImGuiColorEditFlags_NoInputs);
+		ImGui::SameLine();
+	}
+	changed |= ImGui::ColorEdit4(TrId("End##FxColor"), &p.colorEnd.x, ImGuiColorEditFlags_NoInputs);
+	return changed;
+#else
+	(void)p;
+	return false;
 #endif
 }
 
@@ -257,7 +342,14 @@ void EditorSuite::SimulateMaterialPreview(ID3D12GraphicsCommandList* cmdList, do
 	settings.shapeRadius = 0.6f;
 	settings.textureHandle = SoftCircleTexture();
 	uint64_t key = 0;
-	if (const EffectMaterialEntry* material = GetEffectMaterial(materialEditorPath_); material && material->ok) {
+	if (materialEditor_.graph.kind == GraphKind::Particle) {
+		// A particle graph decides everything itself; its parameters at their defaults
+		if (const EffectMaterialEntry* graph = GetParticleGraph(materialEditorPath_); graph && graph->ok) {
+			key = graph->key;
+			settings.graph = key;
+			for (size_t i = 0; i < graph->parameters.size() && i < GpuParticles::kGraphParameters; ++i) settings.graphParams[i] = graph->parameters[i].value;
+		}
+	} else if (const EffectMaterialEntry* material = GetEffectMaterial(materialEditorPath_); material && material->ok) {
 		key = material->key;
 		settings.material = key;
 		for (size_t slot = 0; slot < material->textureHandles.size() && slot < GpuParticles::kMaterialTextures; ++slot) {
@@ -278,27 +370,6 @@ void EditorSuite::SimulateMaterialPreview(ID3D12GraphicsCommandList* cmdList, do
 	materialPreviewLast_ = wallClock;
 	emit += GpuParticleEmitCount(40.0f, dt, materialPreviewCarry_);
 	GpuParticles::GetInstance()->Simulate(cmdList, GpuParticles::kPreviewEmitterId, kMaterialPreviewOrigin, dt, emit, settings);
-}
-
-void EditorSuite::RenderMaterialPreview(ID3D12GraphicsCommandList* cmdList)
-{
-#ifdef USE_IMGUI
-	materialPreviewCamera_.fovY = 0.6f;
-	materialPreviewCamera_.aspectRatio = 1.0f;
-	materialPreviewCamera_.nearClip = 0.05f;
-	materialPreviewCamera_.farClip = 100.0f;
-	materialPreviewCamera_.translation = { kMaterialPreviewOrigin.x, kMaterialPreviewOrigin.y, kMaterialPreviewOrigin.z - 4.0f };
-	materialPreviewCamera_.rotation = { 0.0f, 0.0f, 0.0f };
-	materialPreviewCamera_.Update();
-	previewSceneRT_.BeginRender();
-	GpuParticles::GetInstance()->DrawEmitter(cmdList, materialPreviewCamera_, GpuParticles::kPreviewEmitterId);
-	previewSceneRT_.EndRender();
-	modelPreviewRT_.BeginRender(false);
-	postProcess_.Resolve(cmdList, previewSceneRT_);
-	modelPreviewRT_.EndRender();
-#else
-	(void)cmdList;
-#endif
 }
 
 void EditorSuite::UpdateTrails()
@@ -353,27 +424,38 @@ bool EditorSuite::EffectPanelPreviewActive() const
 #endif
 }
 
-void EditorSuite::RenderEffectPreview(ID3D12GraphicsCommandList* cmdList)
+void EditorSuite::RenderPreviewPanel(ID3D12GraphicsCommandList* cmdList)
 {
 #ifdef USE_IMGUI
-	const GameObject* root = FindGameObjectById(effectPreviewRoot_, false);
-	if (!root) return;
-	// Orbit around the root (its preview motion included): the panel keeps the effect in view wherever it is
-	const Vector3 target{ root->worldMatrix.m[3][0], root->worldMatrix.m[3][1], root->worldMatrix.m[3][2] };
-	const float pitch = std::clamp(effectPanelPitch_, -1.4f, 1.4f);
-	const float distance = std::clamp(effectPanelDistance_, 0.5f, 200.0f);
-	effectPanelCamera_.fovY = 0.7f;
-	effectPanelCamera_.aspectRatio = 1.0f;
-	effectPanelCamera_.nearClip = 0.05f;
-	effectPanelCamera_.farClip = 1000.0f;
-	effectPanelCamera_.orthographic = false;
-	// Rotation (pitch, yaw) looks along +Z turned by yaw and tilted down by pitch: step back along that line
-	const Vector3 forward{ std::sin(effectPanelYaw_) * std::cos(pitch), -std::sin(pitch), std::cos(effectPanelYaw_) * std::cos(pitch) };
-	effectPanelCamera_.translation = { target.x - forward.x * distance, target.y - forward.y * distance, target.z - forward.z * distance };
-	effectPanelCamera_.rotation = { pitch, effectPanelYaw_, 0.0f };
-	effectPanelCamera_.Update();
+	// Graph windows first: their preview emitter on a fixed camera. Else the Effect Editor's effect on its orbit camera.
+	const bool graph = MaterialPreviewActive();
+	const GameObject* root = graph ? nullptr : FindGameObjectById(effectPreviewRoot_, false);
+	if (!graph && !root) return;
+	Camera& camera = graph ? materialPreviewCamera_ : effectPanelCamera_;
+	camera.aspectRatio = 1.0f;
+	camera.nearClip = 0.05f;
+	camera.orthographic = false;
+	if (graph) {
+		camera.fovY = 0.6f;
+		camera.farClip = 100.0f;
+		camera.translation = { kMaterialPreviewOrigin.x, kMaterialPreviewOrigin.y, kMaterialPreviewOrigin.z - 4.0f };
+		camera.rotation = { 0.0f, 0.0f, 0.0f };
+	} else {
+		// Orbit around the root (its preview motion included): the panel keeps the effect in view wherever it is
+		const Vector3 target{ root->worldMatrix.m[3][0], root->worldMatrix.m[3][1], root->worldMatrix.m[3][2] };
+		const float pitch = std::clamp(effectPanelPitch_, -1.4f, 1.4f);
+		const float distance = std::clamp(effectPanelDistance_, 0.5f, 200.0f);
+		camera.fovY = 0.7f;
+		camera.farClip = 1000.0f;
+		// Rotation (pitch, yaw) looks along +Z turned by yaw and tilted down by pitch: step back along that line
+		const Vector3 forward{ std::sin(effectPanelYaw_) * std::cos(pitch), -std::sin(pitch), std::cos(effectPanelYaw_) * std::cos(pitch) };
+		camera.translation = { target.x - forward.x * distance, target.y - forward.y * distance, target.z - forward.z * distance };
+		camera.rotation = { pitch, effectPanelYaw_, 0.0f };
+	}
+	camera.Update();
 	previewSceneRT_.BeginRender();
-	DrawEffects(cmdList, effectPanelCamera_, previewSceneRT_, effectPreviewRoot_);
+	if (graph) GpuParticles::GetInstance()->DrawEmitter(cmdList, camera, GpuParticles::kPreviewEmitterId);
+	else DrawEffects(cmdList, camera, previewSceneRT_, effectPreviewRoot_);
 	previewSceneRT_.EndRender();
 	modelPreviewRT_.BeginRender(false);
 	postProcess_.Resolve(cmdList, previewSceneRT_);

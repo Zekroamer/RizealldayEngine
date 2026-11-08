@@ -367,9 +367,12 @@ void EditorSuite::DrawEffectEditorWindow()
 	}
 	ImGui::SliderFloat(TrId("Speed"), &effectPreviewSpeed_, 0.1f, 2.0f, "%.2fx");
 	bool changed = ImGui::Checkbox(TrId("Loop"), &rootTiming->loop);
-	ImGui::SameLine();
-	if (ImGui::Checkbox(TrId("Post FX"), &scenePostPreview_)) Localization::SetEditorSettingBool("scenePostPreview", scenePostPreview_);
-	ImGui::SetItemTooltip("%s", Tr("Preview the game's post-processing (bloom, grading, screen effects) in the Scene view"));
+
+	// A layer picked in the Hierarchy (or the Scene view) becomes the edited layer
+	if (selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size())) {
+		const uint32_t picked = gameObjects_[selectedObjectIndex_].id;
+		if (picked != effectEditorLayer_ && EffectRootOf(picked) == rootId) effectEditorLayer_ = picked;
+	}
 
 	// Layers on a time line
 	struct Lane { uint32_t id; std::string name; float start, end, tail; bool emitting; };
@@ -430,7 +433,7 @@ void EditorSuite::DrawEffectEditorWindow()
 	motionChanged |= ImGui::DragFloat(TrId("Rounds per Second"), &cycles, 0.01f, 0.0f, 5.0f);
 	if (motionChanged) SetEffectPreviewMotion(static_cast<EffectPreviewMotion>(motion), radius, cycles);
 
-	// The chosen layer: timing, and the particles' size curve and colour gradient
+	// The chosen layer: its timing (the particle look is edited in the Inspector)
 	GameObject* layer = FindGameObjectById(effectEditorLayer_, false);
 	if (!layer || EffectRootOf(layer->id) != rootId) layer = root;
 	ImGui::SeparatorText(layer->name.c_str());
@@ -446,66 +449,12 @@ void EditorSuite::DrawEffectEditorWindow()
 	}
 	if (layer) {
 		if (auto* p = layer->components.Get<GpuParticlesComponent>(kGpuParticlesComponent)) {
-			changed |= ImGui::DragInt(TrId("Spawn Burst"), &p->spawnBurst, 1.0f, 0, 100000);
-			changed |= ImGui::DragFloat(TrId("Emit Rate"), &p->emitRate, 1.0f, 0.0f, 100000.0f);
-
-			// Size over lifetime: drag the keys up and down (the middle one also left and right)
-			ImGui::TextDisabled("%s", Tr("Size over Lifetime"));
-			const ImVec2 box = ImGui::GetCursorScreenPos();
-			const ImVec2 size(ImGui::GetContentRegionAvail().x, 90.0f);
-			const float top = (std::max)({ p->sizeStart, p->sizeEnd, p->useMiddleKey ? p->sizeMiddle : 0.0f, 0.1f }) * 1.25f;
-			draw->AddRectFilled(box, ImVec2(box.x + size.x, box.y + size.y), IM_COL32(30, 30, 36, 255));
-			const auto point = [&](float t, float value) { return ImVec2(box.x + size.x * t, box.y + size.y * (1.0f - value / top)); };
-			const float middleTime = std::clamp(p->middleTime, 0.01f, 0.99f);
-			if (p->useMiddleKey) {
-				draw->AddLine(point(0.0f, p->sizeStart), point(middleTime, p->sizeMiddle), IM_COL32(255, 170, 60, 255), 2.0f);
-				draw->AddLine(point(middleTime, p->sizeMiddle), point(1.0f, p->sizeEnd), IM_COL32(255, 170, 60, 255), 2.0f);
+			if (p->graph[0] != '\0') {
+				ImGui::TextWrapped("%s", Tr("This layer uses a particle graph: its size and colour come from the graph. Its parameters are in the Inspector."));
+				if (ImGui::Button(TrId("Edit Graph"))) OpenMaterialGraph(p->graph);
 			} else {
-				draw->AddLine(point(0.0f, p->sizeStart), point(1.0f, p->sizeEnd), IM_COL32(255, 170, 60, 255), 2.0f);
+				ImGui::TextWrapped("%s", Tr("Emission, size and colour of this layer are in the Inspector (GPU Particles)."));
 			}
-			const auto key = [&](const char* id, float t, float& value, float* time) {
-				const ImVec2 at = point(t, value);
-				ImGui::SetCursorScreenPos(ImVec2(at.x - 6.0f, at.y - 6.0f));
-				ImGui::InvisibleButton(id, ImVec2(12.0f, 12.0f));
-				const bool active = ImGui::IsItemActive();
-				draw->AddCircleFilled(at, 5.0f, active || ImGui::IsItemHovered() ? IM_COL32(255, 255, 255, 255) : IM_COL32(255, 200, 120, 255));
-				if (active) {
-					const ImVec2 delta = ImGui::GetIO().MouseDelta;
-					value = (std::max)(0.0f, value - delta.y / size.y * top);
-					if (time) *time = std::clamp(*time + delta.x / size.x, 0.01f, 0.99f);
-					return true;
-				}
-				return false;
-			};
-			changed |= key("##SizeStart", 0.0f, p->sizeStart, nullptr);
-			changed |= key("##SizeEnd", 1.0f, p->sizeEnd, nullptr);
-			if (p->useMiddleKey) changed |= key("##SizeMiddle", middleTime, p->sizeMiddle, &p->middleTime);
-			ImGui::SetCursorScreenPos(ImVec2(box.x, box.y + size.y + 4.0f));
-			changed |= ImGui::Checkbox(TrId("Use Middle Key"), &p->useMiddleKey);
-
-			// Colour over lifetime: the gradient the particles go through, alpha drawn as darkness
-			ImGui::TextDisabled("%s", Tr("Color over Lifetime"));
-			const ImVec2 bar = ImGui::GetCursorScreenPos();
-			const float barWidth = ImGui::GetContentRegionAvail().x;
-			const auto color = [](const Vector4& c) {
-				const auto u8 = [](float v) { return static_cast<int>(std::clamp(v, 0.0f, 1.0f) * 255.0f); };
-				return IM_COL32(u8(c.x * c.w), u8(c.y * c.w), u8(c.z * c.w), 255);
-			};
-			const float split = p->useMiddleKey ? middleTime : 0.5f;
-			const ImU32 mid = color(p->useMiddleKey ? p->colorMiddle : Vector4{ (p->colorStart.x + p->colorEnd.x) * 0.5f, (p->colorStart.y + p->colorEnd.y) * 0.5f,
-				(p->colorStart.z + p->colorEnd.z) * 0.5f, (p->colorStart.w + p->colorEnd.w) * 0.5f });
-			draw->AddRectFilledMultiColor(bar, ImVec2(bar.x + barWidth * split, bar.y + 18.0f), color(p->colorStart), mid, mid, color(p->colorStart));
-			draw->AddRectFilledMultiColor(ImVec2(bar.x + barWidth * split, bar.y), ImVec2(bar.x + barWidth, bar.y + 18.0f), mid, color(p->colorEnd), color(p->colorEnd), mid);
-			ImGui::Dummy(ImVec2(barWidth, 20.0f));
-			changed |= ImGui::ColorEdit4(TrId("Start##FxColor"), &p->colorStart.x, ImGuiColorEditFlags_NoInputs);
-			ImGui::SameLine();
-			if (p->useMiddleKey) {
-				changed |= ImGui::ColorEdit4(TrId("Middle##FxColor"), &p->colorMiddle.x, ImGuiColorEditFlags_NoInputs);
-				ImGui::SameLine();
-			}
-			changed |= ImGui::ColorEdit4(TrId("End##FxColor"), &p->colorEnd.x, ImGuiColorEditFlags_NoInputs);
-			changed |= ImGui::DragFloat(TrId("Intensity"), &p->intensity, 0.05f, 0.0f, 100.0f);
-			ImGui::SetItemTooltip("%s", Tr("Above 1 the particles glow through the bloom"));
 		} else if (layer->components.Has(kTrailComponent)) {
 			ImGui::TextDisabled("%s", Tr("Trail layer: edit it in the Inspector. Pick a Preview Motion to see it in Edit mode."));
 		}

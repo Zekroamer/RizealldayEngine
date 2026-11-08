@@ -250,6 +250,33 @@ bool EditorSuite::CreateBenchmarkScene()
 	return ok;
 }
 
+bool EditorSuite::CreateEffectGraphSample()
+{
+	if (currentProjectRoot_.empty() || sceneState_ != EditorSceneState::Edit) return false;
+	NewScene();
+	const std::string material = CreateEffectMaterial("Glow", "Soft Glow");
+	const std::string graph = CreateParticleGraph("Fountain", "Fountain");
+	if (material.empty() || graph.empty()) return false;
+	const auto addParticles = [&](const char* name, const Vector3& at, const std::string& materialPath, const std::string& graphPath) {
+		const uint32_t id = CreateGameObject(name, GameObjectType::Empty).id;
+		GameObject* obj = FindGameObjectById(id, false);
+		if (!obj || !AddComponentByName(*obj, kGpuParticlesComponent)) return false;
+		obj->translation = at;
+		auto* p = obj->components.Get<GpuParticlesComponent>(kGpuParticlesComponent);
+		strncpy_s(p->material, materialPath.c_str(), _TRUNCATE);
+		strncpy_s(p->graph, graphPath.c_str(), _TRUNCATE);
+		return true;
+	};
+	if (!addParticles("Material Graph Particles", { -1.5f, 1.0f, 0.0f }, material, "")) return false;
+	if (!addParticles("Particle Graph Particles", { 1.5f, 0.0f, 0.0f }, "", graph)) return false;
+	RebuildHierarchyLinks();
+	UpdateWorldMatrices();
+	currentSceneName_ = "Effects";
+	const bool ok = SaveScene((GetScenesDirectory() / "Effects.scene.json").string());
+	ResetUndoHistory();
+	return ok;
+}
+
 bool EditorSuite::CreateSurvivorsDemo()
 {
 	if (currentProjectRoot_.empty() || sceneState_ != EditorSceneState::Edit) {

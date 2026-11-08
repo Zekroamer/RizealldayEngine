@@ -48,6 +48,7 @@ void EditorSuite::FinishSmokeRun()
 	std::string error = smokeError_;
 	if (error.empty() && !isStandaloneGameMode_) error = "Not running as an exported game (game_build.cfg missing or invalid).";
 	if (error.empty() && !scriptModule_.GetLastLoadError().empty()) error = scriptModule_.GetLastLoadError();
+	if (error.empty()) error = EffectGraphProblem(); // shaders/ or a graph file left out of the export
 	for (const auto& obj : gameObjects_) {
 		for (const auto& sc : obj.scripts) {
 			if (error.empty() && !sc.className.empty() && !sc.instance) error = std::format("Script '{}' on '{}' did not load.", sc.className, obj.name);

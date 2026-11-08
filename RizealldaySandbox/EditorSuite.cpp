@@ -481,7 +481,8 @@ void EditorSuite::Initialize(
 					showMaterialGraph_ = true;
 					const GameObject* sel = (selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size())) ? &gameObjects_[selectedObjectIndex_] : nullptr;
 					const auto* particles = sel ? sel->components.Get<GpuParticlesComponent>(kGpuParticlesComponent) : nullptr;
-					if (particles && particles->material[0] != '\0') OpenMaterialGraph(particles->material);
+					if (particles && particles->graph[0] != '\0') OpenMaterialGraph(particles->graph);
+					else if (particles && particles->material[0] != '\0') OpenMaterialGraph(particles->material);
 				}
 				else if (window == "profiler") showProfiler_ = true;
 				else if (window == "open-project") showOpenProjectModal_ = true;
@@ -536,6 +537,7 @@ void EditorSuite::Initialize(
 				const std::wstring sample = EngineUpdate::CommandLineValue(L"--sample");
 				if (ok && sample == L"survivors") ok = CreateSurvivorsDemo();
 				if (ok && sample == L"benchmark") ok = CreateBenchmarkScene();
+				if (ok && sample == L"effects") ok = CreateEffectGraphSample();
 				if (ok && sample == L"thirdperson") ok = CreateThirdPersonDemo();
 			}
 			if (ok && !exportDir.empty()) {

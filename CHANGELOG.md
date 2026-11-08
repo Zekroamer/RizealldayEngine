@@ -1,8 +1,8 @@
 # Changelog — Rizeallday Engine v2
 
-## [Belum dirilis]
+## [2.9.0] — 2026-11-08
 
-### Fitur Baru (dalam pengerjaan: Material Graph dan Particle Graph)
+### Fitur Baru: Material Graph dan Particle Graph
 - **Material Graph (runtime)**: GPU Particles mendapat field **Material** yang menunjuk file `.vfxmat.json`. Graph node menentukan warna dan opacity setiap piksel partikel. Node yang tersedia: Color/Float/Vector3/Time, math (Add, Multiply, Lerp, Step, Smoothstep, Remap, dll.), Particle Color/Age/Random, Texture Sample (sampai 4 tekstur), Panner, Rotator, Flipbook, Polar Coordinates, Noise, Radial Gradient, Dissolve. Material yang rusak menampilkan pesan dan partikel tetap tergambar seperti biasa. Window editor graph-nya menyusul di fase berikutnya.
 - **Window Material Graph** (*Window > Material Graph*, tombol **Edit Material / New Material...** di Inspector GPU Particles, atau double-click file `[MAT]` di panel Project): palet node yang bisa dicari, canvas, dan panel detail dengan penjelasan setiap node. Tarik dari pin ke pin untuk menyambung (pin berwarna per tipe, pin yang cocok disorot, alasan penolakan ditampilkan). Lepas kabel di tempat kosong untuk memilih node yang langsung tersambung. Undo/Redo, Duplicate (Ctrl+D), Fit (F). Perubahan tersimpan otomatis, jadi partikel di Scene view langsung berubah. Template: Soft Glow, Scrolling Fire, Dissolve, Flipbook Smoke, Energy Ring. Semua nama node dan petunjuk tersedia dalam bahasa Jepang dan Indonesia.
 - Material Graph juga bisa dipakai **Trail** (field Material + tombol Edit/New Material di Inspector Trail).
@@ -10,9 +10,20 @@
 - Tekstur yang dipilih di node material tetap ditemukan setelah file tekstur dipindah atau di-rename.
 - **Particle Graph (runtime)**: GPU Particles mendapat field **Graph** (`.vfxparticle.json`) yang menentukan sendiri bagaimana partikel lahir dan bergerak. Spawn: Sphere/Box/Ring Shape, Cone Direction, Random Range, Emitter. Update: Gravity, Drag, Wind, Vortex, Curl Noise, Point Attractor, Floor Collision, Kill. **Curve** dan **Gradient** (sampai 8 key) untuk ukuran dan warna sepanjang umur partikel. Material Graph tetap bisa dipakai bersamaan.
 - **Parameter efek**: graph bisa punya sampai 8 parameter (angka, vektor, warna). Nilainya bisa diubah per objek di Inspector (dengan tombol Reset) dan dari script dengan `SetEffectParameter("Spin", 6.0f)`. `kScriptApiVersion` naik ke 16, jadi script project perlu di-build ulang.
-- Template particle graph di Inspector (**New Particle Graph...**): Fountain, Magic Swirl, Burst, Rising Embers. Window untuk mengedit particle graph menyusul di fase berikutnya.
+- Template particle graph di Inspector (**New Particle Graph...**): Fountain, Magic Swirl, Burst, Rising Embers. Window graph yang sama juga mengedit particle graph (judulnya berubah menjadi **Particle Graph**): palet node partikel, daftar **Parameters** (tambah, rename yang ikut mengubah node, tipe, nilai bawaan), editor key **Curve** (titik bisa diseret) dan **Gradient**, preview partikel langsung. Buka lewat **Edit Graph** di Inspector, double-click file `[PFX]` di panel Project, atau dari window graph.
 
 - **Panel preview di Effect Editor**: efek yang sedang di-preview tampil sendiri (tanpa objek lain) di dalam window. Seret untuk memutar kamera, roda mouse untuk zoom. Efek baru dari template langsung diputar.
+
+### Perubahan (tanpa duplikasi antara Effect Editor dan Inspector)
+- Kurva **Size over Lifetime** (key bisa diseret) dan gradien **Color over Lifetime** pindah ke Inspector GPU Particles, menggantikan baris angka Size/Color Start/Middle/End.
+- Effect Editor hanya berisi timing, timeline, preview dan Preview Motion. Layer yang memakai particle graph menampilkan penjelasan dan tombol **Edit Graph**.
+- Selama field **Graph** terisi, Inspector GPU Particles menyembunyikan field yang tidak dipakai graph (Life, Speed, Shape, Gravity, Floor, Intensity, ...). Nilainya tetap tersimpan.
+- Checkbox **Post FX** cukup ada di toolbar Scene (dihapus dari Effect Editor).
+- Menu *Window > Material Graph* menjadi *Window > Effect Graph* (window yang sama untuk material dan particle graph).
+- Effect Editor mengikuti layer yang dipilih di Hierarchy.
+
+### Pengujian rilis
+- Smoke test export baru (`Tools/SmokeTestExport.ps1 -Sample effects`): project dengan satu material graph dan satu particle graph di-export lalu dijalankan. Game gagal (`--smoke-frames`) kalau ada graph yang hilang atau tidak ter-compile. Berjalan di CI dan di `MakeRelease.ps1` (memakai editor dan runtime dari paket rilis itu sendiri).
 
 ### Perbaikan
 - Preview Effect Editor langsung berhenti selama window Material Graph tertutup.

@@ -51,6 +51,8 @@ void EditorSuite::DrawParticleGraphRows(GameObject& obj, GpuParticlesComponent& 
 #ifdef USE_IMGUI
 	ImGui::PushID("ParticleGraphRows");
 	if (p.graph[0] != '\0') {
+		if (ImGui::Button(TrId("Edit Graph"))) OpenMaterialGraph(p.graph);
+		ImGui::SetItemTooltip("%s", Tr("Opens this particle graph in the graph window"));
 		const EffectMaterialEntry* entry = GetParticleGraph(p.graph);
 		if (entry && !entry->ok) {
 			ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", Tr("Particle graph has problems"));
@@ -136,8 +138,13 @@ bool EditorSuite::SaveMaterialGraph()
 	out.close();
 	materialEditor_.MarkSaved();
 	// Rebuild now instead of at the next twice-a-second check: the Scene view follows the edit at once
-	effectMaterials_.erase(materialEditorPath_);
-	GetEffectMaterial(materialEditorPath_);
+	if (materialEditor_.graph.kind == GraphKind::Particle) {
+		particleGraphs_.erase(materialEditorPath_);
+		GetParticleGraph(materialEditorPath_);
+	} else {
+		effectMaterials_.erase(materialEditorPath_);
+		GetEffectMaterial(materialEditorPath_);
+	}
 	return true;
 }
 
@@ -146,9 +153,15 @@ bool EditorSuite::AssignMaterialToSelection(const std::string& assetPath)
 	GameObject* obj = (selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size())) ? &gameObjects_[selectedObjectIndex_] : nullptr;
 	auto* p = obj ? obj->components.Get<GpuParticlesComponent>(kGpuParticlesComponent) : nullptr;
 	auto* trail = obj ? obj->components.Get<TrailComponent>(kTrailComponent) : nullptr;
-	if (!p && !trail) return false;
-	if (p) strncpy_s(p->material, assetPath.c_str(), _TRUNCATE);
-	if (trail) strncpy_s(trail->material, assetPath.c_str(), _TRUNCATE);
+	if (assetPath.ends_with(".vfxparticle.json")) {
+		if (!p) return false; // only GPU Particles run particle graphs
+		strncpy_s(p->graph, assetPath.c_str(), _TRUNCATE);
+		p->parameters[0] = '\0'; // values of another graph's parameters mean nothing here
+	} else {
+		if (!p && !trail) return false;
+		if (p) strncpy_s(p->material, assetPath.c_str(), _TRUNCATE);
+		if (trail) strncpy_s(trail->material, assetPath.c_str(), _TRUNCATE);
+	}
 	isSceneDirty_ = true;
 	PushUndoSnapshot();
 	return true;
@@ -237,6 +250,119 @@ namespace {
 		}
 	}
 
+	/// Keys of a Curve (value.x) or Gradient (rgba) setting: a picture, the curve's points can be dragged, and one row per key.
+	/// Returns true while something changed; `finished` when the change is complete (one undo step).
+	bool DrawKeyEditor(GraphNode& node, const ParamDef& param, bool& finished)
+	{
+		std::vector<GraphKey> keys = ReadGraphKeys(node, param.name);
+		const bool gradient = param.kind == ParamKind::Gradient;
+		bool changed = false;
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+		const ImVec2 box = ImGui::GetCursorScreenPos();
+		const ImVec2 size(ImGui::GetContentRegionAvail().x, gradient ? 22.0f : 90.0f);
+		dl->AddRectFilled(box, ImVec2(box.x + size.x, box.y + size.y), IM_COL32(30, 30, 36, 255), 3.0f);
+		const auto u8 = [](float f) { return static_cast<int>(std::clamp(f, 0.0f, 1.0f) * 255.0f); };
+		if (gradient) {
+			const auto color = [&](const Vector4& c) { return IM_COL32(u8(c.x), u8(c.y), u8(c.z), 255); };
+			float x = box.x;
+			ImU32 left = color(keys.front().value);
+			for (const GraphKey& k : keys) {
+				const float to = box.x + size.x * k.time;
+				dl->AddRectFilledMultiColor(ImVec2(x, box.y), ImVec2((std::max)(to, x), box.y + size.y), left, color(k.value), color(k.value), left);
+				x = (std::max)(to, x);
+				left = color(k.value);
+			}
+			dl->AddRectFilled(ImVec2(x, box.y), ImVec2(box.x + size.x, box.y + size.y), left);
+			for (const GraphKey& k : keys) {
+				const float at = box.x + size.x * k.time;
+				dl->AddTriangleFilled(ImVec2(at, box.y + size.y - 7.0f), ImVec2(at - 5.0f, box.y + size.y), ImVec2(at + 5.0f, box.y + size.y), IM_COL32(255, 255, 255, 230));
+			}
+			ImGui::Dummy(size);
+		} else {
+			float low = 0.0f, high = 0.0f;
+			for (const GraphKey& k : keys) {
+				low = (std::min)(low, k.value.x);
+				high = (std::max)(high, k.value.x);
+			}
+			high = (std::max)(high, low + 0.1f); // a flat curve still gets some room
+			high += (high - low) * 0.15f;
+			const auto point = [&](float t, float v) { return ImVec2(box.x + size.x * t, box.y + size.y * (1.0f - (v - low) / (high - low))); };
+			for (size_t i = 1; i < keys.size(); ++i) {
+				dl->AddLine(point(keys[i - 1].time, keys[i - 1].value.x), point(keys[i].time, keys[i].value.x), IM_COL32(255, 170, 60, 255), 2.0f);
+			}
+			dl->AddLine(point(0.0f, keys.front().value.x), point(keys.front().time, keys.front().value.x), IM_COL32(255, 170, 60, 160), 1.0f);
+			dl->AddLine(point(keys.back().time, keys.back().value.x), point(1.0f, keys.back().value.x), IM_COL32(255, 170, 60, 160), 1.0f);
+			// Points: drag up/down for the value and sideways for the time
+			for (size_t i = 0; i < keys.size(); ++i) {
+				const ImVec2 at = point(keys[i].time, keys[i].value.x);
+				ImGui::SetCursorScreenPos(ImVec2(at.x - 6.0f, at.y - 6.0f));
+				ImGui::PushID(static_cast<int>(i));
+				ImGui::InvisibleButton("##key", ImVec2(12.0f, 12.0f));
+				ImGui::PopID();
+				const bool active = ImGui::IsItemActive();
+				dl->AddCircleFilled(at, 5.0f, active || ImGui::IsItemHovered() ? IM_COL32(255, 255, 255, 255) : IM_COL32(255, 200, 120, 255));
+				if (active) {
+					const ImVec2 delta = ImGui::GetIO().MouseDelta;
+					keys[i].value.x -= delta.y / size.y * (high - low);
+					keys[i].time = std::clamp(keys[i].time + delta.x / size.x, 0.0f, 1.0f);
+					changed |= delta.x != 0.0f || delta.y != 0.0f;
+				}
+				finished |= ImGui::IsItemDeactivated();
+			}
+			ImGui::SetCursorScreenPos(ImVec2(box.x, box.y + size.y + 4.0f));
+		}
+		// One row per key: time, value, remove
+		int remove = -1;
+		for (size_t i = 0; i < keys.size(); ++i) {
+			ImGui::PushID(static_cast<int>(i) + 100);
+			ImGui::SetNextItemWidth(70.0f);
+			changed |= ImGui::DragFloat("##time", &keys[i].time, 0.005f, 0.0f, 1.0f, "%.2f");
+			finished |= ImGui::IsItemDeactivatedAfterEdit();
+			ImGui::SetItemTooltip("%s", Tr("Time: 0 = born, 1 = dies"));
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(gradient ? 0.0f : 90.0f);
+			if (gradient) changed |= ImGui::ColorEdit4("##value", &keys[i].value.x, ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float | ImGuiColorEditFlags_NoInputs);
+			else changed |= ImGui::DragFloat("##value", &keys[i].value.x, 0.01f);
+			finished |= ImGui::IsItemDeactivatedAfterEdit();
+			if (keys.size() > 1) {
+				ImGui::SameLine();
+				if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+				ImGui::SetItemTooltip("%s", Tr("Remove this key"));
+			}
+			ImGui::PopID();
+		}
+		if (remove >= 0) {
+			keys.erase(keys.begin() + remove);
+			changed = finished = true;
+		}
+		ImGui::BeginDisabled(keys.size() >= kMaxGraphKeys);
+		if (ImGui::Button(TrId("Add Key"))) {
+			// In the middle of the widest gap, with the value the curve already has there
+			size_t at = 0;
+			float widest = -1.0f;
+			for (size_t i = 0; i + 1 < keys.size(); ++i) {
+				if (keys[i + 1].time - keys[i].time > widest) {
+					widest = keys[i + 1].time - keys[i].time;
+					at = i;
+				}
+			}
+			GraphKey key;
+			if (keys.size() < 2) {
+				key = { keys.front().time < 0.5f ? 1.0f : 0.0f, keys.front().value };
+			} else {
+				const GraphKey& a = keys[at];
+				const GraphKey& b = keys[at + 1];
+				key.time = (a.time + b.time) * 0.5f;
+				key.value = { (a.value.x + b.value.x) * 0.5f, (a.value.y + b.value.y) * 0.5f, (a.value.z + b.value.z) * 0.5f, (a.value.w + b.value.w) * 0.5f };
+			}
+			keys.push_back(key);
+			changed = finished = true;
+		}
+		ImGui::EndDisabled();
+		if (changed) WriteGraphKeys(node, param.name, keys);
+		return changed;
+	}
+
 	/// Texture files of the project (for the Texture Sample picker)
 	std::vector<std::string> ProjectTextures(const std::filesystem::path& projectRoot)
 	{
@@ -257,6 +383,60 @@ namespace {
 }
 #endif
 
+void EditorSuite::DrawGraphParametersPanel()
+{
+#ifdef USE_IMGUI
+	GraphEditorModel& m = materialEditor_;
+	if (!ImGui::CollapsingHeader(TrId("Parameters"), ImGuiTreeNodeFlags_DefaultOpen)) return;
+	ImGui::PushID("GraphParameters");
+	static const char* kTypeNames[] = { "Number", "Vector", "Color" };
+	const auto typeIndex = [](PinType t) { return t == PinType::Float3 ? 1 : t == PinType::Float4 ? 2 : 0; };
+	std::string removeName;
+	bool edited = false, finished = false;
+	for (size_t i = 0; i < m.graph.parameters.size(); ++i) {
+		GraphParameter& p = m.graph.parameters[i];
+		ImGui::PushID(static_cast<int>(i));
+		// Name: renamed when the edit ends, so Parameter nodes follow
+		char name[64] = {};
+		strncpy_s(name, p.name.c_str(), _TRUNCATE);
+		ImGui::SetNextItemWidth(110.0f);
+		ImGui::InputText("##name", name, sizeof(name));
+		if (ImGui::IsItemDeactivatedAfterEdit() && p.name != name) {
+			std::string why;
+			if (!m.RenameParameter(p.name, name, &why)) graphParameterProblem_ = why;
+			else graphParameterProblem_.clear();
+			ImGui::PopID();
+			break; // the list changed
+		}
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(80.0f);
+		int type = typeIndex(p.type);
+		if (ImGui::Combo("##type", &type, [](void*, int index) { return Tr(kTypeNames[index]); }, nullptr, 3)) {
+			p.type = type == 1 ? PinType::Float3 : type == 2 ? PinType::Float4 : PinType::Float;
+			if (type == 2 && p.value.w == 0.0f) p.value = { 1.0f, 1.0f, 1.0f, 1.0f };
+			edited = finished = true;
+		}
+		ImGui::SameLine();
+		if (ImGui::SmallButton("x")) removeName = p.name;
+		ImGui::SetItemTooltip("%s", Tr("Remove this parameter"));
+		if (p.type == PinType::Float) edited |= ImGui::DragFloat(TrId("Default"), &p.value.x, 0.01f);
+		else if (p.type == PinType::Float3) edited |= ImGui::DragFloat3(TrId("Default"), &p.value.x, 0.01f);
+		else edited |= ImGui::ColorEdit4(TrId("Default"), &p.value.x, ImGuiColorEditFlags_HDR | ImGuiColorEditFlags_Float);
+		finished |= ImGui::IsItemDeactivatedAfterEdit();
+		ImGui::PopID();
+	}
+	if (!removeName.empty()) m.RemoveParameter(removeName);
+	if (finished) m.Commit();
+	else if (edited) materialValueEditing_ = true;
+	ImGui::BeginDisabled(m.graph.parameters.size() >= kMaxGraphParameters);
+	if (ImGui::Button(TrId("Add Parameter"))) m.AddParameter("Parameter", PinType::Float);
+	ImGui::EndDisabled();
+	ImGui::SetItemTooltip("%s", Tr("A value each object (Inspector) and scripts (SetEffectParameter) can change. Read it with a Parameter node."));
+	if (!graphParameterProblem_.empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", graphParameterProblem_.c_str());
+	ImGui::PopID();
+#endif
+}
+
 void EditorSuite::DrawMaterialGraphWindow()
 {
 #ifdef USE_IMGUI
@@ -264,13 +444,18 @@ void EditorSuite::DrawMaterialGraphWindow()
 	const ImGuiViewport* viewport = ImGui::GetMainViewport();
 	ImGui::SetNextWindowSize(ImVec2((std::min)(1500.0f, viewport->WorkSize.x * 0.85f), (std::min)(820.0f, viewport->WorkSize.y * 0.8f)), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f, viewport->WorkPos.y + viewport->WorkSize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
-	if (!ImGui::Begin(TrId("Material Graph"), &showMaterialGraph_)) {
+	const bool particleGraph = !materialEditorPath_.empty() && materialEditor_.graph.kind == GraphKind::Particle;
+	// One window, stable ID; the title says what is open (nothing open = the menu's name)
+	const char* title = materialEditorPath_.empty() ? Tr("Effect Graph") : particleGraph ? Tr("Particle Graph") : Tr("Material Graph");
+	const std::string windowTitle = std::string(title) + "###Material Graph";
+	if (!ImGui::Begin(windowTitle.c_str(), &showMaterialGraph_)) {
 		ImGui::End();
 		return;
 	}
 	if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) shortcutWindowFocusedNow_ = true;
 	const NodeLibrary& lib = NodeLibrary::Effects();
 	GraphEditorModel& m = materialEditor_;
+	const uint32_t domain = particleGraph ? (kDomainParticleSpawn | kDomainParticleUpdate) : kDomainMaterial;
 	GameObject* selectedObj = (selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size())) ? &gameObjects_[selectedObjectIndex_] : nullptr;
 	auto* selectedParticles = selectedObj ? selectedObj->components.Get<GpuParticlesComponent>(kGpuParticlesComponent) : nullptr;
 	auto* selectedTrail = selectedObj ? selectedObj->components.Get<TrailComponent>(kTrailComponent) : nullptr;
@@ -292,12 +477,23 @@ void EditorSuite::DrawMaterialGraphWindow()
 		}
 		ImGui::NewLine();
 		if (selectedMaterial) ImGui::TextDisabled("%s", Tr("The new material is given to the selected GPU Particles."));
-		ImGui::SeparatorText(Tr("Materials in this project"));
+		ImGui::Spacing();
+		ImGui::TextWrapped("%s", Tr("A particle graph decides how particles start and move: where they appear, forces, size and colour over their life."));
+		for (const char* t : kParticleTemplates) {
+			if (ImGui::Button(std::format("{}##NewParticleGraph", Tr(t)).c_str(), ImVec2(160.0f, 0.0f))) {
+				const std::string name = std::string_view(newName) == "New Material" ? std::string("New Particle Graph") : std::string(newName);
+				const std::string path = CreateParticleGraph(name, t);
+				if (!path.empty() && OpenMaterialGraph(path) && selectedParticles) AssignMaterialToSelection(path);
+			}
+			ImGui::SameLine();
+		}
+		ImGui::NewLine();
+		ImGui::SeparatorText(Tr("Graphs in this project"));
 		namespace fs = std::filesystem;
 		std::error_code ec;
 		for (fs::recursive_directory_iterator it(currentProjectRoot_ / "Assets", ec), end; !ec && it != end; it.increment(ec)) {
 			const std::string fileName = it->path().filename().string();
-			if (!fileName.ends_with(".vfxmat.json")) continue;
+			if (!fileName.ends_with(".vfxmat.json") && !fileName.ends_with(".vfxparticle.json")) continue;
 			const std::string path = "Assets/" + fs::relative(it->path(), currentProjectRoot_ / "Assets", ec).generic_string();
 			if (ImGui::Selectable(path.c_str())) OpenMaterialGraph(path);
 		}
@@ -308,11 +504,25 @@ void EditorSuite::DrawMaterialGraphWindow()
 	// Live problems: the generator's (with the node they belong to) and the GPU compiler's
 	if (materialCodeRevision_ != m.Revision()) {
 		materialCodeRevision_ = m.Revision();
-		materialCode_ = GenerateGraphCode(m.graph, lib, kDomainMaterial);
+		if (particleGraph) {
+			// Both stages; Update is optional, as at runtime
+			materialCode_ = GenerateGraphCode(m.graph, lib, kDomainParticleSpawn);
+			if (std::any_of(m.graph.nodes.begin(), m.graph.nodes.end(), [](const GraphNode& n) { return n.type == "Update Output"; })) {
+				const GeneratedGraphCode update = GenerateGraphCode(m.graph, lib, kDomainParticleUpdate);
+				for (const GraphError& e : update.errors) {
+					const bool seen = std::any_of(materialCode_.errors.begin(), materialCode_.errors.end(), [&](const GraphError& o) { return o.nodeId == e.nodeId && o.message == e.message; });
+					if (!seen) materialCode_.errors.push_back(e);
+				}
+				materialCode_.ok = materialCode_.errors.empty();
+			}
+		} else {
+			materialCode_ = GenerateGraphCode(m.graph, lib, kDomainMaterial);
+		}
 	}
 	std::vector<GraphError> problems = materialCode_.errors;
 	if (materialCode_.ok && !m.dirty) {
-		if (const EffectMaterialEntry* entry = GetEffectMaterial(materialEditorPath_); entry && !entry->ok) problems = entry->errors;
+		const EffectMaterialEntry* entry = particleGraph ? GetParticleGraph(materialEditorPath_) : GetEffectMaterial(materialEditorPath_);
+		if (entry && !entry->ok) problems = entry->errors;
 	}
 	const auto errorsOf = [&](uint32_t id) {
 		std::string text;
@@ -344,9 +554,11 @@ void EditorSuite::DrawMaterialGraphWindow()
 	ImGui::SameLine();
 	ImGui::SetNextItemWidth(170.0f);
 	if (ImGui::BeginCombo(TrId("##MaterialTemplate"), Tr("Start from template..."))) {
-		for (const char* t : kMaterialTemplates) {
+		const auto templates = particleGraph ? std::vector<const char*>(std::begin(kParticleTemplates), std::end(kParticleTemplates))
+			: std::vector<const char*>(std::begin(kMaterialTemplates), std::end(kMaterialTemplates));
+		for (const char* t : templates) {
 			if (ImGui::Selectable(Tr(t))) {
-				m.graph = MakeMaterialTemplate(t);
+				m.graph = particleGraph ? MakeParticleTemplate(t) : MakeMaterialTemplate(t);
 				m.selection.clear();
 				m.Commit();
 				materialGraphFit_ = true;
@@ -356,12 +568,15 @@ void EditorSuite::DrawMaterialGraphWindow()
 	}
 	ImGui::SetItemTooltip("%s", Tr("Replaces this graph with a template (Undo brings it back)"));
 	ImGui::SameLine();
-	ImGui::BeginDisabled(!selectedMaterial || materialEditorPath_ == selectedMaterial);
+	const char* selectedTarget = particleGraph ? (selectedParticles ? selectedParticles->graph : nullptr) : selectedMaterial;
+	ImGui::BeginDisabled(!selectedTarget || materialEditorPath_ == selectedTarget);
 	if (ImGui::Button(TrId("Use on Selected"))) AssignMaterialToSelection(materialEditorPath_);
 	ImGui::EndDisabled();
-	ImGui::SetItemTooltip("%s", Tr("Gives this material to the selected object's GPU Particles or Trail"));
+	ImGui::SetItemTooltip("%s", particleGraph ? Tr("Gives this particle graph to the selected object's GPU Particles") : Tr("Gives this material to the selected object's GPU Particles or Trail"));
 	ImGui::SameLine();
-	if (ImGui::Button(TrId("Close##MaterialGraph"))) {
+	const bool closeFile = ImGui::Button(TrId("Close##MaterialGraph"));
+	ImGui::SetItemTooltip("%s", Tr("Closes this graph and shows the list of graphs and templates"));
+	if (closeFile) {
 		if (m.dirty) SaveMaterialGraph();
 		materialEditorPath_.clear();
 		ImGui::End();
@@ -375,7 +590,7 @@ void EditorSuite::DrawMaterialGraphWindow()
 	ImGui::BeginChild("##MatPalette", ImVec2(paletteW, avail.y), true);
 	ImGui::SetNextItemWidth(-1.0f);
 	ImGui::InputTextWithHint("##MatPaletteSearch", Tr("Search nodes..."), materialPaletteSearch_, sizeof(materialPaletteSearch_));
-	const std::vector<const NodeDef*> found = SearchNodes(lib, materialPaletteSearch_, kDomainMaterial);
+	const std::vector<const NodeDef*> found = SearchNodes(lib, materialPaletteSearch_, domain);
 	std::string lastCategory;
 	const bool searching = materialPaletteSearch_[0] != '\0';
 	bool categoryOpen = true;
@@ -507,8 +722,8 @@ void EditorSuite::DrawMaterialGraphWindow()
 	// Nodes
 	const PinHit* hoveredPin = hovered ? pinAt(io.MousePos) : nullptr;
 	uint32_t hoveredNode = 0;
-	const uint32_t outputNode = m.FindOutputNode();
 	for (const GraphNode& n : m.graph.nodes) {
+		const bool isOutput = m.IsOutputNode(n.id);
 		const NodeDef* def = lib.Find(n.type);
 		const int rows = def ? NodeRows(*def) : 1;
 		const ImVec2 p0 = toScreen(n.x, n.y);
@@ -531,7 +746,7 @@ void EditorSuite::DrawMaterialGraphWindow()
 			if (linked) dl->AddCircleFilled(at, 5.0f * zoom, PinColor(pin.type));
 			else dl->AddCircle(at, 5.0f * zoom, PinColor(pin.type), 0, 1.5f * zoom);
 			std::string label = Tr(pin.name.c_str());
-			if (!linked && n.id != outputNode) label += "  " + ValueText(n, pin);
+			if (!linked && !isOutput) label += "  " + ValueText(n, pin);
 			else if (!linked) label += "  (" + std::string(Tr(pin.defaultLabel.c_str())) + ")";
 			dl->AddText(font, fontSize * 0.92f, ImVec2(at.x + 10.0f * zoom, at.y - fontSize * 0.5f), linked ? IM_COL32(230, 230, 230, 255) : IM_COL32(150, 150, 160, 255), label.c_str());
 		}
@@ -551,9 +766,32 @@ void EditorSuite::DrawMaterialGraphWindow()
 			const ParamDef& first = def->params.front();
 			const auto vit = n.values.find(first.name);
 			const Vector4 v = vit != n.values.end() ? vit->second : first.defaultValue;
+			const auto u8 = [](float f) { return static_cast<int>(std::clamp(f, 0.0f, 1.0f) * 255.0f); };
 			if (first.kind == ParamKind::Color) {
-				const auto u8 = [](float f) { return static_cast<int>(std::clamp(f, 0.0f, 1.0f) * 255.0f); };
 				dl->AddRectFilled(a, toScreen(n.x + kNodeWidth - 8.0f, y + kRowHeight - 3.0f), IM_COL32(u8(v.x), u8(v.y), u8(v.z), 255), 3.0f * zoom);
+			} else if (first.kind == ParamKind::Gradient || first.kind == ParamKind::Curve) {
+				// A small picture of the keys
+				const std::vector<GraphKey> keys = ReadGraphKeys(n, first.name);
+				const ImVec2 b = toScreen(n.x + kNodeWidth - 8.0f, y + kRowHeight - 3.0f);
+				dl->AddRectFilled(a, b, IM_COL32(28, 28, 34, 255), 3.0f * zoom);
+				if (first.kind == ParamKind::Gradient) {
+					for (size_t i = 0; i + 1 < keys.size(); ++i) {
+						const ImU32 c0 = IM_COL32(u8(keys[i].value.x), u8(keys[i].value.y), u8(keys[i].value.z), 255);
+						const ImU32 c1 = IM_COL32(u8(keys[i + 1].value.x), u8(keys[i + 1].value.y), u8(keys[i + 1].value.z), 255);
+						dl->AddRectFilledMultiColor(ImVec2(a.x + (b.x - a.x) * keys[i].time, a.y), ImVec2(a.x + (b.x - a.x) * keys[i + 1].time, b.y), c0, c1, c1, c0);
+					}
+				} else {
+					float high = 1.0e-3f; // scaled to its own highest key, so a small size curve still shows its shape
+					for (const GraphKey& k : keys) high = (std::max)(high, k.value.x);
+					for (size_t i = 0; i + 1 < keys.size(); ++i) {
+						const auto at = [&](const GraphKey& k) { return ImVec2(a.x + (b.x - a.x) * k.time, b.y - (b.y - a.y) * std::clamp(k.value.x / high, 0.0f, 1.0f)); };
+						dl->AddLine(at(keys[i]), at(keys[i + 1]), IM_COL32(255, 170, 60, 255), 1.5f * zoom);
+					}
+				}
+			} else if (first.kind == ParamKind::Parameter) {
+				const auto t = n.texts.find(first.name);
+				const std::string shown = (t == n.texts.end() || t->second.empty()) ? std::string(Tr("(choose)")) : t->second;
+				dl->AddText(font, fontSize * 0.9f, a, IM_COL32(140, 200, 255, 255), shown.c_str());
 			} else {
 				std::string text;
 				if (first.kind == ParamKind::Texture) {
@@ -702,7 +940,7 @@ void EditorSuite::DrawMaterialGraphWindow()
 	// Node menu
 	if (ImGui::BeginPopup("##MatNodeMenu")) {
 		if (ImGui::MenuItem(TrId("Duplicate"), "Ctrl+D")) m.Duplicate();
-		if (ImGui::MenuItem(TrId("Delete"), "Del", false, !(m.selection.size() == 1 && m.selection.front() == outputNode))) m.DeleteSelection();
+		if (ImGui::MenuItem(TrId("Delete"), "Del", false, !(m.selection.size() == 1 && m.IsOutputNode(m.selection.front())))) m.DeleteSelection();
 		ImGui::EndPopup();
 	}
 	// Add-node menu: type to search, Enter takes the first; after a link drop only nodes that fit are listed
@@ -718,7 +956,7 @@ void EditorSuite::DrawMaterialGraphWindow()
 		}
 		ImGui::SetNextItemWidth(220.0f);
 		const bool enter = ImGui::InputTextWithHint("##MatAddSearch", Tr("Search nodes..."), materialAddSearch_, sizeof(materialAddSearch_), ImGuiInputTextFlags_EnterReturnsTrue);
-		const std::vector<const NodeDef*> options = SearchNodes(lib, materialAddSearch_, kDomainMaterial, filter);
+		const std::vector<const NodeDef*> options = SearchNodes(lib, materialAddSearch_, domain, filter);
 		const NodeDef* picked = enter && !options.empty() ? options.front() : nullptr;
 		ImGui::BeginChild("##MatAddList", ImVec2(260.0f, 280.0f));
 		std::string category;
@@ -757,14 +995,30 @@ void EditorSuite::DrawMaterialGraphWindow()
 	if (MaterialPreviewActive()) {
 		const float side = (std::min)(ImGui::GetContentRegionAvail().x, 220.0f);
 		ImGui::Image(ImTextureRef((ImTextureID)modelPreviewRT_.GetSrvGPUHandle().ptr), ImVec2(side, side));
-		ImGui::SetItemTooltip("%s", Tr("Preview: this material on a few particles (white, fading out)"));
+		ImGui::SetItemTooltip("%s", particleGraph ? Tr("Preview: this particle graph with its parameters at their defaults") : Tr("Preview: this material on a few particles (white, fading out)"));
 	} else {
 		ImGui::TextDisabled("%s", Tr("Preview is paused while a 3D model preview is open in the Project panel."));
 	}
 	GraphNode* node = m.selection.size() == 1 ? m.graph.FindMutable(m.selection.front()) : nullptr;
 	const NodeDef* def = node ? lib.Find(node->type) : nullptr;
+	if (particleGraph) DrawGraphParametersPanel();
 	if (!node || !def) {
 		ImGui::SeparatorText(Tr("How to use"));
+		const char* particleTips[] = {
+			"Right-click the canvas (or drag from the list) to add a node.",
+			"Spawn Output: what every new particle starts with (where, how fast, how long it lives, colour, size).",
+			"Update Output: runs every frame. Chain forces into its Velocity; Curve and Gradient change size and colour over the life.",
+			"Parameters are values each object (Inspector) and scripts (SetEffectParameter) can change.",
+			"Changes are saved at once: particles using this graph update in the Scene view.",
+			"Middle drag or Alt + drag: move the view. Wheel: zoom. F: show all. Del: delete. Ctrl+D: duplicate.",
+		};
+		if (particleGraph) {
+			for (const char* tip : particleTips) {
+				ImGui::Bullet();
+				ImGui::SameLine();
+				ImGui::TextWrapped("%s", Tr(tip));
+			}
+		}
 		const char* tips[] = {
 			"Right-click the canvas (or drag from the list) to add a node.",
 			"Drag from a pin to another pin to connect them. Pins of the same colour fit; a single number (grey) fits everything.",
@@ -774,6 +1028,7 @@ void EditorSuite::DrawMaterialGraphWindow()
 			"Middle drag or Alt + drag: move the view. Wheel: zoom. F: show all. Del: delete. Ctrl+D: duplicate.",
 		};
 		for (const char* tip : tips) {
+			if (particleGraph) break;
 			ImGui::Bullet(); // BulletText does not wrap
 			ImGui::SameLine();
 			ImGui::TextWrapped("%s", Tr(tip));
@@ -816,6 +1071,26 @@ void EditorSuite::DrawMaterialGraphWindow()
 							edited = finished = true;
 						}
 					}
+					ImGui::EndCombo();
+				}
+				break;
+			}
+			case ParamKind::Curve:
+			case ParamKind::Gradient: {
+				ImGui::TextUnformatted(label);
+				if (DrawKeyEditor(*node, param, finished)) edited = true;
+				break;
+			}
+			case ParamKind::Parameter: {
+				std::string& chosen = node->texts[param.name];
+				if (ImGui::BeginCombo(label, chosen.empty() ? Tr("(choose)") : chosen.c_str())) {
+					for (const GraphParameter& p : m.graph.parameters) {
+						if (ImGui::Selectable(p.name.c_str(), p.name == chosen)) {
+							chosen = p.name;
+							edited = finished = true;
+						}
+					}
+					if (m.graph.parameters.empty()) ImGui::TextDisabled("%s", Tr("Add a parameter in the Parameters list first."));
 					ImGui::EndCombo();
 				}
 				break;
@@ -882,7 +1157,7 @@ void EditorSuite::DrawMaterialGraphWindow()
 			m.Commit();
 		}
 		ImGui::Spacing();
-		if (node->id != outputNode && ImGui::Button(TrId("Delete Node"))) m.DeleteSelection();
+		if (!m.IsOutputNode(node->id) && ImGui::Button(TrId("Delete Node"))) m.DeleteSelection();
 	}
 	ImGui::EndChild();
 

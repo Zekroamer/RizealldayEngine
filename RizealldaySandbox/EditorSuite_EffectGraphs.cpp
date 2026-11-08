@@ -101,6 +101,27 @@ const EffectMaterialEntry* EditorSuite::GetParticleGraph(const std::string& asse
 	return &entry;
 }
 
+std::string EditorSuite::EffectGraphProblem()
+{
+	for (const GameObject& obj : gameObjects_) {
+		const auto check = [&](const char* path, bool particleGraph) -> std::string {
+			if (path[0] == '\0') return {};
+			const EffectMaterialEntry* entry = particleGraph ? GetParticleGraph(path) : GetEffectMaterial(path);
+			if (entry && entry->ok) return {};
+			const std::string why = !entry ? "not found" : entry->errors.empty() ? "did not compile" : entry->errors.front().message;
+			return std::format("{} '{}' on '{}': {}", particleGraph ? "Particle graph" : "Material graph", path, obj.name, why);
+		};
+		std::string problem;
+		if (const auto* p = obj.components.Get<GpuParticlesComponent>(kGpuParticlesComponent)) {
+			problem = check(p->graph, true);
+			if (problem.empty()) problem = check(p->material, false);
+		}
+		if (const auto* t = obj.components.Get<TrailComponent>(kTrailComponent); problem.empty() && t) problem = check(t->material, false);
+		if (!problem.empty()) return problem;
+	}
+	return {};
+}
+
 bool EditorSuite::SetEffectParameter(uint32_t objectId, const std::string& name, const Vector4& value)
 {
 	const GameObject* obj = FindGameObjectById(objectId);

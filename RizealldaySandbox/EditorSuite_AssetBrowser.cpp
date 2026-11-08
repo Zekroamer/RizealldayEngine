@@ -402,6 +402,9 @@ void EditorSuite::DrawProjectAndConsolePanel()
 							} else if (filename.ends_with(".vfxmat.json")) {
 								badge = "[MAT]";
 								badgeCol = ImVec4(1.0f, 0.6f, 0.3f, 1.0f);
+							} else if (filename.ends_with(".vfxparticle.json")) {
+								badge = "[PFX]";
+								badgeCol = ImVec4(1.0f, 0.85f, 0.3f, 1.0f);
 							} else if (filename.ends_with(".prefab.json")) {
 								badge = "[PREFAB]";
 								badgeCol = ImVec4(0.4f, 0.65f, 1.0f, 1.0f);
@@ -437,7 +440,7 @@ void EditorSuite::DrawProjectAndConsolePanel()
 										LoadScene(entry.path().string());
 									} else if (ext == ".cpp" || ext == ".h" || ext == ".hpp") {
 										OpenFileInVisualStudio(entry.path());
-									} else if (filename.ends_with(".vfxmat.json")) {
+									} else if (filename.ends_with(".vfxmat.json") || filename.ends_with(".vfxparticle.json")) {
 										OpenMaterialGraph(managedAssetPath(entry.path()));
 									} else if (filename.ends_with(".prefab.json")) {
 										// Double-click: place one instance at the origin

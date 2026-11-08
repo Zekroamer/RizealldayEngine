@@ -68,6 +68,13 @@ uint32_t GraphEditorModel::FindOutputNode() const
 	return 0;
 }
 
+bool GraphEditorModel::IsOutputNode(uint32_t id) const
+{
+	const GraphNode* node = graph.Find(id);
+	const NodeDef* def = node ? NodeLibrary::Effects().Find(node->type) : nullptr;
+	return def && def->isOutput;
+}
+
 uint32_t GraphEditorModel::AddNode(const std::string& type, float x, float y)
 {
 	const uint32_t id = graph.AddNode(type, x, y, NodeLibrary::Effects());
@@ -131,10 +138,9 @@ void GraphEditorModel::Disconnect(uint32_t toNode, const std::string& toPin)
 
 void GraphEditorModel::DeleteSelection()
 {
-	const uint32_t output = FindOutputNode();
 	bool removed = false;
 	for (uint32_t id : selection) {
-		if (id == output || !graph.Find(id)) continue;
+		if (IsOutputNode(id) || !graph.Find(id)) continue;
 		graph.RemoveNode(id);
 		removed = true;
 	}
@@ -144,12 +150,11 @@ void GraphEditorModel::DeleteSelection()
 
 std::vector<uint32_t> GraphEditorModel::Duplicate()
 {
-	const uint32_t output = FindOutputNode();
 	std::map<uint32_t, uint32_t> copies;
 	std::vector<uint32_t> created;
 	for (uint32_t id : selection) {
 		const GraphNode* node = graph.Find(id);
-		if (!node || id == output) continue;
+		if (!node || IsOutputNode(id)) continue;
 		GraphNode copy = *node;
 		copy.id = graph.nextId++;
 		copy.x += 40.0f;
@@ -169,6 +174,58 @@ std::vector<uint32_t> GraphEditorModel::Duplicate()
 		Commit();
 	}
 	return created;
+}
+
+std::string GraphEditorModel::AddParameter(const std::string& name, PinType type)
+{
+	if (graph.parameters.size() >= kMaxGraphParameters) return {};
+	const std::string base = name.empty() ? std::string("Parameter") : name;
+	std::string unique = base;
+	for (int i = 1; graph.FindParameter(unique) >= 0; ++i) unique = base + " " + std::to_string(i);
+	const Vector4 value = type == PinType::Float4 ? Vector4{ 1.0f, 1.0f, 1.0f, 1.0f } : Vector4{ 1.0f, 0.0f, 0.0f, 0.0f };
+	graph.parameters.push_back({ unique, type, value });
+	Commit();
+	return unique;
+}
+
+bool GraphEditorModel::RenameParameter(const std::string& fromName, const std::string& to, std::string* why)
+{
+	const auto fail = [&](const char* reason) {
+		if (why) *why = reason;
+		return false;
+	};
+	const std::string from = fromName; // a copy: callers often pass the parameter's own name, which changes below
+	const int index = graph.FindParameter(from);
+	if (index < 0) return fail("There is no such parameter.");
+	if (to.find_first_not_of(" \t") == std::string::npos) return fail("A parameter needs a name.");
+	if (to.find_first_of("=;") != std::string::npos) return fail("A name cannot contain = or ;.");
+	if (to == from) return true;
+	if (graph.FindParameter(to) >= 0) return fail("Another parameter already has this name.");
+	graph.parameters[index].name = to;
+	for (GraphNode& node : graph.nodes) {
+		if (node.type != "Parameter") continue;
+		if (auto it = node.texts.find("Name"); it != node.texts.end() && it->second == from) it->second = to;
+	}
+	Commit();
+	return true;
+}
+
+bool GraphEditorModel::RemoveParameter(const std::string& name)
+{
+	const int index = graph.FindParameter(name);
+	if (index < 0) return false;
+	graph.parameters.erase(graph.parameters.begin() + index);
+	Commit();
+	return true;
+}
+
+bool GraphEditorModel::SetKeys(uint32_t node, const std::string& param, const std::vector<GraphKey>& keys)
+{
+	GraphNode* target = graph.FindMutable(node);
+	if (!target) return false;
+	WriteGraphKeys(*target, param, keys);
+	Commit();
+	return true;
 }
 
 // ---------------------------------------------------------------------------

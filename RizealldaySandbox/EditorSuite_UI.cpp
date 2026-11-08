@@ -241,7 +241,7 @@ void EditorSuite::DrawMainMenuBar()
 			if (ImGui::MenuItem(TrId("Effect Editor"), nullptr, showEffectEditor_)) {
 				showEffectEditor_ = !showEffectEditor_;
 			}
-			if (ImGui::MenuItem(TrId("Material Graph"), nullptr, showMaterialGraph_)) {
+			if (ImGui::MenuItem(TrId("Effect Graph"), nullptr, showMaterialGraph_)) {
 				showMaterialGraph_ = !showMaterialGraph_;
 			}
 			if (ImGui::MenuItem(TrId("Animator"), nullptr, showAnimatorWindow_)) {
