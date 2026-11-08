@@ -108,6 +108,9 @@ struct EditorSuiteTestAccess {
 	static void ForgetEffectMaterials(EditorSuite& s) { s.effectMaterials_.clear(); } // as after a restart
 	static RenderTexture& PreviewRT(EditorSuite& s) { return s.modelPreviewRT_; }
 	static void CloseMaterialGraph(EditorSuite& s) { s.materialEditorPath_.clear(); s.showMaterialGraph_ = false; }
+	static const std::string& MaterialEditorPath(EditorSuite& s) { return s.materialEditorPath_; }
+	static bool& MaterialValueEditing(EditorSuite& s) { return s.materialValueEditing_; }
+	static bool MaterialSaveFailed(EditorSuite& s) { return s.materialSaveFailed_; }
 	static bool& ShowEffectEditor(EditorSuite& s) { return s.showEffectEditor_; }
 	static void Select(EditorSuite& s, uint32_t id) { s.selectedObjectIndex_ = s.FindGameObjectIndexById(id); s.extraSelection_.clear(); }
 	static bool& ScenePostPreview(EditorSuite& s) { return s.scenePostPreview_; }
@@ -7869,6 +7872,90 @@ TEST_CASE(Vfx, ParticleGraphEditorOpensEditsAndSaves)
 	REQUIRE(NodeGraph::FromJson(text.str(), saved, &why));
 	CHECK(saved.kind == GraphKind::Particle);
 	CHECK(saved.parameters.size() == 1u);
+	A::CloseMaterialGraph(s);
+}
+
+TEST_CASE(Vfx, GraphWindowKeepsEditsAndDropsReplacedPipelines)
+{
+	namespace fs = std::filesystem;
+	A::ProjectRoot(s) = A::TempRoot() / "GraphWindowEditsProject";
+	fs::remove_all(A::ProjectRoot(s) / "Assets");
+	const std::string path = s.CreateEffectMaterial("Spark", "Scrolling Fire");
+	const std::string other = s.CreateEffectMaterial("Other", "Scrolling Fire");
+	REQUIRE(!path.empty());
+	REQUIRE(!other.empty());
+	REQUIRE(s.OpenMaterialGraph(path));
+	GraphEditorModel& m = A::MaterialEditor(s);
+	uint32_t color = 0;
+	for (const GraphNode& n : m.graph.nodes) {
+		if (n.type == "Color") color = n.id;
+	}
+	REQUIRE(color != 0);
+	const auto savedGreen = [&](const std::string& file) {
+		std::ifstream in(A::ProjectRoot(s) / file);
+		std::stringstream text;
+		text << in.rdbuf();
+		NodeGraph g;
+		if (!NodeGraph::FromJson(text.str(), g, nullptr) || !g.Find(color)) return -1.0f;
+		const auto value = g.Find(color)->values.find("Color");
+		return value == g.Find(color)->values.end() ? -1.0f : value->second.y;
+	};
+
+	// Both files start as the same graph: they share one pipeline
+	REQUIRE(s.GetEffectMaterial(path) != nullptr);
+	REQUIRE(s.GetEffectMaterial(other) != nullptr);
+	const uint64_t shared = s.GetEffectMaterial(other)->key;
+	CHECK(s.GetEffectMaterial(path)->key == shared);
+
+	// An edit makes a new pipeline; the shared one stays because the other file still uses it
+	m.graph.FindMutable(color)->values["Color"] = { 0.0f, 2.0f, 0.0f, 1.0f };
+	m.Commit();
+	REQUIRE(s.SaveMaterialGraph());
+	const EffectMaterialEntry* first = s.GetEffectMaterial(path);
+	REQUIRE(first != nullptr);
+	REQUIRE(first->ok);
+	const uint64_t replaced = first->key;
+	CHECK(GpuParticles::GetInstance()->HasMaterial(shared));
+
+	// A value still being typed when another graph opens belongs to its own file
+	m.graph.FindMutable(color)->values["Color"] = { 0.0f, 5.0f, 0.0f, 1.0f };
+	A::MaterialValueEditing(s) = true;
+	REQUIRE(s.OpenMaterialGraph(other));
+	CHECK(!A::MaterialValueEditing(s));
+	CHECK(savedGreen(path) == 5.0f);
+	const EffectMaterialEntry* now = s.GetEffectMaterial(path);
+	REQUIRE(now != nullptr);
+	REQUIRE(now->ok);
+	CHECK(now->key != replaced);
+	CHECK(!GpuParticles::GetInstance()->HasMaterial(replaced));
+	CHECK(GpuParticles::GetInstance()->HasMaterial(now->key));
+
+	// Renamed or moved in the Project panel: the window saves to the new name, the old one does not come back
+	REQUIRE(s.OpenMaterialGraph(path));
+	REQUIRE(s.MoveAssetAndUpdateReferences(path, "Assets/Effects/Flame.vfxmat.json"));
+	CHECK(A::MaterialEditorPath(s) == "Assets/Effects/Flame.vfxmat.json");
+	REQUIRE(s.MoveAssetAndUpdateReferences("Assets/Effects", "Assets/Vfx"));
+	CHECK(A::MaterialEditorPath(s) == "Assets/Vfx/Flame.vfxmat.json");
+	m.graph.FindMutable(color)->values["Color"] = { 0.0f, 7.0f, 0.0f, 1.0f };
+	m.Commit();
+	REQUIRE(s.SaveMaterialGraph());
+	CHECK(savedGreen("Assets/Vfx/Flame.vfxmat.json") == 7.0f);
+	CHECK(!fs::exists(A::ProjectRoot(s) / path));
+
+	// A file that cannot be written: reported, the edit stays unsaved, saved once it works again
+	const fs::path file = A::ProjectRoot(s) / "Assets/Vfx/Flame.vfxmat.json";
+	fs::permissions(file, fs::perms::owner_write | fs::perms::group_write | fs::perms::others_write, fs::perm_options::remove); // MSVC: no write bit left = read-only
+	m.graph.FindMutable(color)->values["Color"] = { 0.0f, 9.0f, 0.0f, 1.0f };
+	m.Commit();
+	CHECK(!s.SaveMaterialGraph());
+	CHECK(A::MaterialSaveFailed(s));
+	CHECK(m.dirty);
+	CHECK(!s.OpenMaterialGraph(other)); // would throw the unsaved edit away
+	CHECK(A::MaterialEditorPath(s) == "Assets/Vfx/Flame.vfxmat.json");
+	fs::permissions(file, fs::perms::owner_write | fs::perms::group_write | fs::perms::others_write, fs::perm_options::add);
+	CHECK(s.SaveMaterialGraph());
+	CHECK(!A::MaterialSaveFailed(s));
+	CHECK(savedGreen("Assets/Vfx/Flame.vfxmat.json") == 9.0f);
 	A::CloseMaterialGraph(s);
 }
 

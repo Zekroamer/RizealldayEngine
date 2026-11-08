@@ -291,6 +291,25 @@ bool GpuParticles::BuildParticleGraph(uint64_t key, const std::string& spawnBody
 	return true;
 }
 
+void GpuParticles::ReleaseMaterial(uint64_t key)
+{
+	const auto it = materials_.find(key);
+	if (it == materials_.end()) return;
+	const MaterialPsos& psos = it->second;
+	for (ID3D12PipelineState* pso : { psos.alpha.Get(), psos.additive.Get(), psos.graphAlpha.Get(), psos.graphAdditive.Get() }) {
+		if (pso) dxCommon_->DeferRelease(pso);
+	}
+	materials_.erase(it);
+}
+
+void GpuParticles::ReleaseParticleGraph(uint64_t key)
+{
+	const auto it = graphs_.find(key);
+	if (it == graphs_.end()) return;
+	if (it->second) dxCommon_->DeferRelease(it->second);
+	graphs_.erase(it);
+}
+
 void GpuParticles::Finalize()
 {
 	// Called after the GPU has been flushed (RizeEngine::Finalize)

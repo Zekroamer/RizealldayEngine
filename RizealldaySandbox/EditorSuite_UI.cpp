@@ -71,6 +71,7 @@ void EditorSuite::DrawEditorUI(float deltaTime)
 	if (showEffectEditor_) DrawEffectEditorWindow();
 	else if (effectPreviewRoot_ != 0) StopEffectPreview(); // closed with its X
 	if (showMaterialGraph_) DrawMaterialGraphWindow();
+	else if (materialValueEditing_ || (materialEditor_.dirty && !materialSaveFailed_)) FlushMaterialGraph(); // closed with its X
 	DrawAutoSaveRestoreModal();
 	if (showInputActionsWindow_) DrawInputActionsWindow();
 #endif

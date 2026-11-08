@@ -172,6 +172,10 @@ public:
 	// Built once per key; false with the compiler output when it does not compile (the emitter then draws as before).
 	bool BuildMaterial(uint64_t key, const std::string& body, std::string* error);
 	bool HasMaterial(uint64_t key) const { return materials_.count(key) != 0; }
+	/// Drops a material / particle graph built earlier; its pipelines are released once the GPU is done with them.
+	/// Emitters that still name the key draw with the fixed settings until they get a new one.
+	void ReleaseMaterial(uint64_t key);
+	void ReleaseParticleGraph(uint64_t key);
 	/// The whole pixel shader of a material graph: inputs uv, vertexColor, particleAge, particleRandom, gTime, gTexture0..3
 	static std::string MaterialShaderSource(const std::string& body);
 	static constexpr uint32_t kMaterialTextures = 4;

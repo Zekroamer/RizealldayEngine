@@ -666,6 +666,10 @@ public:
 	std::string CreateEffectMaterial(const std::string& name, const std::string& templateName);
 	bool OpenMaterialGraph(const std::string& assetPath);
 	bool SaveMaterialGraph();
+	/// Commits a value still being typed and saves unsaved changes (before another file opens or the window closes)
+	void FlushMaterialGraph();
+	/// An edit builds a new shader: drops the pipelines of `oldKey` unless another file still uses them
+	void ReleaseReplacedGraph(uint64_t oldKey, uint64_t newKey, bool particleGraph);
 	/// Puts the material on the selected object's GPU Particles (undoable)
 	bool AssignMaterialToSelection(const std::string& assetPath);
 	/// Sets a texture setting of a graph node and its GUID ("<param> Guid"), so a rename or move keeps it
@@ -1467,6 +1471,7 @@ private:
 	bool materialNodeMoved_ = false;
 	bool materialAddFocus_ = false;
 	bool materialValueEditing_ = false;
+	bool materialSaveFailed_ = false; // the open file could not be written (read-only or held by another program)
 	Vector2 materialAddAt_{ 0.0f, 0.0f };
 	char materialPaletteSearch_[64] = {};
 	char materialAddSearch_[64] = {};
@@ -1485,7 +1490,6 @@ private:
 	EffectPreviewMotion effectPreviewMotion_ = EffectPreviewMotion::None;
 	float effectPreviewRadius_ = 2.0f;
 	float effectPreviewCycles_ = 0.5f;
-	uint32_t effectEditorLayer_ = 0; // layer whose curves the Effect Editor shows
 	// Effect Editor preview panel: a camera orbiting the previewed effect (drag = turn, wheel = closer / farther)
 	float effectPanelYaw_ = 0.5f;
 	float effectPanelPitch_ = 0.3f;

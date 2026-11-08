@@ -156,6 +156,7 @@ int EditorSuite::RepointAssetReferences(const std::string& from, const std::stri
 	if (repoint(buildStartupSceneBuf_, moved)) {
 		strncpy_s(buildStartupSceneBuf_, db.ToAbsolute(moved).string().c_str(), sizeof(buildStartupSceneBuf_) - 1);
 	}
+	if (repoint(materialEditorPath_, moved)) materialEditorPath_ = moved; // the graph window saves to the new name
 	resolvedAssetCache_.clear();
 	ClearPrefabCache();
 	return changed;
@@ -209,6 +210,13 @@ bool EditorSuite::DeleteAssetToRecycleBin(const std::string& path)
 	}
 	resolvedAssetCache_.clear();
 	ClearPrefabCache();
+	// The graph window must not write the deleted file (or a file of a deleted folder) back on its next edit
+	const std::string& open = materialEditorPath_;
+	if (!assetPath.empty() && open.size() >= assetPath.size() && _strnicmp(open.c_str(), assetPath.c_str(), assetPath.size()) == 0 &&
+		(open.size() == assetPath.size() || open[assetPath.size()] == '/')) {
+		materialEditorPath_.clear();
+		materialEditor_.MarkSaved(); // nothing left to save
+	}
 	LogMessage(std::format("[Assets] Moved '{}' to the recycle bin.", assetPath), 0);
 	return true;
 }

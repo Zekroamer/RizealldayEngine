@@ -73,8 +73,12 @@ const EffectMaterialEntry* EditorSuite::GetParticleGraph(const std::string& asse
 {
 	if (assetPath.empty()) return nullptr;
 	EffectMaterialEntry& entry = particleGraphs_[assetPath];
+	const uint64_t before = entry.key;
 	NodeGraph graph;
-	if (!ReloadGraphFile(entry, assetPath, "Particle Graph", graph)) return &entry;
+	if (!ReloadGraphFile(entry, assetPath, "Particle Graph", graph)) {
+		ReleaseReplacedGraph(before, entry.key, true); // a broken or deleted file
+		return &entry;
+	}
 	const NodeLibrary& lib = NodeLibrary::Effects();
 	const GeneratedGraphCode spawn = GenerateGraphCode(graph, lib, kDomainParticleSpawn);
 	// Update is optional: without an Update Output particles keep flying as they were born
@@ -98,6 +102,7 @@ const EffectMaterialEntry* EditorSuite::GetParticleGraph(const std::string& asse
 		}
 	}
 	for (const GraphError& e : entry.errors) LogMessage("[Particle Graph] " + assetPath + ": " + e.message, 2);
+	ReleaseReplacedGraph(before, entry.key, true);
 	return &entry;
 }
 
@@ -139,8 +144,12 @@ const EffectMaterialEntry* EditorSuite::GetEffectMaterial(const std::string& ass
 {
 	if (assetPath.empty()) return nullptr;
 	EffectMaterialEntry& entry = effectMaterials_[assetPath];
+	const uint64_t before = entry.key;
 	NodeGraph graph;
-	if (!ReloadGraphFile(entry, assetPath, "Material", graph)) return &entry;
+	if (!ReloadGraphFile(entry, assetPath, "Material", graph)) {
+		ReleaseReplacedGraph(before, entry.key, false);
+		return &entry;
+	}
 	std::string why;
 	{
 		ResolveGraphTextures(graph);
@@ -170,5 +179,17 @@ const EffectMaterialEntry* EditorSuite::GetEffectMaterial(const std::string& ass
 		}
 	}
 	for (const GraphError& e : entry.errors) LogMessage("[Material] " + assetPath + ": " + e.message, 2);
+	ReleaseReplacedGraph(before, entry.key, false);
 	return &entry;
+}
+
+void EditorSuite::ReleaseReplacedGraph(uint64_t oldKey, uint64_t newKey, bool particleGraph)
+{
+	if (oldKey == 0 || oldKey == newKey) return;
+	// Two files with the same graph share one pipeline
+	for (const auto& [path, entry] : particleGraph ? particleGraphs_ : effectMaterials_) {
+		if (entry.key == oldKey) return;
+	}
+	if (particleGraph) GpuParticles::GetInstance()->ReleaseParticleGraph(oldKey);
+	else GpuParticles::GetInstance()->ReleaseMaterial(oldKey);
 }

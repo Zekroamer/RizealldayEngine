@@ -1,4 +1,4 @@
-{
+﻿{
 	"_language": "Bahasa Indonesia",
 	"Pitch": "Nada",
 	"Fog": "Kabut",
@@ -1110,7 +1110,9 @@
 	"Rising Embers": "Bara Naik",
 	"Only this effect. Drag to turn around it, mouse wheel to move closer.": "Hanya efek ini. Seret untuk berputar mengelilinginya, roda mouse untuk mendekat.",
 	"The Material Graph shows its preview now. Close it to see the effect here.": "Material Graph sedang menampilkan pratinjaunya. Tutup untuk melihat efek di sini.",
-	"Press Play to see the effect here.": "Tekan Play untuk melihat efek di sini.",
+	"Press Play above to see the effect here.": "Tekan Play di atas untuk melihat efek di sini.",
+	"Not saved": "Belum tersimpan",
+	"The file could not be written: it is read-only or another program uses it. Your edits stay here and are saved as soon as the file can be written.": "File tidak bisa ditulis: file read-only atau sedang dipakai program lain. Editanmu tetap di sini dan langsung disimpan begitu file bisa ditulis.",
 	"Time: 0 = born, 1 = dies": "Waktu: 0 = lahir, 1 = mati",
 	"Remove this key": "Hapus key ini",
 	"Remove this parameter": "Hapus parameter ini",

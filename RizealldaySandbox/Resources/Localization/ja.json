@@ -1,4 +1,4 @@
-{
+﻿{
 	"_language": "日本語",
 	"Pitch": "ピッチ",
 	"Fog": "霧",
@@ -1110,7 +1110,9 @@
 	"Rising Embers": "舞い上がる火の粉",
 	"Only this effect. Drag to turn around it, mouse wheel to move closer.": "このエフェクトだけを表示します。ドラッグで周りを回り、ホイールで近づきます。",
 	"The Material Graph shows its preview now. Close it to see the effect here.": "現在は Material Graph のプレビューを表示しています。閉じるとここにエフェクトが表示されます。",
-	"Press Play to see the effect here.": "Play を押すとここにエフェクトが表示されます。",
+	"Press Play above to see the effect here.": "上の Play を押すとここにエフェクトが表示されます。",
+	"Not saved": "未保存",
+	"The file could not be written: it is read-only or another program uses it. Your edits stay here and are saved as soon as the file can be written.": "ファイルに書き込めません（読み取り専用か、別のプログラムが使用中です）。編集内容はここに残り、書き込めるようになるとすぐに保存されます。",
 	"Time: 0 = born, 1 = dies": "時間：0 = 生まれた時、1 = 消える時",
 	"Remove this key": "このキーを削除",
 	"Remove this parameter": "このパラメーターを削除",

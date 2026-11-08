@@ -1,5 +1,14 @@
 # Changelog — Rizeallday Engine v2
 
+## [2.9.1] — 2026-11-09
+
+### Perbaikan
+- Window graph (Material/Particle Graph) ikut pindah saat file atau foldernya di-rename/dipindah di panel Project, dan berhenti menulis file yang sudah dihapus.
+- Angka yang masih diketik di window graph sekarang tersimpan saat graph lain dibuka, saat Close ditekan, atau saat window ditutup.
+- Kalau file graph tidak bisa ditulis (read-only atau dipakai program lain), muncul label merah **Not saved**. Editan tidak hilang: Close dan membuka graph lain ditolak, dan editan tersimpan begitu file bisa ditulis lagi.
+- Pipeline GPU lama dari material/particle graph dilepas setelah graph diubah (sebelumnya menumpuk sampai editor ditutup).
+- Effect Editor selalu mengedit layer yang dipilih; petunjuk preview menjadi "Press Play above to see the effect here."
+
 ## [2.9.0] — 2026-11-08
 
 ### Fitur Baru: Material Graph dan Particle Graph

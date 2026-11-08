@@ -306,6 +306,7 @@ void EditorSuite::DrawEffectEditorWindow()
 	// After the combo: a new effect is the selection now
 	const GameObject* selected = (selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size())) ? &gameObjects_[selectedObjectIndex_] : nullptr;
 	const uint32_t rootId = selected ? EffectRootOf(selected->id) : 0;
+	const uint32_t layerId = selected ? selected->id : 0; // the edited layer is the selection (Hierarchy, Scene view or a lane)
 	if (rootId == 0) {
 		ImGui::TextWrapped("%s", Tr("Select an effect (an object with Effect Timing, or one of its layers), or create one from a template."));
 		if (selected && ImGui::Button(TrId("Make Selected an Effect"))) {
@@ -363,16 +364,10 @@ void EditorSuite::DrawEffectEditorWindow()
 	} else if (inEdit && effectPreviewRoot_ == rootId && MaterialPreviewActive()) {
 		ImGui::TextDisabled("%s", Tr("The Material Graph shows its preview now. Close it to see the effect here."));
 	} else if (inEdit && effectPreviewRoot_ != rootId) {
-		ImGui::TextDisabled("%s", Tr("Press Play to see the effect here."));
+		ImGui::TextDisabled("%s", Tr("Press Play above to see the effect here."));
 	}
 	ImGui::SliderFloat(TrId("Speed"), &effectPreviewSpeed_, 0.1f, 2.0f, "%.2fx");
 	bool changed = ImGui::Checkbox(TrId("Loop"), &rootTiming->loop);
-
-	// A layer picked in the Hierarchy (or the Scene view) becomes the edited layer
-	if (selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size())) {
-		const uint32_t picked = gameObjects_[selectedObjectIndex_].id;
-		if (picked != effectEditorLayer_ && EffectRootOf(picked) == rootId) effectEditorLayer_ = picked;
-	}
 
 	// Layers on a time line
 	struct Lane { uint32_t id; std::string name; float start, end, tail; bool emitting; };
@@ -395,10 +390,9 @@ void EditorSuite::DrawEffectEditorWindow()
 	const float width = (std::max)(ImGui::GetContentRegionAvail().x - nameWidth, 50.0f);
 	for (const Lane& lane : lanes) {
 		const ImVec2 at = ImGui::GetCursorScreenPos();
-		const bool isSelected = effectEditorLayer_ == lane.id;
+		const bool isSelected = layerId == lane.id;
 		ImGui::PushID(static_cast<int>(lane.id));
 		if (ImGui::Selectable(lane.name.c_str(), isSelected, 0, ImVec2(nameWidth - 6.0f, laneHeight))) {
-			effectEditorLayer_ = lane.id;
 			selectedObjectIndex_ = FindGameObjectIndexById(lane.id);
 			extraSelection_.clear();
 		}
@@ -434,8 +428,8 @@ void EditorSuite::DrawEffectEditorWindow()
 	if (motionChanged) SetEffectPreviewMotion(static_cast<EffectPreviewMotion>(motion), radius, cycles);
 
 	// The chosen layer: its timing (the particle look is edited in the Inspector)
-	GameObject* layer = FindGameObjectById(effectEditorLayer_, false);
-	if (!layer || EffectRootOf(layer->id) != rootId) layer = root;
+	GameObject* layer = FindGameObjectById(layerId, false);
+	if (!layer) layer = root;
 	ImGui::SeparatorText(layer->name.c_str());
 	if (auto* own = layer->components.Get<EffectTimingComponent>(kEffectTimingComponent)) {
 		changed |= ImGui::DragFloat(TrId("Start Delay"), &own->startDelay, 0.01f, 0.0f, 60.0f, "%.2f s");
@@ -447,17 +441,15 @@ void EditorSuite::DrawEffectEditorWindow()
 	} else if (ImGui::Button(TrId("Own Timing"))) {
 		AddComponentByName(*layer, kEffectTimingComponent); // `layer` stays valid: adding a component moves no object
 	}
-	if (layer) {
-		if (auto* p = layer->components.Get<GpuParticlesComponent>(kGpuParticlesComponent)) {
-			if (p->graph[0] != '\0') {
-				ImGui::TextWrapped("%s", Tr("This layer uses a particle graph: its size and colour come from the graph. Its parameters are in the Inspector."));
-				if (ImGui::Button(TrId("Edit Graph"))) OpenMaterialGraph(p->graph);
-			} else {
-				ImGui::TextWrapped("%s", Tr("Emission, size and colour of this layer are in the Inspector (GPU Particles)."));
-			}
-		} else if (layer->components.Has(kTrailComponent)) {
-			ImGui::TextDisabled("%s", Tr("Trail layer: edit it in the Inspector. Pick a Preview Motion to see it in Edit mode."));
+	if (auto* p = layer->components.Get<GpuParticlesComponent>(kGpuParticlesComponent)) {
+		if (p->graph[0] != '\0') {
+			ImGui::TextWrapped("%s", Tr("This layer uses a particle graph: its size and colour come from the graph. Its parameters are in the Inspector."));
+			if (ImGui::Button(TrId("Edit Graph"))) OpenMaterialGraph(p->graph);
+		} else {
+			ImGui::TextWrapped("%s", Tr("Emission, size and colour of this layer are in the Inspector (GPU Particles)."));
 		}
+	} else if (layer->components.Has(kTrailComponent)) {
+		ImGui::TextDisabled("%s", Tr("Trail layer: edit it in the Inspector. Pick a Preview Motion to see it in Edit mode."));
 	}
 
 	ImGui::Separator();

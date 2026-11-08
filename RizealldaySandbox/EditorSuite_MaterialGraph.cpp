@@ -110,6 +110,11 @@ void EditorSuite::DrawParticleGraphRows(GameObject& obj, GpuParticlesComponent& 
 
 bool EditorSuite::OpenMaterialGraph(const std::string& assetPath)
 {
+	FlushMaterialGraph(); // the file open until now keeps its last edit
+	if (materialEditor_.dirty && !materialEditorPath_.empty()) {
+		LogMessage("[Material] " + materialEditorPath_ + " has edits that could not be saved: make the file writable first", 2);
+		return false;
+	}
 	std::ifstream in(ResolveAssetPath(assetPath), std::ios::binary);
 	if (!in) return false;
 	std::stringstream text;
@@ -123,6 +128,7 @@ bool EditorSuite::OpenMaterialGraph(const std::string& assetPath)
 	ResolveGraphTextures(graph);
 	materialEditor_.Reset(graph);
 	materialEditorPath_ = assetPath;
+	materialSaveFailed_ = false;
 	materialGraphFit_ = true;
 	materialLink_ = {};
 	showMaterialGraph_ = true;
@@ -133,19 +139,37 @@ bool EditorSuite::SaveMaterialGraph()
 {
 	if (materialEditorPath_.empty()) return false;
 	std::ofstream out(ResolveAssetPath(materialEditorPath_), std::ios::binary);
-	if (!out) return false;
-	out << materialEditor_.graph.ToJson();
-	out.close();
+	if (out) {
+		out << materialEditor_.graph.ToJson();
+		out.close();
+	}
+	if (!out) {
+		// Kept unsaved and tried again while the window is open; the window shows "Not saved"
+		if (!materialSaveFailed_) LogMessage("[Material] Could not write " + materialEditorPath_ + " (read-only or used by another program)", 2);
+		materialSaveFailed_ = true;
+		return false;
+	}
+	materialSaveFailed_ = false;
 	materialEditor_.MarkSaved();
 	// Rebuild now instead of at the next twice-a-second check: the Scene view follows the edit at once
-	if (materialEditor_.graph.kind == GraphKind::Particle) {
-		particleGraphs_.erase(materialEditorPath_);
-		GetParticleGraph(materialEditorPath_);
-	} else {
-		effectMaterials_.erase(materialEditorPath_);
-		GetEffectMaterial(materialEditorPath_);
+	const bool particle = materialEditor_.graph.kind == GraphKind::Particle;
+	auto& cache = particle ? particleGraphs_ : effectMaterials_;
+	if (auto it = cache.find(materialEditorPath_); it != cache.end()) {
+		it->second.loaded = false;
+		it->second.lastCheck = -1.0;
 	}
+	if (particle) GetParticleGraph(materialEditorPath_);
+	else GetEffectMaterial(materialEditorPath_);
 	return true;
+}
+
+void EditorSuite::FlushMaterialGraph()
+{
+	if (materialValueEditing_) {
+		materialValueEditing_ = false;
+		materialEditor_.Commit(); // no step when nothing changed
+	}
+	if (materialEditor_.dirty) SaveMaterialGraph();
 }
 
 bool EditorSuite::AssignMaterialToSelection(const std::string& assetPath)
@@ -535,6 +559,11 @@ void EditorSuite::DrawMaterialGraphWindow()
 	// ---- Toolbar ----
 	ImGui::TextUnformatted(materialEditorPath_.c_str());
 	ImGui::SameLine();
+	if (materialSaveFailed_) {
+		ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", Tr("Not saved"));
+		ImGui::SetItemTooltip("%s", Tr("The file could not be written: it is read-only or another program uses it. Your edits stay here and are saved as soon as the file can be written."));
+		ImGui::SameLine();
+	}
 	if (problems.empty()) ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "%s", Tr("Compiled"));
 	else if (ImGui::SmallButton(std::format("{} ({})##MatProblems", Tr("Problems"), problems.size()).c_str())) {
 		materialFocusNode_ = problems.front().nodeId;
@@ -576,8 +605,8 @@ void EditorSuite::DrawMaterialGraphWindow()
 	ImGui::SameLine();
 	const bool closeFile = ImGui::Button(TrId("Close##MaterialGraph"));
 	ImGui::SetItemTooltip("%s", Tr("Closes this graph and shows the list of graphs and templates"));
-	if (closeFile) {
-		if (m.dirty) SaveMaterialGraph();
+	if (closeFile) FlushMaterialGraph();
+	if (closeFile && !m.dirty) { // a file that could not be saved stays open, so the edits are not lost
 		materialEditorPath_.clear();
 		ImGui::End();
 		return;
