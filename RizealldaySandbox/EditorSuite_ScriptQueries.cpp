@@ -159,7 +159,7 @@ void EditorSuite::BuildNavGrid(const Vector3& agentPosition)
 	struct Bounds { Vector3 min, max; };
 	std::vector<Bounds> statics;
 	for (const auto& o : gameObjects_) {
-		if (!o.isActive || !o.isStatic || o.isTrigger) continue;
+		if (!o.isActive || !o.isStatic || o.IsTriggerBody()) continue;
 		Bounds b{};
 		if (o.hasBoxCollider && o.boxColliderEnabled) {
 			ComputeBoxColliderBounds(o, true, b.min, b.max);

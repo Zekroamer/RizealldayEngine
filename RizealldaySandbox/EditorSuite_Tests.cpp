@@ -1324,6 +1324,70 @@ TEST_CASE(Render, OrthographicCameraKeepsSizeAndMouseRay)
 	CHECK_NEAR(other->orthoSize, 7.5f, 1e-6f);
 }
 
+TEST_CASE(Components, PasteKeepsEveryField)
+{
+	GameObject& src = s.CreateGameObject("Source", GameObjectType::Empty);
+	src.hasLight = true;
+	src.lightEnabled = false;
+	src.lightType = GameObject::LightType::Spot;
+	src.lightDirection = { 1.0f, 0.0f, 0.0f };
+	src.lightDecay = 3.0f;
+	src.lightSpotFalloffStart = 12.0f;
+	src.lightCastShadow = false;
+	src.lightShadowBias = 0.02f;
+	src.lightShadowStrength = 0.3f;
+	src.lightShadowNormalBias = 0.07f;
+	src.hasSphereCollider = true;
+	src.sphereIsTrigger = true;
+	src.hasBoxCollider = true;
+	src.isTrigger = true; // the old paste copied this box flag into the sphere
+	src.providesContacts = false;
+	src.hasAudioSource = true;
+	src.audioPitch = 1.5f;
+	src.audioBus = 2;
+	src.hasCamera = true;
+	src.cameraEnabled = false;
+	const uint32_t srcId = src.id;
+	const uint32_t dstId = s.CreateGameObject("Target", GameObjectType::Empty).id;
+	const auto paste = [&](const char* name) -> const GameObject* {
+		CHECK(s.CopyComponent(*s.FindGameObjectById(srcId, false), name));
+		CHECK(s.PasteComponent(*s.FindGameObjectById(dstId, false), name));
+		return s.FindGameObjectById(dstId, false);
+	};
+
+	const GameObject* dst = paste("Light");
+	CHECK(!dst->lightEnabled);
+	CHECK(dst->lightType == GameObject::LightType::Spot);
+	CHECK_NEAR(dst->lightDirection.x, 1.0f, 1e-6f);
+	CHECK_NEAR(dst->lightDecay, 3.0f, 1e-6f);
+	CHECK_NEAR(dst->lightSpotFalloffStart, 12.0f, 1e-6f);
+	CHECK(!dst->lightCastShadow);
+	CHECK_NEAR(dst->lightShadowBias, 0.02f, 1e-6f);
+	CHECK_NEAR(dst->lightShadowStrength, 0.3f, 1e-6f);
+	CHECK_NEAR(dst->lightShadowNormalBias, 0.07f, 1e-6f);
+
+	dst = paste("Sphere Collider");
+	CHECK(dst->sphereIsTrigger);
+	CHECK(!dst->isTrigger); // the Box Collider's flag is not the sphere's
+
+	dst = paste("Box Collider");
+	CHECK(!dst->providesContacts);
+
+	dst = paste("Audio Source");
+	CHECK_NEAR(dst->audioPitch, 1.5f, 1e-6f);
+	CHECK(dst->audioBus == 2);
+
+	dst = paste("Camera");
+	CHECK(!dst->cameraEnabled);
+
+	// Components without a value paste refuse instead of recording an empty undo step
+	REQUIRE(s.CopyComponent(*s.FindGameObjectById(srcId, false), "Light"));
+	const size_t undo = A::UndoCount(s);
+	CHECK(!s.CopyComponent(*s.FindGameObjectById(srcId, false), "Mesh Filter & Renderer"));
+	CHECK(!s.PasteComponent(*s.FindGameObjectById(dstId, false), "Mesh Filter & Renderer"));
+	CHECK(A::UndoCount(s) == undo);
+}
+
 TEST_CASE(Scripting, TimeScaleScalesGameTime)
 {
 	EngineAPI& api = A::Api(s);
@@ -4491,6 +4555,29 @@ TEST_CASE(PhysicsBaseline, TriggersReportButDoNotBlock)
 	}
 	CHECK(s.FindGameObjectById(id, false)->translation.y < kPhysicsFloorTop - 1.0f);
 	CHECK_MSG(entered == 2, std::format("enter events {}", entered)); // one per direction of the pair
+	A::State(s) = EditorSceneState::Edit;
+	s.ResetScriptRuntimeState();
+}
+
+TEST_CASE(Physics, SphereTriggerMakesSensor)
+{
+	// The Sphere Collider's own Is Trigger box makes the object a trigger: it reports the box but does not stop it
+	A::State(s) = EditorSceneState::Play;
+	GameObject& ball = s.CreateGameObject("Trigger Ball", GameObjectType::Empty);
+	ball.translation = { 0.0f, 60.0f, 0.0f };
+	ball.isStatic = true;
+	ball.hasSphereCollider = true;
+	ball.sphereRadius = 3.0f;
+	ball.sphereIsTrigger = true;
+	const uint32_t id = MakePhysicsBox(s, "Passer", { 0.0f, 64.0f, 0.0f });
+	int entered = 0;
+	for (int i = 0; i < 120; ++i) {
+		A::Physics(s, 1.0f / 60.0f);
+		entered += A::CollisionEvents(s).enter;
+	}
+	const float y = s.FindGameObjectById(id, false)->translation.y;
+	CHECK_MSG(y < 56.0f, std::format("box stopped at {:.3f}: the sphere blocked it", y)); // ball bottom at 57
+	CHECK_MSG(entered == 2, std::format("enter events {}", entered));
 	A::State(s) = EditorSceneState::Edit;
 	s.ResetScriptRuntimeState();
 }

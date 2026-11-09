@@ -351,6 +351,7 @@ bool EditorSuite::CopyComponent(const GameObject& obj, const std::string& name)
 		return true;
 	}
 
+	if (!CanCopyComponentKind(static_cast<ComponentKind>(info->builtinKind))) return false;
 	Json full = Json::object();
 	WriteGameObjectJson(obj, &full);
 	copiedComponentName_ = name;
@@ -412,12 +413,13 @@ bool EditorSuite::PasteComponent(GameObject& obj, const std::string& name)
 		obj.boxCenter = scratch.boxCenter;
 		obj.boxSize = scratch.boxSize;
 		obj.isTrigger = scratch.isTrigger;
+		obj.providesContacts = scratch.providesContacts;
 	} else if (targetName == "Sphere Collider") {
 		obj.hasSphereCollider = true;
 		obj.sphereColliderEnabled = scratch.sphereColliderEnabled;
 		obj.sphereCenter = scratch.sphereCenter;
 		obj.sphereRadius = scratch.sphereRadius;
-		obj.isTrigger = scratch.isTrigger;
+		obj.sphereIsTrigger = scratch.sphereIsTrigger;
 	} else if (targetName == "Rigidbody") {
 		obj.hasRigidbody = true;
 		obj.rbEnabled = scratch.rbEnabled;
@@ -432,6 +434,7 @@ bool EditorSuite::PasteComponent(GameObject& obj, const std::string& name)
 		obj.continuousCollision = scratch.continuousCollision;
 	} else if (targetName == "Camera") {
 		obj.hasCamera = true;
+		obj.cameraEnabled = scratch.cameraEnabled;
 		obj.fov = scratch.fov;
 		obj.nearClip = scratch.nearClip;
 		obj.farClip = scratch.farClip;
@@ -443,6 +446,15 @@ bool EditorSuite::PasteComponent(GameObject& obj, const std::string& name)
 		obj.lightIntensity = scratch.lightIntensity;
 		obj.lightRange = scratch.lightRange;
 		obj.lightSpotAngle = scratch.lightSpotAngle;
+		obj.lightEnabled = scratch.lightEnabled;
+		obj.lightType = scratch.lightType;
+		obj.lightDirection = scratch.lightDirection;
+		obj.lightDecay = scratch.lightDecay;
+		obj.lightSpotFalloffStart = scratch.lightSpotFalloffStart;
+		obj.lightCastShadow = scratch.lightCastShadow;
+		obj.lightShadowBias = scratch.lightShadowBias;
+		obj.lightShadowStrength = scratch.lightShadowStrength;
+		obj.lightShadowNormalBias = scratch.lightShadowNormalBias;
 	} else if (targetName == "Audio Source") {
 		obj.hasAudioSource = true;
 		obj.audioClipName = scratch.audioClipName;
@@ -452,6 +464,8 @@ bool EditorSuite::PasteComponent(GameObject& obj, const std::string& name)
 		obj.audioSpatial = scratch.audioSpatial;
 		obj.audioMinDistance = scratch.audioMinDistance;
 		obj.audioMaxDistance = scratch.audioMaxDistance;
+		obj.audioPitch = scratch.audioPitch;
+		obj.audioBus = scratch.audioBus;
 	}
 	isSceneDirty_ = true;
 	PushUndoSnapshot();

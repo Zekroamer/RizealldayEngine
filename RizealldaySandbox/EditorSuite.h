@@ -190,6 +190,11 @@ struct GameObject {
 	Vector3 sphereCenter = { 0.0f, 0.0f, 0.0f };
 	float sphereRadius = 0.5f;
 
+	// An object is one physics body and Jolt makes a whole body a sensor, so any enabled collider marked as trigger makes it one
+	bool IsTriggerBody() const {
+		return (hasBoxCollider && boxColliderEnabled && isTrigger) || (hasSphereCollider && sphereColliderEnabled && sphereIsTrigger);
+	}
+
 	// Camera Component
 	bool hasCamera = false;
 	bool cameraEnabled = true;
@@ -900,6 +905,8 @@ private:
 
 	// Removable Inspector components (Transform and Scripts are handled separately)
 	enum class ComponentKind { Mesh, BoxCollider, SphereCollider, Rigidbody, Camera, Light, AudioSource, Mapchip };
+	// PasteComponent has no value list for these, so they cannot be copied
+	static bool CanCopyComponentKind(ComponentKind kind) { return kind != ComponentKind::Mesh && kind != ComponentKind::Mapchip; }
 	/// Component header with a close (x) button and a right-click "Remove Component" menu.
 	/// A removal is only queued here and applied after the Inspector finished drawing.
 	bool DrawComponentHeader(const char* label, ComponentKind kind);
@@ -1157,6 +1164,7 @@ private:
 	// Hierarchy cycle warning guard (one log per cycle set) and rigidbody-on-child warning guard
 	bool hierarchyCycleWarned_ = false;
 	std::unordered_set<uint32_t> childRigidbodyWarned_;
+	std::unordered_set<uint32_t> mixedTriggerWarned_;
 
 	// Objects instantiated by scripts are queued here and created at a safe point,
 	// so gameObjects_ never reallocates while a script callback is running.

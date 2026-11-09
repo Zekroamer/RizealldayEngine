@@ -673,11 +673,16 @@ bool EditorSuite::DrawComponentHeader(const char* label, ComponentKind kind)
 	if (ImGui::BeginPopupContextItem()) {
 		if (selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size())) {
 			GameObject& obj = gameObjects_[selectedObjectIndex_];
-			if (ImGui::MenuItem(TrId("Copy Component"))) {
-				CopyComponent(obj, label);
+			// Copy/paste go by registry name: some header labels differ ("Audio Source (XAudio2 + Media Foundation)")
+			std::string name = label;
+			for (const ComponentInfo& info : ComponentRegistry::Get().All()) {
+				if (info.builtinKind == static_cast<int>(kind)) { name = info.name; break; }
 			}
-			if (ImGui::MenuItem(TrId("Paste Component Values"), nullptr, false, HasCopiedComponent(label))) {
-				PasteComponent(obj, label);
+			if (ImGui::MenuItem(TrId("Copy Component"), nullptr, false, CanCopyComponentKind(kind))) {
+				CopyComponent(obj, name);
+			}
+			if (ImGui::MenuItem(TrId("Paste Component Values"), nullptr, false, HasCopiedComponent(name))) {
+				PasteComponent(obj, name);
 			}
 			ImGui::Separator();
 		}

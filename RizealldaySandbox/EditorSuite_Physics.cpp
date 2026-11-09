@@ -94,7 +94,10 @@ bool EditorSuite::BuildPhysicsBody(const GameObject& obj, Physics::BodyDesc& des
 	desc.linearDamping = obj.drag;
 	desc.freezeRotation = obj.freezeRotation;
 	desc.continuous = obj.continuousCollision;
-	desc.isSensor = obj.isTrigger;
+	desc.isSensor = obj.IsTriggerBody();
+	if (box && sphere && obj.isTrigger != obj.sphereIsTrigger && mixedTriggerWarned_.insert(obj.id).second) {
+		LogMessage(std::format("[Physics] '{}' has a trigger and a solid collider; the whole object acts as a trigger. Put the trigger on a child object.", obj.name), 1);
+	}
 	desc.layerBit = 1u << (obj.layer & 31u);
 	desc.collisionMask = obj.collisionMask;
 

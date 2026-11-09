@@ -1,5 +1,13 @@
 # Changelog — Rizeallday Engine v2
 
+## [Unreleased]
+
+### Perbaikan
+- Checkbox **Is Trigger** di Sphere Collider sekarang benar-benar membuat objek menjadi trigger (physics dan NavGrid). Satu objek adalah satu body physics: kalau Box dan Sphere aktif dan hanya satu yang trigger, seluruh objek menjadi trigger dan Console menampilkan peringatan. Box Collider yang dimatikan atau dihapus tidak lagi membuat objek menjadi trigger.
+- **Paste Component Values** menyalin semua nilai: Sphere memakai Is Trigger miliknya sendiri, Box ikut Provides Contacts, Camera ikut Enabled, Light ikut tipe, arah, decay, falloff dan semua pengaturan shadow, Audio Source ikut Pitch dan Bus.
+- Copy/Paste dari header **Audio Source** di Inspector sekarang berfungsi (sebelumnya tidak pernah tersalin).
+- Copy/Paste untuk **Mesh Filter & Renderer** dan **Mapchip** dinonaktifkan (abu-abu), karena belum ada yang bisa ditempel dan klik Paste sebelumnya hanya menambah langkah undo kosong.
+
 ## [2.9.1] — 2026-11-09
 
 ### Perbaikan
