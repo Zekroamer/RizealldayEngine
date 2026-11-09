@@ -65,14 +65,24 @@ void ScriptModule::CleanupOldShadowCopies(const std::filesystem::path& shadowDir
 		}
 	}
 
-	// Also clean up old unlocked timestamped PDBs in the parent Scripts directory on startup
+	// Also clean up old timestamped PDBs in the parent Scripts directory, but keep the newest: it belongs to
+	// the DLL in use, and without it breakpoints in scripts do not bind until the next build
 	std::filesystem::path scriptsDir = shadowDir.parent_path();
-	if (std::filesystem::exists(scriptsDir, ec) && std::filesystem::is_directory(scriptsDir, ec)) {
-		for (const auto& entry : std::filesystem::directory_iterator(scriptsDir, ec)) {
-			if (entry.is_regular_file(ec) && entry.path().extension() == ".pdb") {
-				std::filesystem::remove(entry.path(), ec);
-			}
+	std::vector<std::filesystem::path> pdbs;
+	for (const auto& entry : std::filesystem::directory_iterator(scriptsDir, ec)) {
+		if (entry.is_regular_file(ec) && entry.path().extension() == ".pdb") pdbs.push_back(entry.path());
+	}
+	std::filesystem::path newest;
+	std::filesystem::file_time_type newestTime{};
+	for (const auto& pdb : pdbs) {
+		const auto time = std::filesystem::last_write_time(pdb, ec);
+		if (!ec && (newest.empty() || time > newestTime)) {
+			newest = pdb;
+			newestTime = time;
 		}
+	}
+	for (const auto& pdb : pdbs) {
+		if (pdb != newest) std::filesystem::remove(pdb, ec);
 	}
 }
 

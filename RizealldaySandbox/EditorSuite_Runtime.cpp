@@ -244,20 +244,9 @@ void EditorSuite::WriteSaveData()
 	const std::filesystem::path path = GetSaveDataPath();
 	std::error_code ec;
 	std::filesystem::create_directories(path.parent_path(), ec);
-	// Write a temp file first so a crash mid-write never leaves a truncated save
-	const std::filesystem::path tmp = path.string() + ".tmp";
-	{
-		std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-		if (!out) {
-			LogMessage(std::format("[SaveData] Cannot write '{}'.", tmp.string()), 2);
-			return;
-		}
-		out << j.dump(1, '\t');
-	}
-	std::filesystem::rename(tmp, path, ec);
-	if (ec) {
-		std::filesystem::remove(path, ec);
-		std::filesystem::rename(tmp, path, ec);
+	// replace: text cut by bytes (LoadText into a small buffer) is not valid UTF-8, and the strict dump would throw
+	if (!EditorSuiteDetail::WriteFileAtomic(path, j.dump(1, '\t', false, SceneJson::Json::error_handler_t::replace))) {
+		LogMessage(std::format("[SaveData] Cannot write '{}'.", path.string()), 2);
 	}
 }
 

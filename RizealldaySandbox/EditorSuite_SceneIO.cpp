@@ -838,6 +838,26 @@ void EditorSuite::ReadGameObjectJson(const void* json, GameObject& obj)
 	ConvertLegacyParticleSystem(j, obj);
 }
 
+bool EditorSuiteDetail::WriteFileAtomic(const std::filesystem::path& file, std::string_view text)
+{
+	const std::filesystem::path tmp = file.string() + ".tmp";
+	{
+		std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+		if (!out) return false;
+		out.write(text.data(), static_cast<std::streamsize>(text.size()));
+		out.close();
+		if (!out) {
+			std::error_code ec;
+			std::filesystem::remove(tmp, ec);
+			return false;
+		}
+	}
+	std::error_code ec;
+	std::filesystem::rename(tmp, file, ec); // replaces the old file in one step
+	if (ec) std::filesystem::remove(tmp, ec);
+	return !ec;
+}
+
 bool EditorSuite::SaveScene(const std::string& filePath)
 {
 	// Every save path (Ctrl+S, File > Save, the close prompt) writes the open prefab instead of a scene
@@ -850,14 +870,14 @@ bool EditorSuite::SaveScene(const std::string& filePath)
 
 	std::filesystem::path p(targetPath);
 	if (p.has_parent_path()) {
-		std::filesystem::create_directories(p.parent_path());
+		std::error_code ec;
+		std::filesystem::create_directories(p.parent_path(), ec); // a failure shows up as a failed write below
 	}
 
-	std::ofstream file(targetPath);
-	if (!file.is_open()) return false;
-
-	file << SerializeSceneToString();
-	file.close();
+	if (!EditorSuiteDetail::WriteFileAtomic(p, SerializeSceneToString())) {
+		LogMessage(std::format("[Scene] Could not write {} (read-only, disk full or used by another program). The scene is not saved.", targetPath), 2);
+		return false;
+	}
 
 	isSceneDirty_ = false;
 	DiscardAutoSave(currentScenePath_); // an untitled scene saved for the first time leaves its copy behind otherwise

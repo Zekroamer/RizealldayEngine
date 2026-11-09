@@ -87,7 +87,10 @@ public:
 	static constexpr uint32_t kInvalidSrvIndex = 0xFFFFFFFFu;
 	uint32_t AllocateSrvIndex();
 	uint32_t PeekSrvIndex();
-	bool HasFreeSrvIndex() { return PeekSrvIndex() != kInvalidSrvIndex; }
+	// Textures stop this many slots early, so render targets made later (window resize, a view's post process,
+	// ImGui font pages) always get one; without a slot they would write a descriptor outside the heap
+	static constexpr uint32_t kSrvSlotsKeptForTargets = 64;
+	bool HasFreeSrvIndexForTexture() { (void)PeekSrvIndex() /* reclaims retired indices first */; return freeSrvIndices_.size() > kSrvSlotsKeptForTargets; }
 	void FreeSrvIndex(uint32_t index);
 	uint32_t GetFreeSrvCount() const { return static_cast<uint32_t>(freeSrvIndices_.size()); }
 

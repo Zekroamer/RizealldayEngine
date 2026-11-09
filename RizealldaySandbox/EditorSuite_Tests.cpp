@@ -2262,6 +2262,71 @@ TEST_CASE(Runtime, SaveDataPersists)
 	CHECK(!api.saveHasKey(api.hostContext, "PlayerName"));
 }
 
+TEST_CASE(Runtime, SaveDataKeepsWorkingWithACutJapaneseName)
+{
+	// Text read back into a small buffer is cut by bytes, so a kanji can be cut in half. Saving that again must
+	// not throw (an exported game has no guard around scripts) and must keep the other values.
+	const std::filesystem::path root = A::TempRoot() / "SaveUtf8Project";
+	std::filesystem::remove_all(root);
+	A::ProjectRoot(s) = root;
+	EngineAPI& api = A::Api(s);
+	api.saveSetNumber(api.hostContext, "Coins", 7.0);
+	api.saveSetString(api.hostContext, "PlayerName", "\xE5\xA4\xAA\xE9\x83\x8E"); // two kanji, 6 bytes
+	char cut[5]{}; // 4 bytes: one kanji and the first byte of the next
+	REQUIRE(api.saveGetString(api.hostContext, "PlayerName", cut, static_cast<int>(sizeof(cut))));
+	api.saveSetString(api.hostContext, "ShortName", cut);
+
+	A::ProjectRoot(s) = A::TempRoot() / "OtherProject"; // forces a reload from the file
+	A::ProjectRoot(s) = root;
+	CHECK_NEAR(api.saveGetNumber(api.hostContext, "Coins", 0.0), 7.0, 1e-9);
+	char name[32]{};
+	CHECK(api.saveGetString(api.hostContext, "ShortName", name, static_cast<int>(sizeof(name))));
+	CHECK(std::string_view(name).starts_with("\xE5\xA4\xAA")); // the whole kanji survives
+	std::filesystem::remove_all(root);
+}
+
+TEST_CASE(Render, FullTextureHeapFallsBackToWhite)
+{
+	// Textures stop before the last SRV slots, so render targets made later (window resize, a view's post
+	// process) still get one; a texture made from pixels (UI font pages) then falls back to white instead of
+	// writing a descriptor outside the heap
+	DirectXCommon* dx = A::Dx(s);
+	REQUIRE(dx != nullptr);
+	std::vector<uint32_t> taken;
+	while (dx->HasFreeSrvIndexForTexture()) taken.push_back(dx->AllocateSrvIndex());
+	const uint8_t red[4] = { 255, 0, 0, 255 };
+	TextureManager* textures = TextureManager::GetInstance();
+	const uint32_t handle = textures->CreateTextureFromRGBA("FullHeapTest", red, 1, 1);
+	const uint32_t target = dx->AllocateSrvIndex();
+	CHECK(handle == textures->GetDefaultWhiteTexture());
+	CHECK(target != DirectXCommon::kInvalidSrvIndex);
+	if (target != DirectXCommon::kInvalidSrvIndex) taken.push_back(target);
+	for (uint32_t index : taken) dx->FreeSrvIndex(index);
+	CHECK(!dx->IsDeviceLost());
+}
+
+TEST_CASE(Scripting, StartupKeepsTheNewestScriptPdb)
+{
+	// Every build writes GameScripts_<time>.pdb; startup deletes the old ones but must keep the newest, which
+	// belongs to the DLL in use (without it, breakpoints in scripts do not bind until the next build)
+	namespace fs = std::filesystem;
+	const fs::path dir = A::TempRoot() / "ScriptPdbCleanup";
+	fs::remove_all(dir);
+	fs::create_directories(dir / "Shadow");
+	std::ofstream(dir / "GameScripts_100.pdb") << "old";
+	std::ofstream(dir / "GameScripts_200.pdb") << "new";
+	std::ofstream(dir / "Shadow" / "GameScripts_1.dll") << "shadow";
+	const auto now = fs::file_time_type::clock::now();
+	fs::last_write_time(dir / "GameScripts_100.pdb", now - std::chrono::hours(1));
+	fs::last_write_time(dir / "GameScripts_200.pdb", now);
+
+	ScriptModule::CleanupOldShadowCopies(dir / "Shadow");
+	CHECK(!fs::exists(dir / "GameScripts_100.pdb"));
+	CHECK(fs::exists(dir / "GameScripts_200.pdb"));
+	CHECK(!fs::exists(dir / "Shadow" / "GameScripts_1.dll"));
+	fs::remove_all(dir);
+}
+
 TEST_CASE(Runtime, LoadSceneDuringPlayAndRestoreOnStop)
 {
 	namespace fs = std::filesystem;
@@ -2989,6 +3054,52 @@ TEST_CASE(Assets, DuplicateMetaGetsNewGuid)
 	const std::string copy = db.GuidForPath("Assets/grass - Copy.png");
 	CHECK(AssetDatabase::IsValidGuid(copy));
 	CHECK(copy != original);
+}
+
+TEST_CASE(SceneIO, FailedSaveKeepsTheOldFileAndTheAutoSave)
+{
+	// A save that cannot finish (here: its temp file cannot be created) must not truncate the file, clear the
+	// dirty flag or delete the auto-save copy, which is then the only copy of the edits
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "AtomicSaveProject";
+	fs::remove_all(root);
+	A::ProjectRoot(s) = root;
+	fs::create_directories(root / "Assets/Scenes");
+	const fs::path scene = root / "Assets/Scenes/Level.scene.json";
+	REQUIRE(s.SaveScene(scene.string()));
+	CHECK(!fs::exists(scene.string() + ".tmp"));
+	const auto read = [](const fs::path& file) {
+		std::ifstream in(file, std::ios::binary);
+		return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+	};
+	const std::string saved = read(scene);
+	REQUIRE(!saved.empty());
+
+	s.CreateCube("Unsaved Edit", { 0.0f, 0.0f, 0.0f });
+	A::Dirty(s) = true;
+	const fs::path autoSave = AutoSave::PathFor(root, scene);
+	fs::create_directories(autoSave.parent_path());
+	std::ofstream(autoSave) << "{}";
+	fs::create_directories(scene.string() + ".tmp"); // a folder where the temp file goes: the write fails
+	CHECK(!s.SaveScene(scene.string()));
+	CHECK(read(scene) == saved);
+	CHECK(s.IsSceneDirty());
+	CHECK(fs::exists(autoSave));
+	fs::remove_all(scene.string() + ".tmp");
+	CHECK(s.SaveScene(scene.string()));
+	CHECK(read(scene).find("Unsaved Edit") != std::string::npos);
+
+	// Prefabs go the same way
+	const uint32_t rootId = s.CreateCube("Crate", { 0.0f, 0.0f, 0.0f }).id;
+	REQUIRE(s.SavePrefab(rootId, "Crate"));
+	const fs::path prefab = s.ResolvePrefabFile("Crate");
+	const std::string prefabText = read(prefab);
+	s.FindGameObjectById(rootId, false)->name = "Renamed Crate";
+	fs::create_directories(prefab.string() + ".tmp");
+	CHECK(!s.SavePrefab(rootId, "Crate"));
+	CHECK(read(prefab) == prefabText);
+	fs::remove_all(prefab.string() + ".tmp");
+	fs::remove_all(root);
 }
 
 TEST_CASE(Assets, RenamingTheSceneRenamesItsFileAndSurvivesSave)

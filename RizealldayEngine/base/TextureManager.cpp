@@ -116,7 +116,7 @@ uint32_t TextureManager::LoadTexture(const std::string& filePath, bool linear)
 		return defaultWhiteHandle_;
 	}
 
-	if (!dxCommon_->HasFreeSrvIndex()) {
+	if (!dxCommon_->HasFreeSrvIndexForTexture()) {
 		static bool sLoggedLimit = false;
 		if (!sLoggedLimit) {
 			sLoggedLimit = true;
@@ -231,6 +231,14 @@ uint32_t TextureManager::CreateTextureFromRGBA(const std::string& cacheKey, cons
 	const std::string key = "memory:" + cacheKey;
 	if (auto it = textureCache_.find(key); it != textureCache_.end()) {
 		return it->second;
+	}
+	if (!dxCommon_->HasFreeSrvIndexForTexture()) {
+		static bool sLoggedLimit = false;
+		if (!sLoggedLimit) {
+			sLoggedLimit = true;
+			Log::GetInstance()->logOutput("[TextureManager] SRV descriptor heap is full; generated textures use the default white texture.\n");
+		}
+		return defaultWhiteHandle_;
 	}
 
 	DirectX::ScratchImage image;
@@ -695,7 +703,7 @@ uint32_t TextureManager::LoadCubemapTexture(const std::string& filePath)
 		}
 	}
 
-	if (!dxCommon_->HasFreeSrvIndex()) {
+	if (!dxCommon_->HasFreeSrvIndexForTexture()) {
 		Log::GetInstance()->logOutput("Texture limit exceeded when loading cubemap\n");
 		return 0;
 	}

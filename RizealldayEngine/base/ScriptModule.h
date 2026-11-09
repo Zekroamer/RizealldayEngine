@@ -74,10 +74,12 @@ public:
 
 	/// Switches to another GameScripts.dll (empty = workspace default). The next PollDllChanged reports it as changed.
 	void SetDllPath(const std::filesystem::path& dllPath);
+	/// Startup cleanup: deletes the shadow copies in shadowDir and the script .pdb files next to it, except the
+	/// newest one (it belongs to the DLL in use). Files still locked by a running editor stay.
+	static void CleanupOldShadowCopies(const std::filesystem::path& shadowDir);
 	const std::filesystem::path& GetDllPathOverride() const { return dllPathOverride_; }
 
 private:
-	void CleanupOldShadowCopies(const std::filesystem::path& shadowDir);
 
 	HMODULE dllHandle_ = nullptr;
 	const EngineAPI* engineApi_ = nullptr;

@@ -7,6 +7,10 @@
 - **Paste Component Values** menyalin semua nilai: Sphere memakai Is Trigger miliknya sendiri, Box ikut Provides Contacts, Camera ikut Enabled, Light ikut tipe, arah, decay, falloff dan semua pengaturan shadow, Audio Source ikut Pitch dan Bus.
 - Copy/Paste dari header **Audio Source** di Inspector sekarang berfungsi (sebelumnya tidak pernah tersalin).
 - Copy/Paste untuk **Mesh Filter & Renderer** dan **Mapchip** dinonaktifkan (abu-abu), karena belum ada yang bisa ditempel dan klik Paste sebelumnya hanya menambah langkah undo kosong.
+- Menyimpan scene, prefab dan save data sekarang ditulis ke file sementara dulu, lalu menggantikan file lama. Kalau penulisan gagal (disk penuh, file read-only atau dipakai program lain, crash), file lama tetap utuh, scene tetap ditandai belum tersimpan, dan salinan auto-save tidak dihapus.
+- Save data tidak lagi membuat game crash kalau teks yang disimpan berisi huruf Jepang yang terpotong (misalnya hasil `LoadText` ke buffer kecil).
+- Kalau slot texture GPU hampir habis, texture baru memakai texture putih dan sisa slot disimpan untuk render target, jadi resize window tidak lagi crash.
+- File debug script (PDB) yang terbaru tidak lagi dihapus saat editor dibuka, jadi breakpoint di script tetap bisa dipakai tanpa build ulang.
 
 ## [2.9.1] — 2026-11-09
 

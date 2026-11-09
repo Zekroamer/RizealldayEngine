@@ -37,6 +37,10 @@ namespace EditorSuiteDetail {
 /// Files a model references next to it (.obj: .mtl + maps, .gltf: buffers + images), as relative paths
 std::vector<std::string> ModelCompanionFiles(const std::filesystem::path& model);
 
+/// Writes "<file>.tmp" and renames it over the file only when every byte was written, so a crash, a full disk
+/// or a locked file never leaves a half-written file. False (old file untouched) when any step fails.
+bool WriteFileAtomic(const std::filesystem::path& file, std::string_view text);
+
 /// "Assets/Scenes/Level1.scene.json" -> "Level1" (stem() alone would give "Level1.scene")
 inline std::string SceneNameFromPath(const std::filesystem::path& path)
 {
