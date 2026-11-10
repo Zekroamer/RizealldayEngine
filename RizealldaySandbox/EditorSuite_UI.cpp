@@ -661,6 +661,16 @@ void EditorSuite::DrawHierarchyPanel()
 							if (!visited[child]) self(self, child);
 						}
 						ImGui::TreePop();
+					} else if (kids) {
+						// Collapsed: the hidden descendants are handled, or the cycle fallback below would list them as roots
+						std::vector<size_t> hidden(kids->begin(), kids->end());
+						while (!hidden.empty()) {
+							const size_t h = hidden.back();
+							hidden.pop_back();
+							if (visited[h]) continue;
+							visited[h] = true;
+							if (auto it = childIndices.find(gameObjects_[h].id); it != childIndices.end()) hidden.insert(hidden.end(), it->second.begin(), it->second.end());
+						}
 					}
 
 					ImGui::PopID();
