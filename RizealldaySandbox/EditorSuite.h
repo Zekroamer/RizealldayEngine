@@ -14,6 +14,7 @@
 #include "GraphEditorModel.h"
 #include "Timeline.h"
 #include "Terrain.h"
+#include "MapchipTileSet.h"
 #include "3d/Camera.h"
 #include "3d/ShadowMap.h"
 #include "3d/Skybox.h"
@@ -991,8 +992,19 @@ private:
 	std::filesystem::path MapchipCsvPath() const;
 	/// Replaces the children Build made last time with one object per Wall / Spike / Spawn / Goal tile
 	bool BuildMapchipObjects(uint32_t mapId);
-	/// The default 15x10 grid with a floor row (new scenes and scenes saved without mapchip data)
+	/// The default 15x10 grid with a floor row and the built-in tile set (new scenes and scenes saved without mapchip data)
 	void ResetMapchip();
+	/// Tile set of the open scene: "Assets/..." path of a .tileset.json, empty = MapchipTileSet::Default()
+	bool UseMapchipTileSet(const std::string& path); // false (built-in set, logged) when the file cannot be read
+	bool CreateMapchipTileSet(const std::string& path); // writes the current set to a new file and uses it
+	bool SaveMapchipTileSet();                          // writes the current set to its file
+	/// Removes a tile kind and turns its cells into Empty (one undo step for the grid). Returns the cells cleared.
+	int RemoveMapchipTileKind(int id);
+	int CountMapchipTiles(int id) const;
+	void DrawMapchipTileSetWindow();
+	bool showTileSetWindow_ = false;
+	int pendingTileRemoveId_ = 0;        // kind waiting for the "used in N cells" confirmation
+	char newTileSetPathBuf_[256] = "";
 	bool ExportMapchipJSON(const std::string& filePath);
 
 	// Asset Browser File System helpers
@@ -1365,6 +1377,9 @@ private:
 	int selectedBrushTile_ = 1; // 0: Empty, 1: Wall, 2: Spike, 3: Spawn, 4: Goal
 	std::vector<std::vector<int>> mapGrid_;
 	char mapFilePathBuf_[256] = ""; // empty = MapchipCsvPath()'s default
+	MapchipTileSet mapTileSet_ = MapchipTileSet::Default();
+	std::string mapTileSetPath_; // "Assets/..." or empty (built-in set)
+	bool mapTileSetUnreadable_ = false; // the file could not be read: never written over with the built-in tiles shown meanwhile
 	char mapJsonPathBuf_[256] = "Resources/levels/stage01.json";
 
 	// C++ Script Generator & Hot Reload State

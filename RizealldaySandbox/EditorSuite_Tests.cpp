@@ -21,6 +21,7 @@
 #include "base/EngineVersion.h"
 #include "audio/Audio.h"
 #include "AutoSave.h"
+#include "MapchipTileSet.h"
 #include "NodeGraph.h"
 #include "GraphEditorModel.h"
 #include "base/DXCManager.h"
@@ -81,6 +82,11 @@ struct EditorSuiteTestAccess {
 	static bool LoadMapCsv(EditorSuite& s, const std::string& file) { return s.LoadMapchipCSV(file); }
 	static std::filesystem::path MapCsvPath(const EditorSuite& s) { return s.MapchipCsvPath(); }
 	static bool BuildMap(EditorSuite& s, uint32_t id) { return s.BuildMapchipObjects(id); }
+	static MapchipTileSet& TileSet(EditorSuite& s) { return s.mapTileSet_; }
+	static const std::string& TileSetPath(const EditorSuite& s) { return s.mapTileSetPath_; }
+	static bool CreateTileSet(EditorSuite& s, const std::string& path) { return s.CreateMapchipTileSet(path); }
+	static bool SaveTileSet(EditorSuite& s) { return s.SaveMapchipTileSet(); }
+	static bool UseTileSet(EditorSuite& s, const std::string& path) { return s.UseMapchipTileSet(path); }
 	static std::vector<EditorSuite::SessionFile>& CloseSessionFiles(EditorSuite& s) { return s.closeSessionFiles_; }
 	static void StartAssetSession(EditorSuite& s) { s.NoteSessionStartAssets(); }
 	static void DiscardForClose(EditorSuite& s) { s.DiscardForClose(); }
@@ -768,6 +774,200 @@ TEST_CASE(Project, DontSaveOffersToRecycleFilesMadeThisSession)
 	A::SyncScripts(s);
 	s.NewScene();
 	fs::remove_all(parent, ec);
+}
+
+TEST_CASE(Mapchip, TileSetIdsStayStable)
+{
+	// The default set is what grids meant before tile sets: 1 Wall, 2 Spike, 3 Spawn, 4 Goal
+	MapchipTileSet set = MapchipTileSet::Default();
+	REQUIRE(set.kinds.size() == 4u);
+	REQUIRE(set.Find(1) != nullptr);
+	CHECK(set.Find(1)->name == "Wall");
+	CHECK(set.Find(1)->shape == MapchipShape::Block);
+	CHECK(set.Find(2)->name == "Spike");
+	CHECK(set.Find(2)->shape == MapchipShape::Trigger);
+	CHECK(set.Find(3)->shape == MapchipShape::Marker);
+	CHECK(set.Find(4)->name == "Goal");
+	CHECK(set.Find(0) == nullptr); // Empty is not a kind
+
+	// A new kind gets the next id; renaming keeps the id; a removed id is never handed out again
+	MapchipTileKind* coin = set.Add("Coin");
+	REQUIRE(coin != nullptr);
+	CHECK(coin->id == 5);
+	set.Find(1)->name = "Brick";
+	CHECK(set.Find(1)->name == "Brick");
+	CHECK(set.Find(1)->Tag() == "Brick"); // the tag follows the name unless set
+	set.Find(1)->tag = "Solid";
+	CHECK(set.Find(1)->Tag() == "Solid");
+	CHECK(set.Remove(5));
+	CHECK(set.Find(5) == nullptr);
+	CHECK(!set.Remove(5));
+	MapchipTileKind* gem = set.Add("Gem");
+	REQUIRE(gem != nullptr);
+	CHECK(gem->id == 6);
+
+	// Saved and read back unchanged, including where the next id starts
+	set.Find(6)->prefab = "Gem";
+	set.Find(6)->color = { 0.1f, 0.2f, 0.3f, 1.0f };
+	set.Find(6)->shape = MapchipShape::Marker;
+	std::optional<MapchipTileSet> back = MapchipTileSet::FromJson(set.ToJson());
+	REQUIRE(back.has_value());
+	REQUIRE(back->kinds.size() == set.kinds.size());
+	CHECK(back->Find(1)->name == "Brick");
+	CHECK(back->Find(1)->tag == "Solid");
+	CHECK(back->Find(6)->prefab == "Gem");
+	CHECK(back->Find(6)->shape == MapchipShape::Marker);
+	CHECK_NEAR(back->Find(6)->color[2], 0.3f, 1e-6f);
+	REQUIRE(back->Add("Next") != nullptr);
+	CHECK(back->Find(7) != nullptr);
+
+	// At most 63 kinds; text that is not a tile set is refused with a reason
+	MapchipTileSet full;
+	for (int i = 0; i < MapchipTileSet::kMaxKinds; ++i) REQUIRE(full.Add("T") != nullptr);
+	CHECK(full.Add("One too many") == nullptr);
+	std::string why;
+	CHECK(!MapchipTileSet::FromJson("[1, 2]", &why).has_value());
+	CHECK(!why.empty());
+	CHECK(!MapchipTileSet::FromJson("{\"kinds\": [{\"id\": 0, \"name\": \"Bad\"}]}", &why).has_value()); // 0 is Empty
+}
+
+TEST_CASE(Mapchip, ScenesRememberTheirTileSet)
+{
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "TileSetProj";
+	std::error_code ec;
+	fs::remove_all(root, ec);
+	fs::create_directories(root / "Assets", ec);
+	const fs::path savedRoot = A::ProjectRoot(s);
+	A::ProjectRoot(s) = root;
+	s.NewScene();
+
+	// A new scene uses the built-in set (Wall, Spike, Spawn, Goal) and no file
+	CHECK(A::TileSetPath(s).empty());
+	REQUIRE(A::TileSet(s).Find(1) != nullptr);
+	CHECK(A::TileSet(s).Find(1)->name == "Wall");
+
+	// A tile set asset starts as a copy of the current set; edits are saved to it
+	REQUIRE(A::CreateTileSet(s, "Assets/Levels/Game.tileset.json"));
+	CHECK(fs::exists(root / "Assets" / "Levels" / "Game.tileset.json"));
+	CHECK(A::TileSetPath(s) == "Assets/Levels/Game.tileset.json");
+	A::TileSet(s).Find(1)->name = "Brick";
+	REQUIRE(A::SaveTileSet(s));
+
+	// The scene remembers which set it uses; another scene does not inherit it
+	const std::string withSet = s.SerializeSceneToString();
+	s.NewScene();
+	CHECK(A::TileSetPath(s).empty());
+	CHECK(A::TileSet(s).Find(1)->name == "Wall");
+	REQUIRE(s.DeserializeSceneFromString(withSet));
+	CHECK(A::TileSetPath(s) == "Assets/Levels/Game.tileset.json");
+	CHECK(A::TileSet(s).Find(1)->name == "Brick");
+
+	// Scenes saved before tile sets existed keep meaning 1 Wall .. 4 Goal
+	std::optional<SceneJson::Json> old = SceneJson::Parse(withSet);
+	REQUIRE(old.has_value());
+	(*old)["mapchip"].erase("tileSet");
+	(*old)["mapchip"].erase("tileSetGuid");
+	REQUIRE(s.DeserializeSceneFromString(old->dump()));
+	CHECK(A::TileSetPath(s).empty());
+	CHECK(A::TileSet(s).Find(1)->name == "Wall");
+
+	// Moving the file in the Project panel moves the scene's reference with it, and edits go to the new place
+	REQUIRE(A::UseTileSet(s, "Assets/Levels/Game.tileset.json"));
+	REQUIRE(s.MoveAssetAndUpdateReferences((root / "Assets" / "Levels" / "Game.tileset.json").string(),
+		(root / "Assets" / "Levels" / "Moved.tileset.json").string()));
+	CHECK(A::TileSetPath(s) == "Assets/Levels/Moved.tileset.json");
+	REQUIRE(A::SaveTileSet(s));
+	CHECK(!fs::exists(root / "Assets" / "Levels" / "Game.tileset.json"));
+
+	// A renamed prefab stays the prefab of the tiles that use it
+	A::TileSet(s).Find(1)->prefab = "Crate";
+	fs::create_directories(root / "Assets" / "Prefabs", ec);
+	std::ofstream(root / "Assets" / "Prefabs" / "Crate.prefab.json") << "{\"objects\": []}";
+	s.AssetDb().Refresh();
+	REQUIRE(s.MoveAssetAndUpdateReferences((root / "Assets" / "Prefabs" / "Crate.prefab.json").string(),
+		(root / "Assets" / "Prefabs" / "Box.prefab.json").string()));
+	CHECK(A::TileSet(s).Find(1)->prefab == "Box");
+
+	// A set file that cannot be read leaves the built-in set and says so (the scene still names the file),
+	// and the broken file is never overwritten with the built-in tiles
+	std::ofstream(root / "Assets" / "Levels" / "Broken.tileset.json") << "{ not json";
+	CHECK(!A::UseTileSet(s, "Assets/Levels/Broken.tileset.json"));
+	CHECK(A::TileSet(s).Find(1)->name == "Wall");
+	CHECK(!A::SaveTileSet(s));
+	{
+		std::ifstream in(root / "Assets" / "Levels" / "Broken.tileset.json");
+		std::stringstream text;
+		text << in.rdbuf();
+		CHECK(text.str() == "{ not json");
+	}
+
+	A::ProjectRoot(s) = savedRoot;
+	s.NewScene();
+	fs::remove_all(root, ec);
+}
+
+TEST_CASE(Mapchip, BuildUsesTheTileSet)
+{
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "TileBuildProj";
+	std::error_code ec;
+	fs::remove_all(root, ec);
+	fs::create_directories(root / "Assets", ec);
+	const fs::path savedRoot = A::ProjectRoot(s);
+	A::ProjectRoot(s) = root;
+	s.NewScene();
+
+	// A "Coin" prefab with a child (the sparkle)
+	GameObject& coinRoot = s.CreateGameObject("CoinModel", GameObjectType::Empty);
+	const uint32_t coinRootId = coinRoot.id;
+	GameObject& sparkle = s.CreateGameObject("Sparkle", GameObjectType::Empty);
+	const uint32_t sparkleId = sparkle.id;
+	REQUIRE(s.ReparentGameObject(sparkleId, static_cast<int>(coinRootId), false));
+	REQUIRE(s.SavePrefab(coinRootId, "Coin"));
+	s.NewScene();
+
+	// Tile set: 1 renamed to Brick (no prefab: the Block cube), a new kind 5 Coin that uses the prefab
+	A::TileSet(s).Find(1)->name = "Brick";
+	MapchipTileKind* coin = A::TileSet(s).Add("Coin");
+	REQUIRE(coin != nullptr);
+	REQUIRE(coin->id == 5);
+	coin->prefab = "Coin";
+	std::ofstream(root / "grid.csv") << "1,5,9\n";
+	REQUIRE(A::LoadMapCsv(s, (root / "grid.csv").string()));
+
+	GameObject& map = s.CreateGameObject("Map", GameObjectType::MapchipGrid);
+	map.hasMapchip = true;
+	const uint32_t mapId = map.id;
+	REQUIRE(A::BuildMap(s, mapId));
+	s.RebuildHierarchyLinks();
+	const size_t objectsAfterFirstBuild = A::Objects(s).size();
+
+	const GameObject* brick = nullptr;
+	const GameObject* coinTile = nullptr;
+	int direct = 0;
+	for (const GameObject& o : A::Objects(s)) {
+		if (o.parentId != static_cast<int>(mapId)) continue;
+		++direct;
+		if (o.tag == "Brick") brick = &o;
+		if (o.tag == "Coin") coinTile = &o;
+	}
+	CHECK(direct == 2); // tile 9 is not in the set: nothing is made for it
+	REQUIRE(brick != nullptr);
+	CHECK(brick->hasMesh && brick->hasBoxCollider && !brick->isTrigger && brick->isStatic);
+	REQUIRE(coinTile != nullptr);
+	CHECK(!coinTile->hasMesh); // the prefab's object, not a fallback cube
+	CHECK(coinTile->childrenIds.size() == 1u); // with the prefab's own child
+	CHECK(coinTile->prefabSource.empty()); // a built tile is not a linked prefab instance: Build again picks up prefab edits
+	CHECK_NEAR(coinTile->translation.x, 1.0f, 1e-5f);
+
+	// Building again replaces everything Build made, prefab children included
+	REQUIRE(A::BuildMap(s, mapId));
+	CHECK(A::Objects(s).size() == objectsAfterFirstBuild);
+
+	A::ProjectRoot(s) = savedRoot;
+	s.NewScene();
+	fs::remove_all(root, ec);
 }
 
 TEST_CASE(Mapchip, CsvPathBuildAndSceneReset)

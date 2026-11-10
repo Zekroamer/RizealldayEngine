@@ -194,6 +194,10 @@ void EditorSuite::WriteSceneSettingsJson(void* outJson) const
 		data.push_back(std::move(row));
 	}
 	mapchip["data"] = std::move(data);
+	if (!mapTileSetPath_.empty()) {
+		mapchip["tileSet"] = mapTileSetPath_;
+		WriteAssetGuid(AssetDb(), mapchip, "tileSetGuid", mapTileSetPath_);
+	}
 	root["mapchip"] = std::move(mapchip);
 }
 
@@ -574,6 +578,9 @@ void EditorSuite::ReadSceneSettingsJson(const void* json)
 		SceneJson::Read(*mapJson, "tileSize", mapTileSize_);
 		mapRows_ = (std::max)(mapRows_, 0);
 		mapCols_ = (std::max)(mapCols_, 0);
+		std::string tileSet; // scenes saved before tile sets have none: their ids are the built-in Wall .. Goal
+		ReadAssetReference(AssetDb(), *mapJson, "tileSet", "tileSetGuid", tileSet);
+		UseMapchipTileSet(tileSet);
 
 		const Json* dataJson = SceneJson::Find(*mapJson, "data");
 		if (dataJson && dataJson->is_array()) {

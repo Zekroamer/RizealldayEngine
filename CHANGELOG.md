@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fitur Baru: Tile Set untuk Mapchip
+- Jenis petak Mapchip sekarang bisa diatur sendiri lewat **Window > Tile Set Editor** (atau **Edit Tile Set...** di Inspector). Petak bisa ditambah, diganti nama, diganti warna dan dihapus, maksimal 63 jenis. Tile set disimpan sebagai aset `*.tileset.json` dan bisa dipakai bersama oleh semua level.
+- Setiap jenis petak bisa memakai **prefab**, yang dibuat dengan ukuran aslinya oleh **Build Level Objects**. Petak tanpa prefab memakai bentuk cadangan: Block (kubus padat), Trigger (kubus yang bisa dilewati) atau Marker (objek kosong). Tag objek bisa diatur dan defaultnya nama petak.
+- Nomor petak tidak pernah berubah, dan nomor yang sudah dihapus tidak dipakai ulang, jadi CSV dan scene lama tetap berarti sama. Menghapus petak yang masih dipakai akan meminta konfirmasi lebih dulu, lalu petaknya menjadi Empty.
+- Scene lama tanpa tile set tetap memakai petak bawaan: 1 Wall, 2 Spike, 3 Spawn, 4 Goal.
+
 ### Perbaikan
 - Checkbox **Is Trigger** di Sphere Collider sekarang benar-benar membuat objek menjadi trigger (physics dan NavGrid). Satu objek adalah satu body physics: kalau Box dan Sphere aktif dan hanya satu yang trigger, seluruh objek menjadi trigger dan Console menampilkan peringatan. Box Collider yang dimatikan atau dihapus tidak lagi membuat objek menjadi trigger.
 - **Paste Component Values** menyalin semua nilai: Sphere memakai Is Trigger miliknya sendiri, Box ikut Provides Contacts, Camera ikut Enabled, Light ikut tipe, arah, decay, falloff dan semua pengaturan shadow, Audio Source ikut Pitch dan Bus.

@@ -119,7 +119,18 @@ int EditorSuite::RepointAssetReferences(const std::string& from, const std::stri
 			obj.prefabSource = newName;
 			++changed;
 		}
+		bool tileSetChanged = false; // Mapchip tiles link their prefab by name too
+		for (MapchipTileKind& kind : mapTileSet_.kinds) {
+			if (kind.prefab != oldName) continue;
+			kind.prefab = newName;
+			tileSetChanged = true;
+		}
+		if (tileSetChanged) SaveMapchipTileSet();
 		ClearPrefabCache();
+	}
+	if (std::string newSet; repoint(mapTileSetPath_, newSet)) { // the open scene's tile set file
+		mapTileSetPath_ = newSet;
+		++changed;
 	}
 	std::string moved;
 	for (GameObject& obj : gameObjects_) {

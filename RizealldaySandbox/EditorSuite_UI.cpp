@@ -68,6 +68,7 @@ void EditorSuite::DrawEditorUI(float deltaTime)
 	if (showProfiler_) DrawProfilerWindow();
 	if (showAnimatorWindow_) DrawAnimatorWindow();
 	if (showTimelineWindow_) DrawTimelineWindow();
+	if (showTileSetWindow_) DrawMapchipTileSetWindow();
 	if (showEffectEditor_) DrawEffectEditorWindow();
 	else if (effectPreviewRoot_ != 0) StopEffectPreview(); // closed with its X
 	if (showMaterialGraph_) DrawMaterialGraphWindow();
@@ -238,6 +239,9 @@ void EditorSuite::DrawMainMenuBar()
 			}
 			if (ImGui::MenuItem(TrId("Timeline"), nullptr, showTimelineWindow_)) {
 				showTimelineWindow_ = !showTimelineWindow_;
+			}
+			if (ImGui::MenuItem(TrId("Tile Set Editor"), nullptr, showTileSetWindow_)) {
+				showTileSetWindow_ = !showTileSetWindow_;
 			}
 			if (ImGui::MenuItem(TrId("Effect Editor"), nullptr, showEffectEditor_)) {
 				showEffectEditor_ = !showEffectEditor_;

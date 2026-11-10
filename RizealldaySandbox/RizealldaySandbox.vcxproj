@@ -203,6 +203,7 @@ if exist "$(ProjectDir)Resources" xcopy "$(ProjectDir)Resources" "$(OutDir)Resou
     <ClCompile Include="GraphEditorModel.cpp" />
     <ClCompile Include="Timeline.cpp" />
     <ClCompile Include="AutoSave.cpp" />
+    <ClCompile Include="MapchipTileSet.cpp" />
     <ClCompile Include="EditorSuite_AutoSave.cpp" />
     <ClCompile Include="Terrain.cpp" />
     <ClCompile Include="EditorSuite_Terrain.cpp" />
@@ -265,6 +266,7 @@ if exist "$(ProjectDir)Resources" xcopy "$(ProjectDir)Resources" "$(OutDir)Resou
     <ClInclude Include="GraphEditorModel.h" />
     <ClInclude Include="Timeline.h" />
     <ClInclude Include="AutoSave.h" />
+    <ClInclude Include="MapchipTileSet.h" />
     <ClInclude Include="Terrain.h" />
     <ClInclude Include="AssetDatabase.h" />
     <ClInclude Include="AnimatorController.h" />
