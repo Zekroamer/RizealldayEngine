@@ -1,6 +1,6 @@
 # Changelog — Rizeallday Engine v2
 
-## [Unreleased]
+## [2.10.0] — 2026-11-10
 
 ### Fitur Baru: Tile Set untuk Mapchip
 - Jenis petak Mapchip sekarang bisa diatur sendiri lewat **Window > Tile Set Editor** (atau **Edit Tile Set...** di Inspector). Petak bisa ditambah, diganti nama, diganti warna dan dihapus, maksimal 63 jenis. Tile set disimpan sebagai aset `*.tileset.json` dan bisa dipakai bersama oleh semua level.
