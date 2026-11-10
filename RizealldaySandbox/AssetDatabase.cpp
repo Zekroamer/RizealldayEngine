@@ -91,6 +91,14 @@ void AssetDatabase::Refresh()
 	}
 }
 
+std::vector<std::string> AssetDatabase::AllGuids() const
+{
+	std::vector<std::string> guids;
+	guids.reserve(guidToPath_.size());
+	for (const auto& [guid, path] : guidToPath_) guids.push_back(guid);
+	return guids;
+}
+
 std::string AssetDatabase::RegisterFile(const fs::path& absFile, const std::string& assetPath)
 {
 	const fs::path metaPath = MetaPathOf(absFile);

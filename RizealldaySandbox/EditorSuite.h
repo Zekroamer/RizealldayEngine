@@ -832,6 +832,15 @@ public:
 	void DrawUnsavedChangesModal();
 	bool showUnsavedCloseModal_ = false;
 	std::string unsavedCloseError_;
+	// Assets files made in this session are already on disk when the close popup asks; it lists them so
+	// "Don't Save" can also send the checked ones to the recycle bin
+	struct SessionFile { std::string path; bool remove = false; };
+	std::vector<SessionFile> closeSessionFiles_;
+	std::filesystem::path sessionAssetsRoot_;          // project whose start-of-session assets are remembered
+	std::unordered_set<std::string> sessionStartGuids_; // GUIDs that existed then (moved files keep theirs)
+	void NoteSessionStartAssets();
+	std::vector<std::string> AssetsCreatedThisSession();
+	void DiscardForClose(); // "Don't Save": recycle the checked session files and drop the auto-saved copy
 	void LoadRecentProjects();
 	void AddRecentProject(const std::filesystem::path& projectRoot);
 
@@ -978,6 +987,12 @@ private:
 	void DrawMapchipInspectorSection();
 	bool SaveMapchipCSV(const std::string& filePath);
 	bool LoadMapchipCSV(const std::string& filePath);
+	/// CSV file of the Mapchip editor: the typed path (relative = inside the open project), or Assets/Levels/<scene>.csv
+	std::filesystem::path MapchipCsvPath() const;
+	/// Replaces the children Build made last time with one object per Wall / Spike / Spawn / Goal tile
+	bool BuildMapchipObjects(uint32_t mapId);
+	/// The default 15x10 grid with a floor row (new scenes and scenes saved without mapchip data)
+	void ResetMapchip();
 	bool ExportMapchipJSON(const std::string& filePath);
 
 	// Asset Browser File System helpers
@@ -1349,9 +1364,8 @@ private:
 	float mapTileSize_ = 1.0f;
 	int selectedBrushTile_ = 1; // 0: Empty, 1: Wall, 2: Spike, 3: Spawn, 4: Goal
 	std::vector<std::vector<int>> mapGrid_;
-	char mapFilePathBuf_[256] = "Resources/levels/stage01.csv";
+	char mapFilePathBuf_[256] = ""; // empty = MapchipCsvPath()'s default
 	char mapJsonPathBuf_[256] = "Resources/levels/stage01.json";
-	bool renderMapchip3DBlocks_ = true;
 
 	// C++ Script Generator & Hot Reload State
 	ScriptModule scriptModule_{};

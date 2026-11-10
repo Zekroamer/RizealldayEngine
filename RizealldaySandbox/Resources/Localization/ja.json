@@ -1138,5 +1138,14 @@
 	"This layer uses a particle graph: its size and colour come from the graph. Its parameters are in the Inspector.": "このレイヤーはパーティクルグラフを使っています。サイズと色はグラフで決まります。パラメーターはインスペクターにあります。",
 	"Emission, size and colour of this layer are in the Inspector (GPU Particles).": "このレイヤーの放出量・サイズ・色はインスペクター（GPU Particles）で編集します。",
 	"Effect Graph": "エフェクトグラフ",
-	"Closes this graph and shows the list of graphs and templates": "このグラフを閉じて、グラフとテンプレートの一覧を表示します"
+	"Closes this graph and shows the list of graphs and templates": "このグラフを閉じて、グラフとテンプレートの一覧を表示します",
+	"Files made in this session are already saved on disk:": "このセッションで作成したファイルは既にディスクに保存されています:",
+	"Check the ones \"Don't Save\" should move to the Recycle Bin.": "「保存しない」でごみ箱に移動するファイルにチェックを入れてください。",
+	"Check All": "すべてチェック",
+	"Check None": "チェックをすべて外す",
+	"Close without saving the scene and move %d checked file(s) to the Recycle Bin": "シーンを保存せずに閉じ、チェックした %d 個のファイルをごみ箱に移動します",
+	"Close without saving the scene": "シーンを保存せずに閉じます",
+	"Build Level Objects": "レベルオブジェクトを生成",
+	"Creates one child object per tile: Wall = static cube, Spike = trigger cube,\nSpawn / Goal = empty markers. Each gets the tile name as its tag. Building again replaces them.": "タイルごとに子オブジェクトを1つ作成します: Wall = 静的キューブ、Spike = トリガーキューブ、\nSpawn / Goal = 空のマーカー。タイル名がタグになります。もう一度生成すると置き換えます。",
+	"CSV file of this grid. Empty = Assets/Levels/<scene name>.csv": "このグリッドのCSVファイル。空欄 = Assets/Levels/<シーン名>.csv"
 }

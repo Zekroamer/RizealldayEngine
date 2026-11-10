@@ -1138,5 +1138,14 @@
 	"This layer uses a particle graph: its size and colour come from the graph. Its parameters are in the Inspector.": "Layer ini memakai particle graph: ukuran dan warnanya ditentukan graph. Parameternya ada di Inspector.",
 	"Emission, size and colour of this layer are in the Inspector (GPU Particles).": "Emisi, ukuran dan warna layer ini diatur di Inspector (GPU Particles).",
 	"Effect Graph": "Effect Graph",
-	"Closes this graph and shows the list of graphs and templates": "Menutup graph ini dan menampilkan daftar graph dan template"
+	"Closes this graph and shows the list of graphs and templates": "Menutup graph ini dan menampilkan daftar graph dan template",
+	"Files made in this session are already saved on disk:": "File yang dibuat di sesi ini sudah tersimpan di disk:",
+	"Check the ones \"Don't Save\" should move to the Recycle Bin.": "Centang file yang dipindah ke Recycle Bin saat memilih \"Jangan Simpan\".",
+	"Check All": "Centang Semua",
+	"Check None": "Hapus Semua Centang",
+	"Close without saving the scene and move %d checked file(s) to the Recycle Bin": "Tutup tanpa menyimpan scene dan pindahkan %d file yang dicentang ke Recycle Bin",
+	"Close without saving the scene": "Tutup tanpa menyimpan scene",
+	"Build Level Objects": "Buat Objek Level",
+	"Creates one child object per tile: Wall = static cube, Spike = trigger cube,\nSpawn / Goal = empty markers. Each gets the tile name as its tag. Building again replaces them.": "Membuat satu objek anak per petak: Wall = kubus statis, Spike = kubus trigger,\nSpawn / Goal = penanda kosong. Nama petak menjadi tag-nya. Membuat ulang akan menggantinya.",
+	"CSV file of this grid. Empty = Assets/Levels/<scene name>.csv": "File CSV grid ini. Kosong = Assets/Levels/<nama scene>.csv"
 }

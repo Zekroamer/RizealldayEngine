@@ -11,6 +11,12 @@
 - Save data tidak lagi membuat game crash kalau teks yang disimpan berisi huruf Jepang yang terpotong (misalnya hasil `LoadText` ke buffer kecil).
 - Kalau slot texture GPU hampir habis, texture baru memakai texture putih dan sisa slot disimpan untuk render target, jadi resize window tidak lagi crash.
 - File debug script (PDB) yang terbaru tidak lagi dihapus saat editor dibuka, jadi breakpoint di script tetap bisa dipakai tanpa build ulang.
+- **Mapchip Level Editor**:
+  - Tombol baru **Build Level Objects** membuat satu objek anak per petak: Wall = kubus statis, Spike = kubus trigger, Spawn/Goal = penanda kosong. Nama petak menjadi tag. Membuat ulang menggantikan hasil sebelumnya dalam satu langkah undo. Ini menggantikan checkbox "Render 3D Blocks in Viewport" yang tidak berfungsi.
+  - File CSV sekarang bisa dipilih, dengan default `Assets/Levels/<nama scene>.csv` di dalam project, jadi ikut di-export. Kalau gagal menyimpan atau membuka, ada pesan di Console.
+  - CSV yang barisnya tidak sama panjang tidak lagi membuat editor crash. Baris pendek diisi petak Empty.
+  - New Scene dan scene yang disimpan tanpa data mapchip tidak lagi mewarisi grid dari scene sebelumnya.
+- Dialog **Unsaved Changes** saat menutup editor sekarang menampilkan file di `Assets` yang dibuat di sesi ini (scene, prefab, graph, terrain, dll.), karena file itu sudah tersimpan di disk sejak dibuat. File yang dicentang dipindah ke Recycle Bin saat memilih **Don't Save**. Defaultnya tidak ada yang dicentang. File yang hanya dipindah atau diganti nama tidak ikut terdaftar. Don't Save juga menghapus salinan auto-save scene, jadi perubahan yang dibuang tidak ditawarkan lagi saat editor dibuka.
 
 ## [2.9.1] — 2026-11-09
 

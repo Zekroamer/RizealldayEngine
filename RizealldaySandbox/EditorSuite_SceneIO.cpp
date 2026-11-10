@@ -586,7 +586,11 @@ void EditorSuite::ReadSceneSettingsJson(const void* json)
 					if (cell.is_number()) mapGrid_[r][c] = static_cast<int>(cell.get<double>());
 				}
 			}
+		} else {
+			mapGrid_.assign(mapRows_, std::vector<int>(mapCols_, 0)); // rows/cols changed: the old grid no longer fits
 		}
+	} else {
+		ResetMapchip(); // a scene saved without a grid must not show the previous scene's
 	}
 }
 
@@ -980,6 +984,7 @@ void EditorSuite::NewScene()
 	currentSceneName_ = "SampleScene";
 	currentScenePath_ = (GetScenesDirectory() / "SampleScene.scene.json").string();
 	isSceneDirty_ = false;
+	ResetMapchip(); // the grid belongs to the scene: a new one must not inherit the last one's
 
 	skybox_.SetMode(SkyboxMode::Gradient);
 	skybox_.SetTopColor({ 0.22f, 0.45f, 0.78f, 1.0f });

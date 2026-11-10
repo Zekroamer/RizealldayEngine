@@ -74,6 +74,17 @@ struct EditorSuiteTestAccess {
 	static void RunAutoSave(EditorSuite& s, double now) { s.UpdateAutoSave(now); }
 	static double LastAutoSave(const EditorSuite& s) { return s.lastAutoSaveTime_; }
 	static bool& Dirty(EditorSuite& s) { return s.isSceneDirty_; }
+	static std::vector<std::vector<int>>& MapGrid(EditorSuite& s) { return s.mapGrid_; }
+	static int MapRows(const EditorSuite& s) { return s.mapRows_; }
+	static int MapCols(const EditorSuite& s) { return s.mapCols_; }
+	static char* MapFileBuf(EditorSuite& s) { return s.mapFilePathBuf_; }
+	static bool LoadMapCsv(EditorSuite& s, const std::string& file) { return s.LoadMapchipCSV(file); }
+	static std::filesystem::path MapCsvPath(const EditorSuite& s) { return s.MapchipCsvPath(); }
+	static bool BuildMap(EditorSuite& s, uint32_t id) { return s.BuildMapchipObjects(id); }
+	static std::vector<EditorSuite::SessionFile>& CloseSessionFiles(EditorSuite& s) { return s.closeSessionFiles_; }
+	static void StartAssetSession(EditorSuite& s) { s.NoteSessionStartAssets(); }
+	static void DiscardForClose(EditorSuite& s) { s.DiscardForClose(); }
+	static bool& UnsavedCloseModal(EditorSuite& s) { return s.showUnsavedCloseModal_; }
 	static const std::string& PendingRestore(const EditorSuite& s) { return s.pendingAutoSaveRestore_; }
 	static bool Restore(EditorSuite& s) { return s.RestoreAutoSave(); }
 	static void RunTimelines(EditorSuite& s, float dt) { s.UpdateTimelines(dt); }
@@ -696,6 +707,149 @@ TEST_CASE(Math, DecomposeComposeRoundTrip)
 // ===========================================================================
 // Project
 // ===========================================================================
+
+TEST_CASE(Project, DontSaveOffersToRecycleFilesMadeThisSession)
+{
+	// Closing with unsaved changes lists the Assets files made in this session (they are already on disk);
+	// "Don't Save" sends the checked ones to the recycle bin and drops the auto-saved copy of the scene
+	namespace fs = std::filesystem;
+	const fs::path parent = A::TempRoot() / "SessionFiles";
+	std::error_code ec;
+	fs::remove_all(parent, ec);
+	fs::create_directories(parent, ec);
+	const fs::path savedRoot = A::ProjectRoot(s);
+	const fs::path savedDirectory = A::CurrentDirectory(s);
+
+	REQUIRE(s.CreateNewProject(parent.string(), "Fresh"));
+	const fs::path root = parent / "Fresh";
+	auto listed = [&]() {
+		std::vector<std::string> paths;
+		for (const auto& f : A::CloseSessionFiles(s)) paths.push_back(f.path);
+		return paths;
+	};
+
+	// A project made in this session: its default scene was made in this session too, offered unchecked
+	A::Dirty(s) = true;
+	CHECK(!s.OnCloseRequested());
+	CHECK(A::UnsavedCloseModal(s));
+	CHECK(listed() == std::vector<std::string>{ "Assets/Scenes/SampleScene.scene.json" });
+	for (const auto& f : A::CloseSessionFiles(s)) CHECK(!f.remove);
+	A::UnsavedCloseModal(s) = false;
+
+	// Next session: the scene existed at the start. A file made now is listed; moving the old scene does not list it
+	A::StartAssetSession(s);
+	fs::create_directories(root / "Assets" / "Prefabs", ec);
+	std::ofstream(root / "Assets" / "Prefabs" / "Made.prefab.json") << "{}";
+	REQUIRE(s.AssetDb().MoveAsset("Assets/Scenes/SampleScene.scene.json", "Assets/Scenes/Level1.scene.json"));
+	A::Dirty(s) = true;
+	CHECK(!s.OnCloseRequested());
+	CHECK_MSG(listed() == std::vector<std::string>{ "Assets/Prefabs/Made.prefab.json" }, listed().empty() ? std::string("(none)") : listed().front());
+
+	// Don't Save with the file checked: it goes, its .meta goes, the old scene stays, the auto-saved copy goes
+	const fs::path autoSaveCopy = AutoSave::PathFor(root, (root / "Assets" / "Scenes" / "Level1.scene.json").string());
+	A::ScenePath(s) = (root / "Assets" / "Scenes" / "Level1.scene.json").string();
+	fs::create_directories(autoSaveCopy.parent_path(), ec);
+	std::ofstream(autoSaveCopy) << "{}";
+	REQUIRE(!A::CloseSessionFiles(s).empty());
+	A::CloseSessionFiles(s).front().remove = true;
+	A::DiscardForClose(s);
+	CHECK(!fs::exists(root / "Assets" / "Prefabs" / "Made.prefab.json"));
+	CHECK(!fs::exists(root / "Assets" / "Prefabs" / "Made.prefab.json.meta"));
+	CHECK(fs::exists(root / "Assets" / "Scenes" / "Level1.scene.json"));
+	CHECK(!fs::exists(autoSaveCopy));
+
+	// A clean scene closes without asking
+	A::Dirty(s) = false;
+	CHECK(s.OnCloseRequested());
+
+	A::UnsavedCloseModal(s) = false;
+	A::ProjectRoot(s) = savedRoot;
+	A::CurrentDirectory(s) = savedDirectory;
+	A::SyncScripts(s);
+	s.NewScene();
+	fs::remove_all(parent, ec);
+}
+
+TEST_CASE(Mapchip, CsvPathBuildAndSceneReset)
+{
+	namespace fs = std::filesystem;
+	const fs::path dir = A::TempRoot() / "Mapchip";
+	std::error_code ec;
+	fs::remove_all(dir, ec);
+	fs::create_directories(dir, ec);
+	s.NewScene();
+
+	// A CSV with rows of different length is padded with Empty, never read past a row
+	std::ofstream(dir / "ragged.csv") << "1,1,1\n2\n0,4\n";
+	REQUIRE(A::LoadMapCsv(s, (dir / "ragged.csv").string()));
+	CHECK(A::MapRows(s) == 3);
+	CHECK(A::MapCols(s) == 3);
+	for (const auto& row : A::MapGrid(s)) CHECK(row.size() == 3u);
+	CHECK(A::MapGrid(s)[1] == (std::vector<int>{ 2, 0, 0 }));
+	CHECK(A::MapGrid(s)[2] == (std::vector<int>{ 0, 4, 0 }));
+
+	// The CSV lives in the open project's Assets: by default Assets/Levels/<scene>.csv, typed relative paths too
+	const fs::path savedRoot = A::ProjectRoot(s);
+	A::ProjectRoot(s) = dir / "Proj";
+	A::MapFileBuf(s)[0] = '\0';
+	CHECK(A::MapCsvPath(s) == dir / "Proj" / "Assets" / "Levels" / "SampleScene.csv");
+	strcpy_s(A::MapFileBuf(s), 256, "Assets/Maps/a.csv");
+	CHECK(A::MapCsvPath(s) == dir / "Proj" / "Assets" / "Maps" / "a.csv");
+	A::MapFileBuf(s)[0] = '\0';
+	A::ProjectRoot(s) = savedRoot;
+
+	// Build Level Objects turns tiles into children of the map object: walls block, spikes are triggers,
+	// spawn and goal are markers; building again replaces them and keeps the user's own children
+	GameObject& map = s.CreateGameObject("Map", GameObjectType::MapchipGrid);
+	map.hasMapchip = true;
+	map.translation = { 10.0f, 0.0f, 0.0f };
+	const uint32_t mapId = map.id;
+	GameObject& mine = s.CreateGameObject("Mine", GameObjectType::Empty);
+	const uint32_t mineId = mine.id;
+	REQUIRE(s.ReparentGameObject(mineId, static_cast<int>(mapId), false));
+	auto children = [&]() {
+		std::vector<const GameObject*> out;
+		for (const GameObject& o : A::Objects(s)) if (o.parentId == static_cast<int>(mapId)) out.push_back(&o);
+		return out;
+	};
+	REQUIRE(A::BuildMap(s, mapId));
+	REQUIRE(children().size() == 6u); // 3 walls + spike + goal + Mine
+	int walls = 0, spikes = 0, goals = 0;
+	for (const GameObject* o : children()) {
+		if (o->tag == "Wall") {
+			++walls;
+			CHECK(o->hasBoxCollider && !o->isTrigger && o->isStatic);
+		}
+		if (o->tag == "Spike") { ++spikes; CHECK(o->hasBoxCollider && o->isTrigger); }
+		if (o->tag == "Goal") {
+			++goals;
+			CHECK_NEAR(o->translation.x, 1.0f, 1e-5f); // column 1
+			CHECK_NEAR(o->translation.y, 0.0f, 1e-5f); // bottom row
+		}
+	}
+	CHECK(walls == 3);
+	CHECK(spikes == 1);
+	CHECK(goals == 1);
+	REQUIRE(A::BuildMap(s, mapId));
+	CHECK(children().size() == 6u);
+	CHECK(s.FindGameObjectById(mineId, false) != nullptr);
+
+	// A new scene, or a scene without mapchip data, does not keep the previous scene's grid
+	s.NewScene();
+	CHECK(A::MapRows(s) == 10);
+	CHECK(A::MapCols(s) == 15);
+	CHECK(A::MapGrid(s).size() == 10u && A::MapGrid(s)[9][0] == 1 && A::MapGrid(s)[0][0] == 0);
+	REQUIRE(A::LoadMapCsv(s, (dir / "ragged.csv").string()));
+	std::optional<SceneJson::Json> scene = SceneJson::Parse(s.SerializeSceneToString());
+	REQUIRE(scene.has_value());
+	scene->erase("mapchip");
+	REQUIRE(s.DeserializeSceneFromString(scene->dump()));
+	CHECK(A::MapRows(s) == 10);
+	CHECK(A::MapCols(s) == 15);
+
+	s.NewScene();
+	fs::remove_all(dir, ec);
+}
 
 TEST_CASE(Project, CreateProjectRules)
 {

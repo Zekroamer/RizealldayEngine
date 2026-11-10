@@ -76,3 +76,9 @@ Desktop.ini
 
 # Release packages (Tools/MakeRelease.ps1)
 dist/
+
+# Agent skill docs and local tickets (internal, like CLAUDE.md)
+docs/agents/
+docs/adr/
+GLOSSARY.md
+.scratch/

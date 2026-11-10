@@ -412,11 +412,7 @@ void EditorSuite::Initialize(
 	Object3d::StaticSetEnvironment(environmentProbe_.GetSrv());
 	RefreshAvailableCubemaps();
 
-	// Initialize Mapchip Grid
-	mapGrid_.assign(mapRows_, std::vector<int>(mapCols_, 0));
-	for (int c = 0; c < mapCols_; ++c) {
-		mapGrid_[mapRows_ - 1][c] = 1; // Floor
-	}
+	ResetMapchip();
 
 	// Initialize GameScripts DLL hot-reload module and EngineAPI table
 	SetupEngineAPI();
@@ -642,6 +638,9 @@ void EditorSuite::Update(float deltaTime, Input* input)
 	currentInput_ = input;
 	currentDeltaTime_ = deltaTime;
 	unscaledDeltaTime_ = deltaTime;
+#ifdef USE_IMGUI
+	if (currentProjectRoot_ != sessionAssetsRoot_) NoteSessionStartAssets(); // a project was opened: what it has now is not "made this session"
+#endif
 	ProcessPendingImports(); // files dropped from Explorer
 #ifdef USE_IMGUI
 	UpdateAutoSave(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());

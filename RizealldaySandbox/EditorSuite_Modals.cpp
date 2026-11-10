@@ -258,8 +258,43 @@ bool EditorSuite::OnCloseRequested()
 		return true;
 	}
 	unsavedCloseError_.clear();
+	closeSessionFiles_.clear();
+	for (std::string& path : AssetsCreatedThisSession()) closeSessionFiles_.push_back({ std::move(path), false });
 	showUnsavedCloseModal_ = true;
 	return false;
+}
+
+void EditorSuite::NoteSessionStartAssets()
+{
+	sessionAssetsRoot_ = currentProjectRoot_;
+	sessionStartGuids_.clear();
+	if (currentProjectRoot_.empty()) return;
+	AssetDatabase& db = AssetDb();
+	db.Refresh();
+	for (std::string& guid : db.AllGuids()) sessionStartGuids_.insert(std::move(guid));
+}
+
+std::vector<std::string> EditorSuite::AssetsCreatedThisSession()
+{
+	std::vector<std::string> made;
+	if (currentProjectRoot_.empty() || currentProjectRoot_ != sessionAssetsRoot_) return made;
+	AssetDatabase& db = AssetDb();
+	db.Refresh(); // files written since the last scan (graphs, prefabs, terrain bakes) get their GUID now
+	for (const std::string& guid : db.AllGuids()) {
+		if (!sessionStartGuids_.contains(guid)) made.push_back(db.PathForGuid(guid));
+	}
+	std::sort(made.begin(), made.end());
+	return made;
+}
+
+void EditorSuite::DiscardForClose()
+{
+	if (sceneState_ != EditorSceneState::Edit) StopPlayMode(); // assets cannot be deleted during Play
+	for (const SessionFile& file : closeSessionFiles_) {
+		if (file.remove) DeleteAssetToRecycleBin(file.path);
+	}
+	closeSessionFiles_.clear();
+	DiscardAutoSave(currentScenePath_); // the next start must not offer the changes the user just threw away
 }
 
 void EditorSuite::DrawUnsavedChangesModal()
@@ -281,6 +316,27 @@ void EditorSuite::DrawUnsavedChangesModal()
 	}
 	if (!unsavedCloseError_.empty()) {
 		ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f), "%s", unsavedCloseError_.c_str());
+	}
+	int checkedFiles = 0;
+	if (!closeSessionFiles_.empty()) {
+		ImGui::Spacing();
+		ImGui::Separator();
+		ImGui::TextUnformatted(Tr("Files made in this session are already saved on disk:"));
+		ImGui::TextDisabled("%s", Tr("Check the ones \"Don't Save\" should move to the Recycle Bin."));
+		if (ImGui::SmallButton(TrId("Check All"))) for (SessionFile& f : closeSessionFiles_) f.remove = true;
+		ImGui::SameLine();
+		if (ImGui::SmallButton(TrId("Check None"))) for (SessionFile& f : closeSessionFiles_) f.remove = false;
+		const float rowHeight = ImGui::GetFrameHeightWithSpacing();
+		const float listHeight = (std::min)(static_cast<float>(closeSessionFiles_.size()), 8.0f) * rowHeight + ImGui::GetStyle().WindowPadding.y * 2.0f;
+		if (ImGui::BeginChild("##SessionFiles", ImVec2(460.0f, listHeight), ImGuiChildFlags_Borders)) {
+			// The theme's frame colour equals the popup background: an unchecked box would be invisible
+			ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::GetStyleColorVec4(ImGuiCol_Button));
+			ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered));
+			for (SessionFile& f : closeSessionFiles_) ImGui::Checkbox(f.path.c_str(), &f.remove);
+			ImGui::PopStyleColor(2);
+		}
+		ImGui::EndChild();
+		for (const SessionFile& f : closeSessionFiles_) checkedFiles += f.remove ? 1 : 0;
 	}
 	ImGui::Spacing();
 
@@ -305,8 +361,11 @@ void EditorSuite::DrawUnsavedChangesModal()
 
 	ImGui::SameLine();
 	if (ImGui::Button(TrId("Don't Save"), buttonSize)) {
+		DiscardForClose();
 		closeApplication();
 	}
+	if (checkedFiles > 0) ImGui::SetItemTooltip(Tr("Close without saving the scene and move %d checked file(s) to the Recycle Bin"), checkedFiles);
+	else ImGui::SetItemTooltip("%s", Tr("Close without saving the scene"));
 
 	ImGui::SameLine();
 	if (ImGui::Button(TrId("Cancel"), buttonSize) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {

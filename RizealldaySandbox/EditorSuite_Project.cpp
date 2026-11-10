@@ -176,6 +176,8 @@ bool EditorSuite::CreateNewProject(const std::string& parentFolder, const std::s
 
 		// 6. Switch the editor to the new project *before* creating the scene so every path resolves inside it
 		currentProjectRoot_ = projPath;
+		sessionAssetsRoot_ = projPath; // everything in a project made now was made in this session
+		sessionStartGuids_.clear();
 		currentDirectory_ = projPath / "Assets";
 		SyncScriptModuleWithProject();
 

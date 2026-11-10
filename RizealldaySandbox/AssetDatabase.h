@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 // Asset database (roadmap 4.2).
 //
@@ -46,6 +47,8 @@ public:
 	std::filesystem::path ToAbsolute(const std::string& assetPath) const { return root_ / std::filesystem::path(assetPath); }
 
 	size_t Count() const { return guidToPath_.size(); }
+	/// GUIDs of every registered asset, in no particular order
+	std::vector<std::string> AllGuids() const;
 	static bool IsMetaFile(const std::filesystem::path& path);
 	static bool IsValidGuid(const std::string& guid);
 	static std::string NewGuid();
