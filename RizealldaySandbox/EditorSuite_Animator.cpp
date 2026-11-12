@@ -122,13 +122,10 @@ bool EditorSuite::SaveAnimatorController(const std::string& assetPath, const Ani
 	std::error_code ec;
 	const std::filesystem::path file = ControllerFile(currentProjectRoot_, assetPath);
 	std::filesystem::create_directories(file.parent_path(), ec);
-	std::ofstream out(file, std::ios::binary | std::ios::trunc);
-	if (!out) {
+	if (!WriteProjectFile(file, controller.ToJson() + '\n')) {
 		LogMessage(std::format("[Animator] Cannot write '{}'.", assetPath), 2);
 		return false;
 	}
-	out << controller.ToJson() << '\n';
-	out.close();
 	// The cache holds the saved version, so running Animators pick the change up immediately
 	auto shared = std::make_shared<AnimatorController>(controller);
 	animatorControllers_[assetPath] = { shared, std::filesystem::last_write_time(file, ec), std::chrono::steady_clock::now() };

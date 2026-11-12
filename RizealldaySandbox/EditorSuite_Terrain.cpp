@@ -124,13 +124,9 @@ bool EditorSuite::GenerateTerrain(GameObject& obj, const TerrainHeights* sculpte
 	}
 	const std::filesystem::path file = currentProjectRoot_ / std::filesystem::path(assetPath);
 	std::filesystem::create_directories(file.parent_path(), ec);
-	{
-		std::ofstream out(file, std::ios::binary | std::ios::trunc);
-		out << BuildTerrainObj(heights, terrain->size, terrain->height, terrain->uvRepeat);
-		if (!out) {
-			LogMessage(std::format("[Terrain] Could not write {}", assetPath), 2);
-			return false;
-		}
+	if (!WriteProjectFile(file, BuildTerrainObj(heights, terrain->size, terrain->height, terrain->uvRepeat))) {
+		LogMessage(std::format("[Terrain] Could not write {}", assetPath), 2);
+		return false;
 	}
 
 	// The previous bake: a preview made while dragging goes now; any other may come back with Undo,
@@ -247,9 +243,7 @@ bool EditorSuite::FinishTerrainSculpt()
 	std::filesystem::create_directories(file.parent_path(), ec);
 	{
 		const std::vector<uint8_t> bytes = EncodeTerrainHeights(sculpt.heights);
-		std::ofstream out(file, std::ios::binary | std::ios::trunc);
-		out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-		if (!out) {
+		if (!WriteProjectFile(file, std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()))) {
 			LogMessage(std::format("[Terrain] Could not write {}", assetPath), 2);
 			return false;
 		}

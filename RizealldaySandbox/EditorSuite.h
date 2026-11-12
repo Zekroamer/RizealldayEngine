@@ -750,6 +750,9 @@ public:
 	bool CreateProjectScripts(const std::filesystem::path& projectRoot, const std::string& projectName, std::string* error);
 	/// (Re)writes GameScripts/RizeEngine.props with this PC's SDK path; true when it changed
 	bool EnsureProjectScriptsProps();
+	/// GameScripts.vcxproj (or .filters) text with every Scripts\*.cpp / *.h item replaced by one wildcard item, so a new
+	/// script never edits the project file: no merge conflicts when two people add scripts, nothing to forget to commit
+	static std::string UseScriptWildcards(const std::string& text, bool filters);
 	/// Loads the DLL of the open project (or the workspace DLL) and builds it when it does not exist yet
 	void SyncScriptModuleWithProject();
 	/// True when there is no DLL yet, or a script source (Scripts/*.cpp, *.h) is newer than it (e.g. pulled from git
@@ -1322,6 +1325,15 @@ private:
 	bool showNewProjectModal_ = false;
 	bool newProjectInitGit_ = true;        // New Project: git init + first commit
 	std::string projectEngineWarning_;     // project.json names a newer engine than this editor
+	/// A project saved by a newer engine is read-only: this editor would drop what it does not know when saving
+	bool ProjectIsReadOnly() const { return !projectEngineWarning_.empty(); }
+	/// Every write of a shared project file (scene, prefab, asset, project setting) goes here: refused in a read-only
+	/// project, written through a temporary file so a crash or a full disk never leaves half a file for git
+	bool WriteProjectFile(const std::filesystem::path& file, std::string_view data);
+	std::filesystem::path readOnlyRefusedFile_;
+	/// Where new object ids start after a scene is opened: random and clear of the scene's ids (see the .cpp)
+	static uint32_t PickObjectIdBase(const std::unordered_set<uint32_t>& used);
+	bool randomObjectIdsInTests_ = false; // self-tests keep sequential ids unless a test asks
 	// Engine update from a release zip (EditorSuite_Update.cpp)
 	bool showEngineUpdateModal_ = false;
 	bool showAboutModal_ = false;

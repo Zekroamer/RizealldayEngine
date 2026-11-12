@@ -1,6 +1,8 @@
 ﻿#include "EditorSuiteInternal.h"
 #include "SceneJson.h"
 #include <chrono>
+#include <random>
+#include <set>
 
 using EditorSuiteDetail::SceneNameFromPath;
 using EditorSuiteDetail::IsSceneFile;
@@ -479,6 +481,7 @@ bool EditorSuite::DeserializeSceneFromString(const std::string& content)
 			}
 		}
 		nextObjectId_ = (std::max)(nextObjectId_, maxLoadedId + 1);
+		if (!isRunningTests_ || randomObjectIdsInTests_) nextObjectId_ = PickObjectIdBase(usedIds);
 
 		// Pass 2: build the objects
 		for (size_t objIndex = 0; objIndex < objectsJson->size(); ++objIndex) {
@@ -868,8 +871,44 @@ void EditorSuite::ReadGameObjectJson(const void* json, GameObject& obj)
 	ConvertLegacyParticleSystem(j, obj);
 }
 
+uint32_t EditorSuite::PickObjectIdBase(const std::unordered_set<uint32_t>& used)
+{
+	// Two teammates who open the same scene must not both continue at "highest id + 1": after a merge their new objects
+	// would share ids, and the loader re-ids one of them while its children stay with the other. A random start each
+	// time a scene is opened keeps their new ids apart; the ids after it are still handed out in order (fast).
+	static std::mt19937 rng{ std::random_device{}() };
+	constexpr uint32_t kSpan = 1u << 20; // ids one session may hand out without meeting a used one
+	for (int tries = 0; tries < 64; ++tries) {
+		const uint32_t base = 1 + rng() % (0x7FFFFFFFu - kSpan);
+		const bool clear = std::none_of(used.begin(), used.end(), [&](uint32_t id) { return id >= base && id - base < kSpan; });
+		if (clear) return base;
+	}
+	uint32_t highest = 0;
+	for (uint32_t id : used) highest = (std::max)(highest, id);
+	return highest + 1;
+}
+
+bool EditorSuite::WriteProjectFile(const std::filesystem::path& file, std::string_view data)
+{
+	if (ProjectIsReadOnly()) {
+		if (readOnlyRefusedFile_ != file) { // auto-saving windows retry: one line per file
+			readOnlyRefusedFile_ = file;
+			LogMessage(std::format("[Project] Not saved ({}): {} This editor only reads this project.", file.filename().string(), projectEngineWarning_), 2);
+		}
+		return false;
+	}
+	std::error_code ec;
+	if (file.has_parent_path()) std::filesystem::create_directories(file.parent_path(), ec); // a failure shows up as a failed write below
+	return EditorSuiteDetail::WriteFileAtomic(file, data);
+}
+
 bool EditorSuiteDetail::WriteFileAtomic(const std::filesystem::path& file, std::string_view text)
 {
+	// Replacing by rename would ignore a read-only file (marked by the user, or locked by a tool): honour it like a direct write
+	if (std::error_code statusEc; std::filesystem::exists(file, statusEc) &&
+		(std::filesystem::status(file, statusEc).permissions() & std::filesystem::perms::owner_write) == std::filesystem::perms::none) {
+		return false;
+	}
 	const std::filesystem::path tmp = file.string() + ".tmp";
 	{
 		std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
@@ -904,7 +943,7 @@ bool EditorSuite::SaveScene(const std::string& filePath)
 		std::filesystem::create_directories(p.parent_path(), ec); // a failure shows up as a failed write below
 	}
 
-	if (!EditorSuiteDetail::WriteFileAtomic(p, SerializeSceneToString())) {
+	if (!WriteProjectFile(p, SerializeSceneToString())) {
 		LogMessage(std::format("[Scene] Could not write {} (read-only, disk full or used by another program). The scene is not saved.", targetPath), 2);
 		return false;
 	}
@@ -983,6 +1022,17 @@ bool EditorSuite::LoadScene(const std::string& filePath)
 
 	// Linked prefab instances pick up prefab edits made since this scene was saved
 	if (sceneState_ == EditorSceneState::Edit && !IsStandaloneMode() && !PrefabInstanceRoots("").empty()) SyncLinkedPrefabs();
+	// A prefab the scene uses but this PC does not have (usually: the scene was committed without it). The instance stays
+	// as saved, but scripts that spawn it by name would fail only on this PC: say so now.
+	if (!IsStandaloneMode()) {
+		std::set<std::string> missing;
+		for (uint32_t root : PrefabInstanceRoots("")) {
+			if (const GameObject* o = FindGameObjectById(root, false); o && !HasPrefab(o->prefabSource)) missing.insert(o->prefabSource);
+		}
+		for (const std::string& name : missing) {
+			LogMessage(std::format("[Prefab] This scene uses prefab '{}', but {}.prefab.json is not in this project (not committed or not pulled yet?).", name, name), 1);
+		}
+	}
 	ResetUndoHistory();
 	isSceneDirty_ = false;
 	CheckForAutoSave(filePath);

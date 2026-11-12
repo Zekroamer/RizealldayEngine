@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
-#include <random>
+#include <cstdio>
 #include <sstream>
 #include <vector>
 
@@ -42,6 +42,25 @@ namespace {
 		return (it != j.end() && it->is_string()) ? it->get<std::string>() : std::string{};
 	}
 
+	/// 32 hex digits from a project-relative path (two 64-bit FNV-1a hashes); `salt` gives another one when it is taken
+	std::string PathGuid(const std::string& key, int salt)
+	{
+		const std::string text = key + '#' + std::to_string(salt);
+		uint64_t a = 14695981039346656037ull;
+		uint64_t b = 0x84222325cbf29ce4ull;
+		for (unsigned char c : text) {
+			a = (a ^ c) * 1099511628211ull;
+			b = (b ^ c) * 1099511628211ull;
+			b ^= b >> 29;
+		}
+		char hex[33];
+		std::snprintf(hex, sizeof(hex), "%016llx%016llx", static_cast<unsigned long long>(a), static_cast<unsigned long long>(b));
+		return hex;
+	}
+
+	/// A save in progress (EditorSuiteDetail::WriteFileAtomic) or one a crash left behind: never an asset
+	bool IsTemporaryFile(const fs::path& path) { return path.extension() == ".tmp"; }
+
 	bool WriteMeta(const fs::path& metaPath, const std::string& guid)
 	{
 		nlohmann::ordered_json j;
@@ -75,7 +94,7 @@ void AssetDatabase::Refresh()
 	for (auto it = fs::recursive_directory_iterator(assetsDir, fs::directory_options::skip_permission_denied, ec);
 		!ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
 		// Dot files (.gitkeep) are repository plumbing, not assets
-		if (!it->is_regular_file(ec) || IsMetaFile(it->path()) || it->path().filename().native().starts_with(L'.')) continue;
+		if (!it->is_regular_file(ec) || IsMetaFile(it->path()) || IsTemporaryFile(it->path()) || it->path().filename().native().starts_with(L'.')) continue;
 		const fs::path rel = it->path().lexically_relative(assetsDir);
 		files.emplace_back(it->path(), "Assets/" + rel.generic_string());
 	}
@@ -106,7 +125,9 @@ std::string AssetDatabase::RegisterFile(const fs::path& absFile, const std::stri
 	const bool usable = IsValidGuid(guid) && !guidToPath_.contains(guid);
 	if (!usable) {
 		if (readOnly_) return {};
-		guid = NewGuid();
+		// From the path, not random: every teammate's editor writes the same .meta, so git sees no change to fight over
+		guid.clear();
+		for (int salt = 0; guid.empty() || guidToPath_.contains(guid); ++salt) guid = PathGuid(Key(assetPath), salt);
 		if (!WriteMeta(metaPath, guid)) return {};
 	}
 	guidToPath_[guid] = assetPath;
@@ -122,7 +143,7 @@ std::string AssetDatabase::GuidForPath(const std::string& path)
 
 	std::error_code ec;
 	const fs::path abs = ToAbsolute(assetPath);
-	if (!fs::is_regular_file(abs, ec) || IsMetaFile(abs)) return {};
+	if (!fs::is_regular_file(abs, ec) || IsMetaFile(abs) || IsTemporaryFile(abs)) return {};
 	return RegisterFile(abs, assetPath);
 }
 
@@ -261,25 +282,6 @@ bool AssetDatabase::IsMetaFile(const fs::path& path)
 bool AssetDatabase::IsValidGuid(const std::string& guid)
 {
 	return guid.size() == 32 && std::all_of(guid.begin(), guid.end(), [](unsigned char c) { return std::isxdigit(c) != 0; });
-}
-
-std::string AssetDatabase::NewGuid()
-{
-	static std::mt19937_64 rng = [] {
-		std::random_device rd;
-		std::seed_seq seed{ rd(), rd(), rd(), rd(), rd(), rd(), rd(), rd() };
-		return std::mt19937_64(seed);
-	}();
-	static constexpr char kHex[] = "0123456789abcdef";
-	std::string guid(32, '0');
-	for (int half = 0; half < 2; ++half) {
-		uint64_t bits = rng();
-		for (int i = 0; i < 16; ++i) {
-			guid[half * 16 + i] = kHex[bits & 0xF];
-			bits >>= 4;
-		}
-	}
-	return guid;
 }
 
 std::string AssetDatabase::Key(const std::string& assetPath)

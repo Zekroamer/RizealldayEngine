@@ -332,7 +332,7 @@ bool EditorSuite::SaveMapchipTileSet()
 	const std::filesystem::path file = TileSetFile(currentProjectRoot_, mapTileSetPath_);
 	std::error_code ec;
 	std::filesystem::create_directories(file.parent_path(), ec);
-	if (!EditorSuiteDetail::WriteFileAtomic(file, mapTileSet_.ToJson())) {
+	if (!WriteProjectFile(file, mapTileSet_.ToJson())) {
 		LogMessage(std::format("[Mapchip] Cannot write tile set {}", file.string()), 2);
 		return false;
 	}
@@ -416,7 +416,7 @@ bool EditorSuite::SaveMapchipCSV(const std::string& filePath)
 	const std::filesystem::path p(filePath);
 	std::error_code ec;
 	if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
-	if (!EditorSuiteDetail::WriteFileAtomic(p, text)) {
+	if (!WriteProjectFile(p, text)) {
 		LogMessage(std::format("[Mapchip] Cannot write {}", filePath), 2);
 		return false;
 	}

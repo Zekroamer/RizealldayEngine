@@ -244,7 +244,7 @@ bool EditorSuite::SavePrefab(uint32_t rootId, const std::string& prefabName, con
 	std::error_code ec;
 	const std::filesystem::path path = ResolvePrefabFile(name);
 	std::filesystem::create_directories(path.parent_path(), ec);
-	if (!EditorSuiteDetail::WriteFileAtomic(path, SceneJson::DumpCompact(prefab))) {
+	if (!WriteProjectFile(path, SceneJson::DumpCompact(prefab))) {
 		LogMessage(std::format("[Prefab] Cannot write '{}'.", path.string()), 2);
 		return false;
 	}

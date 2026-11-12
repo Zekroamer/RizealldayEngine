@@ -13,8 +13,7 @@ namespace {
 		j["engineVersion"] = kEngineVersion;
 		j["startupScene"] = startupScene;
 		j["gameTitle"] = gameTitle.empty() ? projectName : gameTitle;
-		std::ofstream pj(file);
-		pj << SceneJson::DumpCompact(j);
+		EditorSuiteDetail::WriteFileAtomic(file, SceneJson::DumpCompact(j));
 	}
 
 	void WriteFile(const std::filesystem::path& file, const std::string& text)
@@ -36,7 +35,8 @@ namespace {
 			"*.user\n"
 			"imgui.ini\n"
 			"GameScripts/RizeEngine.props\n"
-			"GameScripts/x64/\n");
+			"GameScripts/x64/\n"
+			"*.tmp\n");
 		WriteFile(root / ".gitattributes",
 			"* text=auto\n"
 			"*.png binary\n*.jpg binary\n*.jpeg binary\n*.dds binary\n*.tga binary\n*.bmp binary\n"
@@ -559,10 +559,12 @@ bool EditorSuite::OpenProject(const std::string& folderPath)
 			} else {
 				projectEngineWarning_.clear();
 				if (cmp < 0 && !isRunningTests_) {
-					// Teammates on the older engine get the warning above once this is pushed
+					// Teammates on the older engine get the warning above (and a read-only project) once this is pushed
 					(*settings)["engineVersion"] = kEngineVersion;
-					std::ofstream out(projJsonPath, std::ios::trunc);
-					out << SceneJson::DumpCompact(*settings);
+					if (EditorSuiteDetail::WriteFileAtomic(projJsonPath, SceneJson::DumpCompact(*settings))) {
+						LogMessage(std::format("[Project] project.json now says engine {} (was {}). When it is pushed, every teammate needs this engine version too.",
+							kEngineVersion, projectEngine.empty() ? std::string("unknown") : projectEngine), 1);
+					}
 				}
 			}
 		} else {
@@ -580,6 +582,19 @@ bool EditorSuite::OpenProject(const std::string& folderPath)
 	strncpy_s(openProjectFolderBuf_, currentProjectRoot_.string().c_str(), sizeof(openProjectFolderBuf_) - 1);
 	strncpy_s(buildGameTitleBuf_, (gameTitle.empty() ? projectName : gameTitle).c_str(), sizeof(buildGameTitleBuf_) - 1);
 	strncpy_s(buildOutputDirBuf_, (currentProjectRoot_ / "Build").string().c_str(), sizeof(buildOutputDirBuf_) - 1); // not next to the editor: updates replace that folder
+	// Projects made before 2.12 do not ignore the temporary files a crash during a save can leave behind
+	if (const std::filesystem::path gitignore = currentProjectRoot_ / ".gitignore"; !ProjectIsReadOnly() && std::filesystem::exists(gitignore)) {
+		std::ifstream in(gitignore, std::ios::binary);
+		std::stringstream text;
+		text << in.rdbuf();
+		in.close();
+		std::string content = text.str();
+		if (content.find("*.tmp") == std::string::npos) {
+			if (!content.empty() && content.back() != '\n') content += '\n';
+			content += "*.tmp\n";
+			if (WriteProjectFile(gitignore, content)) LogMessage("[Project] Added *.tmp to .gitignore (files a crash during a save can leave behind).", 0);
+		}
+	}
 	SyncScriptModuleWithProject(); // before the scene so its scripts come from the project's DLL
 
 	std::filesystem::path sceneFullPath = currentProjectRoot_ / startupScene;

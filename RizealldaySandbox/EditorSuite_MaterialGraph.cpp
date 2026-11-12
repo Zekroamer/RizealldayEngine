@@ -25,9 +25,7 @@ namespace {
 		}
 		std::string file = base + extension;
 		for (int i = 1; fs::exists(dir / fs::path(file), ec); ++i) file = base + " " + std::to_string(i) + extension;
-		std::ofstream out(dir / fs::path(file), std::ios::binary);
-		if (!out) return {};
-		out << graph.ToJson();
+		if (!EditorSuiteDetail::WriteFileAtomic(dir / fs::path(file), graph.ToJson())) return {};
 		return "Assets/Effects/" + file;
 	}
 }
@@ -138,12 +136,7 @@ bool EditorSuite::OpenMaterialGraph(const std::string& assetPath)
 bool EditorSuite::SaveMaterialGraph()
 {
 	if (materialEditorPath_.empty()) return false;
-	std::ofstream out(ResolveAssetPath(materialEditorPath_), std::ios::binary);
-	if (out) {
-		out << materialEditor_.graph.ToJson();
-		out.close();
-	}
-	if (!out) {
+	if (!WriteProjectFile(ResolveAssetPath(materialEditorPath_), materialEditor_.graph.ToJson())) {
 		// Kept unsaved and tried again while the window is open; the window shows "Not saved"
 		if (!materialSaveFailed_) LogMessage("[Material] Could not write " + materialEditorPath_ + " (read-only or used by another program)", 2);
 		materialSaveFailed_ = true;

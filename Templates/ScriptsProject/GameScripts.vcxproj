@@ -73,9 +73,10 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="Scripts\dllmain.cpp" />
+    <ClCompile Include="Scripts\*.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Scripts\*.h" />
     <ClInclude Include="$(RizeEngineSDK)base\ScriptAPI.h" />
   </ItemGroup>
   <Target Name="CheckRizeEngineSDK" BeforeTargets="PrepareForBuild">

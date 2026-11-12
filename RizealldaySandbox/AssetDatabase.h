@@ -7,7 +7,8 @@
 
 // Asset database (roadmap 4.2).
 //
-// Every file under <project>/Assets gets a "<file>.meta" next to it holding a stable GUID:
+// Every file under <project>/Assets gets a "<file>.meta" next to it holding a stable GUID (a new one is made from the
+// file's path, so every teammate's editor writes the same .meta for the same file):
 //     { "guid": "3f2a...32 hex...", "version": 1 }
 // Scenes and prefabs store the GUID next to the old path ("textureGuid" next to "texturePath"), so an asset
 // renamed or moved inside the editor (or moved together with its .meta in Explorer) is still found.
@@ -51,7 +52,6 @@ public:
 	std::vector<std::string> AllGuids() const;
 	static bool IsMetaFile(const std::filesystem::path& path);
 	static bool IsValidGuid(const std::string& guid);
-	static std::string NewGuid();
 
 private:
 	static std::string Key(const std::string& assetPath); // case-insensitive lookup key

@@ -294,6 +294,12 @@ void EditorSuite::DrawMainMenuBar()
 			DrawHelpMenu();
 			ImGui::EndMenu();
 		}
+		if (ProjectIsReadOnly()) {
+			// Saving would drop what this older editor does not know: say so where it is always seen
+			ImGui::Separator();
+			ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", Tr("READ-ONLY: this project needs a newer engine (Help > Install Engine Update...)"));
+			ImGui::SetItemTooltip("%s", projectEngineWarning_.c_str());
+		}
 		ImGui::EndMainMenuBar();
 	}
 #endif

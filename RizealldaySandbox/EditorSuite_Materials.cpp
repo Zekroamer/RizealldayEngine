@@ -84,12 +84,11 @@ bool EditorSuite::WriteMaterialAssetFile(const std::string& assetPath, const Pbr
 			if (const std::string guid = text.empty() ? std::string() : AssetDb().GuidForPath(text); !guid.empty()) root[std::string(field.name) + "Guid"] = guid;
 		}
 	}
-	std::ofstream file(currentProjectRoot_ / std::filesystem::path(assetPath)); // a new file: ResolveAssetPath only finds existing ones
-	if (!file) {
+	// currentProjectRoot_ / path: it may be a new file, and ResolveAssetPath only finds existing ones
+	if (!WriteProjectFile(currentProjectRoot_ / std::filesystem::path(assetPath), root.dump(2))) {
 		LogMessage("[Material] Could not write " + assetPath, 2);
 		return false;
 	}
-	file << root.dump(2);
 	return true;
 }
 

@@ -76,6 +76,7 @@ struct EditorSuiteTestAccess {
 	static double LastAutoSave(const EditorSuite& s) { return s.lastAutoSaveTime_; }
 	static bool& Dirty(EditorSuite& s) { return s.isSceneDirty_; }
 	static bool ScriptsNeedRebuild(const std::filesystem::path& dir, const std::filesystem::path& dll) { return EditorSuite::ScriptsNeedRebuild(dir, dll); }
+	static std::string Wild(const std::string& text, bool filters) { return EditorSuite::UseScriptWildcards(text, filters); }
 	static std::vector<std::vector<int>>& MapGrid(EditorSuite& s) { return s.mapLayers_[0]; }
 	static std::vector<std::vector<std::vector<int>>>& MapLayers(EditorSuite& s) { return s.mapLayers_; }
 	static int& EditLayer(EditorSuite& s) { return s.mapEditLayer_; }
@@ -171,6 +172,13 @@ struct EditorSuiteTestAccess {
 	static int ShaderReloads(const EditorSuite& s) { return s.shaderReloadCount_; }
 	static const std::filesystem::path& ScriptsDllOverride(EditorSuite& s) { return s.scriptModule_.GetDllPathOverride(); }
 	static const std::string& EngineWarning(EditorSuite& s) { return s.projectEngineWarning_; }
+	static std::string& EngineWarningRef(EditorSuite& s) { return s.projectEngineWarning_; }
+	static bool& RandomIdsInTests(EditorSuite& s) { return s.randomObjectIdsInTests_; }
+	static bool LogHas(const EditorSuite& s, const std::string& part)
+	{
+		for (const auto& entry : s.consoleLogs_) if (entry.message.find(part) != std::string::npos) return true;
+		return false;
+	}
 	static void Log(EditorSuite& s, const std::string& text, int type) { s.LogMessage(text, type); }
 	static void PrepareForTest(EditorSuite& s)
 	{
@@ -1298,6 +1306,210 @@ TEST_CASE(Project, RenamingTheStartupSceneUpdatesTheProject)
 	fs::remove_all(root, ec);
 }
 
+TEST_CASE(Project, NewerProjectIsReadOnly)
+{
+	// An older editor must not save a project made with a newer engine: it would drop what it does not know
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "ReadOnlyProject";
+	std::error_code ec;
+	fs::remove_all(root, ec);
+	fs::create_directories(root / "ProjectSettings", ec);
+	fs::create_directories(root / "Assets" / "Scenes", ec);
+	std::ofstream(root / "ProjectSettings" / "project.json")
+		<< R"({"projectName": "Future", "engineVersion": "99.0.0", "startupScene": "Assets/Scenes/Main.scene.json"})";
+	std::ofstream(root / "Assets" / "Scenes" / "Main.scene.json") << R"({"sceneName": "Main", "gameObjects": []})";
+	const fs::path savedRoot = A::ProjectRoot(s);
+	const fs::path savedDirectory = A::CurrentDirectory(s);
+
+	REQUIRE(s.OpenProject(root.string()));
+	CHECK(!A::EngineWarning(s).empty());
+	const std::string before = [&] { std::ifstream in(root / "Assets" / "Scenes" / "Main.scene.json"); std::stringstream t; t << in.rdbuf(); return t.str(); }();
+	s.CreateGameObject("Added", GameObjectType::Empty);
+	CHECK(!s.SaveScene((root / "Assets" / "Scenes" / "Main.scene.json").string()));
+	const std::string after = [&] { std::ifstream in(root / "Assets" / "Scenes" / "Main.scene.json"); std::stringstream t; t << in.rdbuf(); return t.str(); }();
+	CHECK(after == before);
+	CHECK(!s.SaveScene((root / "Assets" / "Scenes" / "New.scene.json").string()));
+	CHECK(!fs::exists(root / "Assets" / "Scenes" / "New.scene.json"));
+	CHECK(!A::SaveMapCsv(s, (root / "Assets" / "Levels" / "x.csv").string()));
+	CHECK(!fs::exists(root / "Assets" / "Levels" / "x.csv"));
+	CHECK(!fs::exists(root / "Assets" / "Scenes" / "Main.scene.json.tmp"));
+
+	// Same project once the engine is new enough: saving works again
+	A::EngineWarningRef(s).clear();
+	CHECK(s.SaveScene((root / "Assets" / "Scenes" / "New.scene.json").string()));
+	CHECK(fs::exists(root / "Assets" / "Scenes" / "New.scene.json"));
+
+	A::ProjectRoot(s) = savedRoot;
+	A::CurrentDirectory(s) = savedDirectory;
+	A::SyncScripts(s);
+	s.NewScene();
+	fs::remove_all(root, ec);
+}
+
+TEST_CASE(Project, ScriptsProjectUsesWildcards)
+{
+	// Each script listed by name: two people adding scripts always conflict in the project file. One wildcard instead.
+	const std::string vcxproj =
+		"  <ItemGroup>\r\n"
+		"    <ClCompile Include=\"Scripts\\PlayerController.cpp\" />\r\n"
+		"    <ClCompile Include=\"Scripts\\BossScript.cpp\" />\r\n"
+		"    <ClCompile Include=\"Scripts\\Enemies\\Bat.cpp\" />\r\n"
+		"    <ClCompile Include=\"Scripts\\dllmain.cpp\" />\r\n"
+		"  </ItemGroup>\r\n"
+		"  <ItemGroup>\r\n"
+		"    <ClInclude Include=\"Scripts\\PlayerController.h\" />\r\n"
+		"    <ClInclude Include=\"Scripts\\BossScript.h\" />\r\n"
+		"    <ClInclude Include=\"$(RizeEngineSDK)base\\ScriptAPI.h\" />\r\n"
+		"  </ItemGroup>\r\n";
+	const std::string wild = A::Wild(vcxproj, false);
+	CHECK_MSG(wild ==
+		"  <ItemGroup>\r\n"
+		"    <ClCompile Include=\"Scripts\\*.cpp\" />\r\n"
+		"    <ClCompile Include=\"Scripts\\Enemies\\Bat.cpp\" />\r\n" // a subfolder is not covered by the wildcard: kept
+		"  </ItemGroup>\r\n"
+		"  <ItemGroup>\r\n"
+		"    <ClInclude Include=\"Scripts\\*.h\" />\r\n"
+		"    <ClInclude Include=\"$(RizeEngineSDK)base\\ScriptAPI.h\" />\r\n"
+		"  </ItemGroup>\r\n", wild);
+	CHECK(A::Wild(wild, false) == wild); // once only
+
+	// The template of a new project has no header listed yet: the header wildcard goes before ScriptAPI.h
+	const std::string fresh = "    <ClCompile Include=\"Scripts\\dllmain.cpp\" />\n    <ClInclude Include=\"$(RizeEngineSDK)base\\ScriptAPI.h\" />\n";
+	CHECK(A::Wild(fresh, false) ==
+		"    <ClCompile Include=\"Scripts\\*.cpp\" />\n    <ClInclude Include=\"Scripts\\*.h\" />\n    <ClInclude Include=\"$(RizeEngineSDK)base\\ScriptAPI.h\" />\n");
+
+	// .filters: the same with the Scripts filter
+	const std::string filters =
+		"    <ClCompile Include=\"Scripts\\BossScript.cpp\">\n      <Filter>Scripts</Filter>\n    </ClCompile>\n"
+		"    <ClCompile Include=\"Scripts\\dllmain.cpp\">\n      <Filter>Scripts</Filter>\n    </ClCompile>\n"
+		"    <ClInclude Include=\"Scripts\\BossScript.h\">\n      <Filter>Scripts</Filter>\n    </ClInclude>\n"
+		"    <ClInclude Include=\"$(RizeEngineSDK)base\\ScriptAPI.h\">\n      <Filter>Engine SDK</Filter>\n    </ClInclude>\n";
+	CHECK(A::Wild(filters, true) ==
+		"    <ClCompile Include=\"Scripts\\*.cpp\">\n      <Filter>Scripts</Filter>\n    </ClCompile>\n"
+		"    <ClInclude Include=\"Scripts\\*.h\">\n      <Filter>Scripts</Filter>\n    </ClInclude>\n"
+		"    <ClInclude Include=\"$(RizeEngineSDK)base\\ScriptAPI.h\">\n      <Filter>Engine SDK</Filter>\n    </ClInclude>\n");
+}
+
+TEST_CASE(AssetDatabase, NewGuidsAreTheSameOnEveryPc)
+{
+	// A .meta made by the editor (missing one, or a duplicated GUID) must get the same GUID on every teammate's PC,
+	// or each PC rewrites the .meta and git shows it changed everywhere
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "GuidProject";
+	std::error_code ec;
+	fs::remove_all(root, ec);
+	fs::create_directories(root / "Assets" / "Scenes", ec);
+	std::ofstream(root / "Assets" / "Scenes" / "Title.scene.json") << "{}";
+	std::ofstream(root / "Assets" / "Scenes" / "Gameplay.scene.json") << "{}";
+	auto metaGuid = [&](const char* name) {
+		std::ifstream in(root / "Assets" / "Scenes" / (std::string(name) + ".meta"));
+		std::stringstream text;
+		text << in.rdbuf();
+		std::string guid;
+		if (auto j = SceneJson::Parse(text.str())) SceneJson::Read(*j, "guid", guid);
+		return guid;
+	};
+
+	// Two PCs (two databases) without .meta files: the same GUIDs
+	AssetDatabase pcA;
+	pcA.SetRoot(root);
+	const std::string titleA = metaGuid("Title.scene.json");
+	const std::string gameplayA = metaGuid("Gameplay.scene.json");
+	CHECK(AssetDatabase::IsValidGuid(titleA));
+	CHECK(titleA != gameplayA);
+	fs::remove(root / "Assets" / "Scenes" / "Title.scene.json.meta", ec);
+	fs::remove(root / "Assets" / "Scenes" / "Gameplay.scene.json.meta", ec);
+	AssetDatabase pcB;
+	pcB.SetRoot(root);
+	CHECK(metaGuid("Title.scene.json") == titleA);
+	CHECK(metaGuid("Gameplay.scene.json") == gameplayA);
+
+	// Two scenes with the same GUID (a file renamed on two branches): the longer path gets a new one, the same on every PC
+	fs::copy_file(root / "Assets" / "Scenes" / "Title.scene.json.meta", root / "Assets" / "Scenes" / "Gameplay.scene.json.meta", fs::copy_options::overwrite_existing, ec);
+	AssetDatabase pcC;
+	pcC.SetRoot(root);
+	const std::string fixedC = metaGuid("Gameplay.scene.json");
+	CHECK(fixedC != titleA);
+	fs::copy_file(root / "Assets" / "Scenes" / "Title.scene.json.meta", root / "Assets" / "Scenes" / "Gameplay.scene.json.meta", fs::copy_options::overwrite_existing, ec);
+	AssetDatabase pcD;
+	pcD.SetRoot(root);
+	CHECK(metaGuid("Gameplay.scene.json") == fixedC);
+	CHECK(metaGuid("Title.scene.json") == titleA);
+
+	// A temporary file left by a crash during a save is not an asset: no .meta that could be committed
+	std::ofstream(root / "Assets" / "Scenes" / "Title.scene.json.tmp") << "{";
+	AssetDatabase pcE;
+	pcE.SetRoot(root);
+	CHECK(!fs::exists(root / "Assets" / "Scenes" / "Title.scene.json.tmp.meta"));
+	CHECK(pcE.GuidForPath("Assets/Scenes/Title.scene.json.tmp").empty());
+	fs::remove_all(root, ec);
+}
+
+TEST_CASE(Project, OldGitignoreLearnsAboutTempFiles)
+{
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "GitignoreProject";
+	std::error_code ec;
+	fs::remove_all(root, ec);
+	fs::create_directories(root / "ProjectSettings", ec);
+	fs::create_directories(root / "Assets" / "Scenes", ec);
+	std::ofstream(root / "ProjectSettings" / "project.json") << R"({"projectName": "Old", "startupScene": "Assets/Scenes/Main.scene.json"})";
+	std::ofstream(root / "Assets" / "Scenes" / "Main.scene.json") << R"({"sceneName": "Main", "gameObjects": []})";
+	std::ofstream(root / ".gitignore") << "Library/\nBuild/"; // made before *.tmp was in the template, no final newline
+	const fs::path savedRoot = A::ProjectRoot(s);
+	const fs::path savedDirectory = A::CurrentDirectory(s);
+	REQUIRE(s.OpenProject(root.string()));
+	auto gitignore = [&] { std::ifstream in(root / ".gitignore"); std::stringstream t; t << in.rdbuf(); return t.str(); };
+	CHECK_MSG(gitignore() == "Library/\nBuild/\n*.tmp\n", gitignore());
+	REQUIRE(s.OpenProject(root.string()));
+	CHECK(gitignore() == "Library/\nBuild/\n*.tmp\n"); // only once
+	A::ProjectRoot(s) = savedRoot;
+	A::CurrentDirectory(s) = savedDirectory;
+	A::SyncScripts(s);
+	s.NewScene();
+	fs::remove_all(root, ec);
+}
+
+TEST_CASE(Project, MissingPrefabIsReportedOnLoad)
+{
+	// A scene committed without the prefab it uses: the instance stays as saved, and the Console says what is missing
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "MissingPrefabProject";
+	std::error_code ec;
+	fs::remove_all(root, ec);
+	fs::create_directories(root / "Assets" / "Scenes", ec);
+	const fs::path savedRoot = A::ProjectRoot(s);
+	A::ProjectRoot(s) = root;
+	std::ofstream(root / "Assets" / "Scenes" / "Uses.scene.json")
+		<< R"({"sceneName": "Uses", "gameObjects": [{"id": 5, "name": "Boss", "prefab": "GhostBoss", "prefabNode": 0}]})";
+	REQUIRE(s.LoadScene((root / "Assets" / "Scenes" / "Uses.scene.json").string()));
+	CHECK(s.FindGameObjectByName("Boss", false) != nullptr);
+	CHECK(A::LogHas(s, "uses prefab 'GhostBoss'"));
+	A::ProjectRoot(s) = savedRoot;
+	s.NewScene();
+	fs::remove_all(root, ec);
+}
+
+TEST_CASE(SceneIO, OpeningASceneStartsNewIdsAwayFromItsIds)
+{
+	// Two teammates who open the same scene and both add an object must not give both the same id
+	A::RandomIdsInTests(s) = true;
+	const std::string scene = R"({"sceneName": "Ids", "gameObjects": [{"id": 1, "name": "A"}, {"id": 2, "name": "B", "parentId": 1}]})";
+	REQUIRE(s.DeserializeSceneFromString(scene));
+	const uint32_t first = s.CreateGameObject("New", GameObjectType::Empty).id;
+	const uint32_t second = s.CreateGameObject("Next", GameObjectType::Empty).id;
+	REQUIRE(s.DeserializeSceneFromString(scene)); // another PC (or another session) opening the same scene
+	const uint32_t other = s.CreateGameObject("New", GameObjectType::Empty).id;
+	A::RandomIdsInTests(s) = false;
+	CHECK(first != 3u); // not "highest + 1" like every other PC
+	CHECK(second == first + 1); // in order after the start, so making many objects stays fast
+	CHECK(other != first);
+	CHECK(first < 0x80000000u); // parentId is an int
+	CHECK(s.FindGameObjectById(2, false) != nullptr);
+	CHECK(s.FindGameObjectById(2, false)->parentId == 1); // the scene's own ids are kept
+	s.NewScene();
+}
+
 TEST_CASE(Project, CreateProjectRules)
 {
 	namespace fs = std::filesystem;
@@ -1428,16 +1640,18 @@ TEST_CASE(Project, NewProjectIsCleanForGit)
 			CHECK_MSG(text.find(root.string()) == std::string::npos && text.find(sdk.string()) == std::string::npos, rel.string());
 		}
 
-		// Sample scripts are copied into the project and registered once
+		// Sample scripts are copied into the project; the project builds every file in Scripts\ through one wildcard,
+		// so adding scripts never edits GameScripts.vcxproj (no merge conflicts between teammates)
+		const std::string vcxprojBefore = read(root / "GameScripts" / "GameScripts.vcxproj");
 		CHECK(s.InstallSampleScripts("Survivors"));
 		CHECK(s.InstallSampleScripts("Survivors"));
 		CHECK(fs::exists(root / "GameScripts" / "Scripts" / "SurvivorsPlayer.cpp"));
 		const std::string vcxproj = read(root / "GameScripts" / "GameScripts.vcxproj");
-		const size_t first = vcxproj.find("Scripts\\SurvivorsPlayer.cpp");
-		CHECK(first != std::string::npos);
-		CHECK(vcxproj.find("Scripts\\SurvivorsPlayer.cpp", first + 1) == std::string::npos);
-		CHECK(vcxproj.find("Scripts\\SurvivorsShared.h") != std::string::npos);
-		CHECK(read(root / "GameScripts" / "GameScripts.vcxproj.filters").find("Scripts\\SurvivorsPlayer.h") != std::string::npos);
+		CHECK(vcxproj == vcxprojBefore);
+		CHECK(vcxproj.find("<ClCompile Include=\"Scripts\\*.cpp\" />") != std::string::npos);
+		CHECK(vcxproj.find("<ClInclude Include=\"Scripts\\*.h\" />") != std::string::npos);
+		CHECK(vcxproj.find("Scripts\\SurvivorsPlayer.cpp") == std::string::npos);
+		CHECK(read(root / "GameScripts" / "GameScripts.vcxproj.filters").find("Scripts\\*.h") != std::string::npos);
 	}
 
 	A::ProjectRoot(s) = savedRoot;

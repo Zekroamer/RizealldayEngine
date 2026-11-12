@@ -1,5 +1,6 @@
 ﻿#include "EditorSuiteInternal.h"
 #include "EngineUpdate.h"
+#include <regex>
 
 // Per-project game scripts: every project carries GameScripts/ (vcxproj + Scripts/*.cpp) in its own git repo,
 // builds Library/Scripts/GameScripts.dll on each PC, and finds the engine headers through GameScripts/RizeEngine.props.
@@ -153,10 +154,56 @@ bool EditorSuite::CreateProjectScripts(const fs::path& projectRoot, const std::s
 	return true;
 }
 
+std::string EditorSuite::UseScriptWildcards(const std::string& text, bool filters)
+{
+	if (text.empty() || text.find("Scripts\\*.cpp") != std::string::npos) return text;
+	const std::string nl = text.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+	auto item = [&](const char* tag, const char* pattern) {
+		return filters ? std::format("    <{0} Include=\"Scripts\\{1}\">{2}      <Filter>Scripts</Filter>{2}    </{0}>{2}", tag, pattern, nl)
+			: std::format("    <{} Include=\"Scripts\\{}\" />{}", tag, pattern, nl);
+	};
+	std::string out = text;
+	// Every listed script of one kind goes; the first is replaced by the wildcard item. Returns whether there was one.
+	auto collapse = [&](const std::string& tag, const std::string& ext, const std::string& wildcard) {
+		// Files directly in Scripts\ only (the wildcard does not go into subfolders, so their items stay)
+		const std::regex listed = filters
+			? std::regex("[ \\t]*<" + tag + " Include=\"Scripts\\\\[^\"*\\\\]+\\." + ext + "\">\\s*<Filter>[^<]*</Filter>\\s*</" + tag + ">\\r?\\n")
+			: std::regex("[ \\t]*<" + tag + " Include=\"Scripts\\\\[^\"*\\\\]+\\." + ext + "\"\\s*/>\\r?\\n");
+		std::string result;
+		size_t last = 0;
+		bool placed = false;
+		for (auto it = std::sregex_iterator(out.begin(), out.end(), listed); it != std::sregex_iterator(); ++it) {
+			result.append(out, last, static_cast<size_t>(it->position()) - last);
+			if (!placed) result += wildcard;
+			placed = true;
+			last = static_cast<size_t>(it->position() + it->length());
+		}
+		result.append(out, last, std::string::npos);
+		out = std::move(result);
+		return placed;
+	};
+	collapse("ClCompile", "cpp", item("ClCompile", "*.cpp")); // dllmain.cpp is always listed
+	if (!collapse("ClInclude", "h", item("ClInclude", "*.h"))) {
+		const std::string anchor = filters ? "    <ClInclude Include=\"$(RizeEngineSDK)base\\ScriptAPI.h\">" : "    <ClInclude Include=\"$(RizeEngineSDK)base\\ScriptAPI.h\"";
+		if (const size_t pos = out.find(anchor); pos != std::string::npos) out.insert(pos, item("ClInclude", "*.h"));
+	}
+	return out;
+}
+
 bool EditorSuite::EnsureProjectScriptsProps()
 {
 	const fs::path dir = ProjectScriptsDir();
 	if (dir.empty()) return false;
+	// Older projects list each script: switch them to wildcards once (the file is shared, so not in a read-only project)
+	if (!ProjectIsReadOnly()) {
+		for (const auto& [file, filters] : { std::pair{ dir / "GameScripts.vcxproj", false }, std::pair{ dir / "GameScripts.vcxproj.filters", true } }) {
+			const std::string text = ReadTextFile(file);
+			const std::string wildcards = UseScriptWildcards(text, filters);
+			if (wildcards != text && WriteProjectFile(file, wildcards)) {
+				LogMessage("[Scripts] " + file.filename().string() + " now builds every file in GameScripts/Scripts (Scripts\\*.cpp, *.h): commit this change once.", 0);
+			}
+		}
+	}
 	const std::string wanted = ScriptsPropsText(ResolveEngineSdkDir());
 	if (ReadTextFile(dir / "RizeEngine.props") == wanted) return false;
 	WriteTextFile(dir / "RizeEngine.props", wanted);
@@ -221,6 +268,7 @@ void EditorSuite::SyncScriptModuleWithProject()
 void EditorSuite::AddScriptFilesToVcxproj(const std::vector<std::string>& classNames)
 {
 	const fs::path vcxprojPath = ResolveGameScriptsVcxproj();
+	if (ReadTextFile(vcxprojPath).find("Scripts\\*.cpp") != std::string::npos) return; // wildcards: every script is built already
 	const fs::path filtersPath = vcxprojPath.string() + ".filters";
 	const fs::path sourceDir = ResolveGameScriptsDir() / "Scripts";
 	// The engine's vcxproj points at ScriptAPI.h by relative path, a project's through $(RizeEngineSDK)

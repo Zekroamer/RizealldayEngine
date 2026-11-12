@@ -9,11 +9,14 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Scripts\dllmain.cpp">
+    <ClCompile Include="Scripts\*.cpp">
       <Filter>Scripts</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Scripts\*.h">
+      <Filter>Scripts</Filter>
+    </ClInclude>
     <ClInclude Include="$(RizeEngineSDK)base\ScriptAPI.h">
       <Filter>Engine SDK</Filter>
     </ClInclude>

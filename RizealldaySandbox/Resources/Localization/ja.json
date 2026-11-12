@@ -1192,5 +1192,6 @@
 	"Edit Layer": "編集するレイヤー",
 	"Copy Layer to Next": "次のレイヤーにコピー",
 	"Clear Layer": "レイヤーを消去",
-	"Only one layer: set the third number of Columns / Rows / Layers, or use Copy Layer to Next.": "レイヤーは1つだけです。「列 / 行 / レイヤー」の3つ目の数字を変えるか、「次のレイヤーにコピー」を使ってください。"
+	"Only one layer: set the third number of Columns / Rows / Layers, or use Copy Layer to Next.": "レイヤーは1つだけです。「列 / 行 / レイヤー」の3つ目の数字を変えるか、「次のレイヤーにコピー」を使ってください。",
+	"READ-ONLY: this project needs a newer engine (Help > Install Engine Update...)": "読み取り専用: このプロジェクトには新しいエンジンが必要です（Help > Install Engine Update...）"
 }

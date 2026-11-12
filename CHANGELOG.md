@@ -1,5 +1,17 @@
 # Changelog — Rizeallday Engine v2
 
+## [Unreleased]
+
+### Kerja tim dengan GitHub
+- **Project dari engine yang lebih baru kini hanya-baca.** Editor versi lama yang membuka project versi lebih baru tidak lagi menyimpan scene, prefab, aset maupun pengaturan project. Sebelumnya data yang belum dikenalnya (misalnya lapisan Mapchip) diam-diam hilang. Menu bar menampilkan tulisan merah **READ-ONLY** dengan cara memperbaikinya.
+- **Script tanpa konflik merge.** `GameScripts.vcxproj` sekarang memakai `Scripts\*.cpp` dan `Scripts\*.h`, jadi script baru tidak lagi mengubah file project, dan dua orang yang menambah script tidak bentrok. Project lama diubah otomatis satu kali (Console mengingatkan untuk commit perubahan itu).
+- **`.meta` sama di semua PC.** GUID baru (aset tanpa `.meta`, atau GUID kembar) sekarang dihitung dari path file, jadi setiap editor menulis `.meta` yang sama dan `git status` tidak lagi menunjukkan `.meta` yang terus berubah.
+- **Semua file bersama disimpan lewat file sementara.** Ini termasuk Material/Particle Graph, Animator, Timeline, `input.json`, terrain, material dan `project.json`, jadi crash atau disk penuh tidak meninggalkan file setengah jadi yang bisa ter-commit. File yang ditandai read-only di Windows tetap tidak ditimpa.
+- File `*.tmp` sisa crash tidak lagi diberi `.meta`. `.gitignore` project baru (dan project lama, saat dibuka) mengabaikan `*.tmp`.
+- Membuka scene yang memakai prefab yang belum di-commit atau belum di-pull sekarang menampilkan peringatan di Console.
+- ID objek baru dimulai dari angka acak setiap kali scene dibuka, jadi dua orang yang menambah objek di scene yang sama tidak mendapat ID yang sama setelah merge.
+- Saat editor menaikkan `engineVersion` di `project.json`, Console mengingatkan bahwa semua anggota tim perlu versi engine itu.
+
 ## [2.11.1] — 2026-11-12
 
 ### Perbaikan

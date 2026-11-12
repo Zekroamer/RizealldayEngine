@@ -56,13 +56,10 @@ bool EditorSuite::SaveTimeline(const std::string& assetPath, const Timeline& tim
 	const std::filesystem::path file = currentProjectRoot_ / std::filesystem::path(assetPath);
 	std::error_code ec;
 	std::filesystem::create_directories(file.parent_path(), ec);
-	std::ofstream out(file, std::ios::binary | std::ios::trunc);
-	if (!out) {
+	if (!WriteProjectFile(file, timeline.ToJson())) {
 		LogMessage(std::format("[Timeline] Could not write {}", assetPath), 2);
 		return false;
 	}
-	out << timeline.ToJson();
-	out.close();
 	auto& cached = timelines_[assetPath];
 	if (!cached) cached = std::make_shared<Timeline>();
 	if (cached.get() != &timeline) *cached = timeline;

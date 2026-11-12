@@ -179,7 +179,7 @@ int EditorSuite::RepointAssetReferences(const std::string& from, const std::stri
 		if (std::optional<SceneJson::Json> settings = SceneJson::Parse(text.str()); settings && SceneJson::Read(*settings, "startupScene", startup) &&
 			repoint(startup, moved)) {
 			(*settings)["startupScene"] = moved;
-			if (EditorSuiteDetail::WriteFileAtomic(projectFile, SceneJson::DumpCompact(*settings))) {
+			if (WriteProjectFile(projectFile, SceneJson::DumpCompact(*settings))) {
 				LogMessage(std::format("[Project] Startup scene is now {}.", moved), 0);
 			} else {
 				LogMessage(std::format("[Project] Could not update the startup scene in {}.", projectFile.string()), 2);

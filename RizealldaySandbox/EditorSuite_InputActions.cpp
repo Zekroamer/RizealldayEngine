@@ -41,13 +41,10 @@ bool EditorSuite::SaveInputActions(const InputActions& actions)
 	const std::filesystem::path file = InputActionsFile(currentProjectRoot_);
 	std::error_code ec;
 	std::filesystem::create_directories(file.parent_path(), ec);
-	std::ofstream out(file, std::ios::binary | std::ios::trunc);
-	if (!out) {
+	if (!WriteProjectFile(file, actions.ToJson() + '\n')) {
 		LogMessage(std::format("[Input] Cannot write {}", file.string()), 2);
 		return false;
 	}
-	out << actions.ToJson() << '\n';
-	out.close();
 	inputActions_ = actions;
 	inputActionsRoot_ = currentProjectRoot_;
 	return true;

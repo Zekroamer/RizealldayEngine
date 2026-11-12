@@ -1192,5 +1192,6 @@
 	"Edit Layer": "Lapisan yang Diedit",
 	"Copy Layer to Next": "Salin ke Lapisan Berikutnya",
 	"Clear Layer": "Kosongkan Lapisan",
-	"Only one layer: set the third number of Columns / Rows / Layers, or use Copy Layer to Next.": "Baru satu lapisan: ubah angka ketiga di Kolom / Baris / Lapisan, atau pakai Salin ke Lapisan Berikutnya."
+	"Only one layer: set the third number of Columns / Rows / Layers, or use Copy Layer to Next.": "Baru satu lapisan: ubah angka ketiga di Kolom / Baris / Lapisan, atau pakai Salin ke Lapisan Berikutnya.",
+	"READ-ONLY: this project needs a newer engine (Help > Install Engine Update...)": "HANYA BACA: project ini butuh engine yang lebih baru (Help > Install Engine Update...)"
 }
