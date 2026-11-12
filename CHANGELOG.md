@@ -1,6 +1,6 @@
 # Changelog — Rizeallday Engine v2
 
-## [Unreleased]
+## [2.12.0] — 2026-11-12
 
 ### Kerja tim dengan GitHub
 - **Project dari engine yang lebih baru kini hanya-baca.** Editor versi lama yang membuka project versi lebih baru tidak lagi menyimpan scene, prefab, aset maupun pengaturan project. Sebelumnya data yang belum dikenalnya (misalnya lapisan Mapchip) diam-diam hilang. Menu bar menampilkan tulisan merah **READ-ONLY** dengan cara memperbaikinya.
