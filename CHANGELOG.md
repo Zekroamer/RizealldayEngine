@@ -1,6 +1,6 @@
 # Changelog — Rizeallday Engine v2
 
-## [Unreleased]
+## [2.11.1] — 2026-11-12
 
 ### Perbaikan
 - Setelah `git pull`, editor sekarang build ulang script project secara otomatis saat project dibuka, kalau ada file `.cpp`/`.h` di `GameScripts/Scripts` yang lebih baru dari `GameScripts.dll`. Sebelumnya teman satu tim tetap memakai DLL lama, sehingga script baru (misalnya `BossScript`) tidak terdaftar sampai mereka menekan Build Scripts sendiri.
