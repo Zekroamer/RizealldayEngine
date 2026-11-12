@@ -63,9 +63,14 @@ void EditorSuite::DrawMapchipInspectorSection()
 		// Which layer the grid below paints, plus the layer tools
 		const int layerCount = static_cast<int>(mapLayers_.size());
 		mapEditLayer_ = std::clamp(mapEditLayer_, 0, layerCount - 1);
-		if (layerCount > 1) {
-			ImGui::SetNextItemWidth(160.0f);
-			ImGui::SliderInt(TrId("Edit Layer"), &mapEditLayer_, 0, layerCount - 1);
+		// Always shown so it can be found; with one layer it is greyed out and says how to get more
+		ImGui::BeginDisabled(layerCount < 2);
+		ImGui::SetNextItemWidth(160.0f);
+		ImGui::SliderInt(TrId("Edit Layer"), &mapEditLayer_, 0, (std::max)(layerCount - 1, 0));
+		ImGui::EndDisabled();
+		if (layerCount < 2) {
+			ImGui::SetItemTooltip("%s", Tr("Only one layer: set the third number of Columns / Rows / Layers, or use Copy Layer to Next."));
+		} else {
 			ImGui::SetItemTooltip("%s", mapPlaneXZ_ ? Tr("Layer 0 is the ground floor; each next layer is one tile higher.")
 				: Tr("Layer 0 is the front; each next layer is one tile further back."));
 		}

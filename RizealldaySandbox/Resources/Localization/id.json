@@ -1191,5 +1191,6 @@
 	"Columns / Rows / Layers": "Kolom / Baris / Lapisan",
 	"Edit Layer": "Lapisan yang Diedit",
 	"Copy Layer to Next": "Salin ke Lapisan Berikutnya",
-	"Clear Layer": "Kosongkan Lapisan"
+	"Clear Layer": "Kosongkan Lapisan",
+	"Only one layer: set the third number of Columns / Rows / Layers, or use Copy Layer to Next.": "Baru satu lapisan: ubah angka ketiga di Kolom / Baris / Lapisan, atau pakai Salin ke Lapisan Berikutnya."
 }

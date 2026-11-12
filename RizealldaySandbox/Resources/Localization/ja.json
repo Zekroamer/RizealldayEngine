@@ -1191,5 +1191,6 @@
 	"Columns / Rows / Layers": "列 / 行 / レイヤー",
 	"Edit Layer": "編集するレイヤー",
 	"Copy Layer to Next": "次のレイヤーにコピー",
-	"Clear Layer": "レイヤーを消去"
+	"Clear Layer": "レイヤーを消去",
+	"Only one layer: set the third number of Columns / Rows / Layers, or use Copy Layer to Next.": "レイヤーは1つだけです。「列 / 行 / レイヤー」の3つ目の数字を変えるか、「次のレイヤーにコピー」を使ってください。"
 }
