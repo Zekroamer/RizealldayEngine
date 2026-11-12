@@ -1,6 +1,6 @@
 # Changelog — Rizeallday Engine v2
 
-## [Unreleased]
+## [2.11.0] — 2026-11-12
 
 ### Mapchip: membuat level lebih mudah
 - Ukuran grid (**Columns / Rows**, sampai 256x256) dan **Tile Size** bisa diatur di Inspector. Petak yang masih muat tetap ada, petak baru kosong.
@@ -17,6 +17,12 @@
   - Muncul peringatan kalau petak terisi lebih dari 20.000, karena setiap petak menjadi satu objek.
 - **Save Mapchip CSV** sekarang ditulis lewat file sementara, jadi file lama tidak rusak kalau penulisan gagal.
 - **Load Mapchip CSV** sekarang menandai scene belum tersimpan dan bisa di-undo. Sebelumnya grid yang dimuat bisa hilang saat editor ditutup tanpa peringatan.
+
+### Perbaikan
+- Menutup objek yang punya anak di **Hierarchy** (klik panah) sekarang benar-benar menyembunyikan anak-anaknya. Sebelumnya anak-anaknya muncul lagi sebagai objek root.
+
+### Panduan
+- `GUIDE_JA.md` punya bab baru: **9. マップチップでレベルを作る** (cara membuat level dengan Mapchip, tile set, lapisan, model lewat prefab, tag untuk script) dan **10. 最近の主な新機能** (ringkasan fitur baru dan letak menunya). `README_TEAM.md` juga menyebut cara membuat level.
 
 ## [2.10.0] — 2026-11-10
 
