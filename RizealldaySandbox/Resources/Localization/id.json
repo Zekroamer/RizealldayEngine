@@ -1146,7 +1146,6 @@
 	"Build Level Objects": "Buat Objek Level",
 	"CSV file of this grid. Empty = Assets/Levels/<scene name>.csv": "File CSV grid ini. Kosong = Assets/Levels/<nama scene>.csv",
 	"Built-in tiles": "Petak bawaan",
-	"Level Grid (%dx%d):": "Grid Level (%dx%d):",
 	"Creates one child object per tile: its prefab, or a cube / marker when it has none.\nEach gets the tile's tag. Building again replaces them.": "Membuat satu objek anak per petak: prefab-nya, atau kubus / penanda kalau tidak ada.\nSetiap objek mendapat tag petaknya. Membuat ulang akan menggantinya.",
 	"Tile set of this scene:": "Tile set scene ini:",
 	"Use another tile set...": "Pakai tile set lain...",
@@ -1171,5 +1170,19 @@
 	"+ Add Tile": "+ Tambah Petak",
 	"Remove Tile": "Hapus Petak",
 	"This tile set file cannot be read (see the Console). Fix the file or choose another tile set.": "File tile set ini tidak bisa dibaca (lihat Console). Perbaiki file-nya atau pilih tile set lain.",
-	"Those cells become Empty. Other scenes that use this tile set keep the number, which then means nothing.\nUndo brings the cells back, but not the tile: they show in purple until you paint them again.": "Petak-petak itu menjadi Empty. Scene lain yang memakai tile set ini tetap menyimpan nomornya, yang tidak lagi berarti apa-apa.\nUndo mengembalikan petaknya, tetapi tidak jenis petaknya: petak itu tampil ungu sampai dicat ulang."
+	"Those cells become Empty. Other scenes that use this tile set keep the number, which then means nothing.\nUndo brings the cells back, but not the tile: they show in purple until you paint them again.": "Petak-petak itu menjadi Empty. Scene lain yang memakai tile set ini tetap menyimpan nomornya, yang tidak lagi berarti apa-apa.\nUndo mengembalikan petaknya, tetapi tidak jenis petaknya: petak itu tampil ungu sampai dicat ulang.",
+	"Grid size (1 to %d each). Tiles that still fit stay, new cells are Empty.": "Ukuran grid (masing-masing 1 sampai %d). Petak yang masih muat tetap ada, petak baru kosong.",
+	"Distance between tiles in the built level, and the size of the fallback cubes": "Jarak antarpetak di level yang dibuat, dan ukuran kubus cadangan",
+	"Side view (X / Y)": "Tampak samping (X / Y)",
+	"Top-down (X / Z)": "Tampak atas (X / Z)",
+	"Side view: rows go up (platformer). Top-down: rows go into the distance, the level lies on the floor.": "Tampak samping: baris tersusun ke atas (platformer). Tampak atas: baris tersusun ke belakang, level terletak di lantai.",
+	"Level Grid:": "Grid Level:",
+	"Zoom %.0f px": "Zoom %.0f px",
+	"Left drag paints, right drag erases.": "Drag kiri untuk mengecat, drag kanan untuk menghapus.",
+	"Build the level again after every finished paint stroke": "Buat ulang level setiap selesai mengecat",
+	"The grid has changed since the last Build.": "Grid sudah berubah sejak Build terakhir.",
+	"Columns / Rows": "Kolom / Baris",
+	"Tile Size": "Ukuran Petak",
+	"Layout": "Tata Letak",
+	"Auto Build": "Build Otomatis"
 }

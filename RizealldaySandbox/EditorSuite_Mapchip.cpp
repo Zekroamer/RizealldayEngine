@@ -28,44 +28,107 @@ void EditorSuite::DrawMapchipInspectorSection()
 		swatch(0, Tr("Empty"), ImVec4(0.16f, 0.16f, 0.18f, 1.0f));
 		for (const MapchipTileKind& k : mapTileSet_.kinds) swatch(k.id, k.name.c_str(), ImVec4(k.color[0], k.color[1], k.color[2], 1.0f));
 
+		// Size, tile size and layout of the level
 		ImGui::Spacing();
-		ImGui::Text(Tr("Level Grid (%dx%d):"), mapCols_, mapRows_);
+		if (!mapSizeEditing_) { mapSizeEdit_[0] = mapCols_; mapSizeEdit_[1] = mapRows_; }
+		ImGui::SetNextItemWidth(160.0f);
+		ImGui::InputInt2(TrId("Columns / Rows"), mapSizeEdit_);
+		mapSizeEditing_ = ImGui::IsItemActive();
+		if (ImGui::IsItemDeactivatedAfterEdit()) ResizeMapchip(mapSizeEdit_[0], mapSizeEdit_[1]);
+		ImGui::SetItemTooltip(Tr("Grid size (1 to %d each). Tiles that still fit stay, new cells are Empty."), kMaxMapchipSide);
+		ImGui::SetNextItemWidth(160.0f);
+		ImGui::DragFloat(TrId("Tile Size"), &mapTileSize_, 0.05f, 0.1f, 100.0f, "%.2f");
+		if (ImGui::IsItemDeactivatedAfterEdit()) {
+			MarkMapchipChanged();
+			isSceneDirty_ = true;
+			PushUndoSnapshot();
+		}
+		ImGui::SetItemTooltip("%s", Tr("Distance between tiles in the built level, and the size of the fallback cubes"));
+		int plane = mapPlaneXZ_ ? 1 : 0;
+		const char* planes[] = { Tr("Side view (X / Y)"), Tr("Top-down (X / Z)") };
+		ImGui::SetNextItemWidth(160.0f);
+		if (ImGui::Combo(TrId("Layout"), &plane, planes, 2)) {
+			mapPlaneXZ_ = plane == 1;
+			MarkMapchipChanged();
+			isSceneDirty_ = true;
+			PushUndoSnapshot();
+		}
+		ImGui::SetItemTooltip("%s", Tr("Side view: rows go up (platformer). Top-down: rows go into the distance, the level lies on the floor."));
 
-		float cellW = 18.0f;
-		float cellH = 18.0f;
-		ImDrawList* drawList = ImGui::GetWindowDrawList();
-		ImVec2 startPos = ImGui::GetCursorScreenPos();
+		// The grid: drag to paint with the brush, right mouse button erases. One undo step per stroke.
+		ImGui::Spacing();
+		ImGui::TextUnformatted(Tr("Level Grid:"));
+		ImGui::SameLine();
+		ImGui::SetNextItemWidth(110.0f);
+		ImGui::SliderFloat("##CellZoom", &mapCellPx_, 6.0f, 32.0f, Tr("Zoom %.0f px"));
+		const float step = mapCellPx_ + 2.0f;
+		const ImVec2 gridSize(mapCols_ * step, mapRows_ * step);
+		const float viewHeight = (std::min)(gridSize.y + ImGui::GetStyle().ScrollbarSize + 6.0f, 360.0f);
+		if (ImGui::BeginChild("##MapchipGrid", ImVec2(-1.0f, viewHeight), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar)) {
+			ImDrawList* drawList = ImGui::GetWindowDrawList();
+			const ImVec2 origin = ImGui::GetCursorScreenPos();
+			ImGui::InvisibleButton("##Cells", gridSize, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+			const bool active = ImGui::IsItemActive();
+			const bool hovered = ImGui::IsItemHovered();
 
-		for (int r = 0; r < mapRows_; ++r) {
-			for (int c = 0; c < mapCols_; ++c) {
-				ImVec2 pMin = ImVec2(startPos.x + c * (cellW + 2.0f), startPos.y + r * (cellH + 2.0f));
-				ImVec2 pMax = ImVec2(pMin.x + cellW, pMin.y + cellH);
-
-				const int tile = mapGrid_[r][c];
-				ImU32 col = IM_COL32(40, 40, 45, 255);
-				if (const MapchipTileKind* kind = mapTileSet_.Find(tile)) {
-					col = ImGui::ColorConvertFloat4ToU32(ImVec4(kind->color[0], kind->color[1], kind->color[2], 1.0f));
-				} else if (tile != 0) {
-					col = IM_COL32(150, 40, 150, 255); // an id the tile set does not have: Build skips it
-				}
-
-				drawList->AddRectFilled(pMin, pMax, col, 2.0f);
-
-				ImGui::SetCursorScreenPos(pMin);
-				if (ImGui::InvisibleButton(std::format("##Tile_{}_{}", r, c).c_str(), ImVec2(cellW, cellH))) {
-					mapGrid_[r][c] = selectedBrushTile_;
-					isSceneDirty_ = true;
-					PushUndoSnapshot();
+			// Only the cells inside the scrolled view are drawn: a 256x256 grid stays cheap
+			const ImVec2 clipMin = drawList->GetClipRectMin();
+			const ImVec2 clipMax = drawList->GetClipRectMax();
+			const int c0 = (std::max)(0, static_cast<int>((clipMin.x - origin.x) / step));
+			const int c1 = (std::min)(mapCols_ - 1, static_cast<int>((clipMax.x - origin.x) / step));
+			const int r0 = (std::max)(0, static_cast<int>((clipMin.y - origin.y) / step));
+			const int r1 = (std::min)(mapRows_ - 1, static_cast<int>((clipMax.y - origin.y) / step));
+			for (int r = r0; r <= r1; ++r) {
+				for (int c = c0; c <= c1; ++c) {
+					const ImVec2 pMin(origin.x + c * step, origin.y + r * step);
+					const int tile = mapGrid_[r][c];
+					ImU32 col = IM_COL32(40, 40, 45, 255);
+					if (const MapchipTileKind* kind = mapTileSet_.Find(tile)) {
+						col = ImGui::ColorConvertFloat4ToU32(ImVec4(kind->color[0], kind->color[1], kind->color[2], 1.0f));
+					} else if (tile != 0) {
+						col = IM_COL32(150, 40, 150, 255); // an id the tile set does not have: Build skips it
+					}
+					drawList->AddRectFilled(pMin, ImVec2(pMin.x + mapCellPx_, pMin.y + mapCellPx_), col, 2.0f);
 				}
 			}
-		}
 
-		ImGui::SetCursorScreenPos(ImVec2(startPos.x, startPos.y + mapRows_ * (cellH + 2.0f) + 8.0f));
+			const ImVec2 mouse = ImGui::GetIO().MousePos;
+			const int mc = static_cast<int>(std::floor((mouse.x - origin.x) / step));
+			const int mr = static_cast<int>(std::floor((mouse.y - origin.y) / step));
+			const bool inGrid = mc >= 0 && mc < mapCols_ && mr >= 0 && mr < mapRows_;
+			if (active && inGrid) {
+				const int paint = ImGui::IsMouseDown(ImGuiMouseButton_Left) ? selectedBrushTile_ : 0;
+				if (mapGrid_[mr][mc] != paint) {
+					mapGrid_[mr][mc] = paint;
+					MarkMapchipChanged();
+					isSceneDirty_ = true;
+				}
+				mapPainting_ = true;
+			}
+			if (hovered && inGrid) {
+				const MapchipTileKind* kind = mapTileSet_.Find(mapGrid_[mr][mc]);
+				ImGui::SetTooltip("(%d, %d)  %s", mc, mr, kind ? kind->name.c_str() : Tr("Empty"));
+			}
+		}
+		ImGui::EndChild();
+		if (mapPainting_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+			mapPainting_ = false;
+			PushUndoSnapshot();
+			if (mapAutoBuild_ && selectedObjectIndex_ >= 0) BuildMapchipObjects(gameObjects_[selectedObjectIndex_].id);
+		}
+		ImGui::TextDisabled("%s", Tr("Left drag paints, right drag erases."));
+
 		if (ImGui::Button(TrId("Build Level Objects"), ImVec2(-1.0f, 26.0f))) {
 			if (selectedObjectIndex_ >= 0) BuildMapchipObjects(gameObjects_[selectedObjectIndex_].id);
 		}
 		ImGui::SetItemTooltip("%s", Tr("Creates one child object per tile: its prefab, or a cube / marker when it has none.\n"
 			"Each gets the tile's tag. Building again replaces them."));
+		ImGui::Checkbox(TrId("Auto Build"), &mapAutoBuild_);
+		ImGui::SetItemTooltip("%s", Tr("Build the level again after every finished paint stroke"));
+		if (!MapchipBuildIsCurrent()) {
+			ImGui::SameLine();
+			ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f), "%s", Tr("The grid has changed since the last Build."));
+		}
 
 		ImGui::Spacing();
 		ImGui::SetNextItemWidth(-1.0f);
@@ -126,8 +189,10 @@ bool EditorSuite::BuildMapchipObjects(uint32_t mapId)
 			const MapchipTileKind* kind = mapTileSet_.Find(mapGrid_[r][c]);
 			if (!kind) continue; // Empty, or an id the tile set does not have (any more)
 			const std::string name = std::format("{}{} ({},{})", kBuiltPrefix, kind->name, c, r);
-			// Row 0 is the top of the level: X to the right, Y up, one tile = mapTileSize_ in the map object's space
-			const Vector3 pos = { c * mapTileSize_, (mapRows_ - 1 - r) * mapTileSize_, 0.0f };
+			// Row 0 is the top of the grid: the top of a side view (X/Y), the far end (+Z) of a top-down map (X/Z).
+			// One tile = mapTileSize_ in the map object's space.
+			const float up = (mapRows_ - 1 - r) * mapTileSize_;
+			const Vector3 pos = mapPlaneXZ_ ? Vector3{ c * mapTileSize_, 0.0f, up } : Vector3{ c * mapTileSize_, up, 0.0f };
 			const uint32_t prefabId = kind->prefab.empty() ? 0u : InstantiatePrefabNow(kind->prefab, pos);
 			GameObject* o = prefabId ? FindGameObjectById(prefabId, false) : nullptr;
 			if (o) {
@@ -168,6 +233,7 @@ bool EditorSuite::BuildMapchipObjects(uint32_t mapId)
 	extraSelection_.clear();
 	isSceneDirty_ = true;
 	undoPushPending_ = true; // one undo step for the whole rebuild
+	mapBuiltRevision_ = mapGridRevision_;
 	LogMessage(std::format("[Mapchip] Built {} level object(s) under '{}'.", made, FindGameObjectById(mapId, false)->name), 0);
 	return true;
 }
@@ -233,11 +299,28 @@ bool EditorSuite::SaveMapchipTileSet()
 	return true;
 }
 
+bool EditorSuite::ResizeMapchip(int cols, int rows)
+{
+	cols = std::clamp(cols, 1, kMaxMapchipSide);
+	rows = std::clamp(rows, 1, kMaxMapchipSide);
+	if (cols == mapCols_ && rows == mapRows_) return true;
+	mapGrid_.resize(rows);
+	for (auto& row : mapGrid_) row.resize(cols, 0);
+	mapCols_ = cols;
+	mapRows_ = rows;
+	MarkMapchipChanged();
+	isSceneDirty_ = true;
+	PushUndoSnapshot();
+	return true;
+}
+
 void EditorSuite::ResetMapchip()
 {
 	mapRows_ = 10;
 	mapCols_ = 15;
 	mapTileSize_ = 1.0f;
+	mapPlaneXZ_ = false;
+	MarkMapchipChanged();
 	mapTileSet_ = MapchipTileSet::Default();
 	mapTileSetPath_.clear();
 	mapTileSetUnreadable_ = false;
@@ -297,6 +380,9 @@ bool EditorSuite::LoadMapchipCSV(const std::string& filePath)
 		for (const auto& row : newGrid) mapCols_ = (std::max)(mapCols_, static_cast<int>(row.size()));
 		for (auto& row : newGrid) row.resize(mapCols_, 0); // short rows (a hand-edited CSV) end in Empty tiles
 		mapGrid_ = std::move(newGrid);
+		MarkMapchipChanged();
+		isSceneDirty_ = true; // the grid is saved with the scene: closing must ask, Ctrl+Z must undo the load
+		PushUndoSnapshot();
 		LogMessage(std::format("[Mapchip] Loaded ({}x{}): {}", mapCols_, mapRows_, filePath), 0);
 		return true;
 	}
@@ -352,6 +438,7 @@ int EditorSuite::RemoveMapchipTileKind(int id)
 	SaveMapchipTileSet();
 	if (selectedBrushTile_ == id) selectedBrushTile_ = 0;
 	if (cleared > 0) {
+		MarkMapchipChanged();
 		isSceneDirty_ = true;
 		PushUndoSnapshot();
 	}

@@ -994,6 +994,12 @@ private:
 	bool BuildMapchipObjects(uint32_t mapId);
 	/// The default 15x10 grid with a floor row and the built-in tile set (new scenes and scenes saved without mapchip data)
 	void ResetMapchip();
+	/// New grid size (each 1..kMaxMapchipSide): cells that still fit keep their tile, new ones are Empty. One undo step.
+	bool ResizeMapchip(int cols, int rows);
+	static constexpr int kMaxMapchipSide = 256;
+	/// True when the last Build made objects from the grid as it is now
+	bool MapchipBuildIsCurrent() const { return mapBuiltRevision_ == mapGridRevision_; }
+	void MarkMapchipChanged() { ++mapGridRevision_; }
 	/// Tile set of the open scene: "Assets/..." path of a .tileset.json, empty = MapchipTileSet::Default()
 	bool UseMapchipTileSet(const std::string& path); // false (built-in set, logged) when the file cannot be read
 	bool CreateMapchipTileSet(const std::string& path); // writes the current set to a new file and uses it
@@ -1377,6 +1383,14 @@ private:
 	int selectedBrushTile_ = 1; // 0: Empty, 1: Wall, 2: Spike, 3: Spawn, 4: Goal
 	std::vector<std::vector<int>> mapGrid_;
 	char mapFilePathBuf_[256] = ""; // empty = MapchipCsvPath()'s default
+	bool mapPlaneXZ_ = false;        // Build lays the grid on X/Z (top-down) instead of X/Y (side view); saved with the scene
+	bool mapAutoBuild_ = false;      // editor only: Build after every finished paint stroke
+	bool mapPainting_ = false;       // a paint stroke is in progress (mouse held over the grid)
+	float mapCellPx_ = 18.0f;        // editor only: grid cell size in the Inspector
+	int mapSizeEdit_[2] = { 15, 10 }; // columns / rows being typed, applied when the field is left
+	bool mapSizeEditing_ = false;
+	uint64_t mapGridRevision_ = 1;   // bumped on every grid change
+	uint64_t mapBuiltRevision_ = 0;  // revision the last Build used
 	MapchipTileSet mapTileSet_ = MapchipTileSet::Default();
 	std::string mapTileSetPath_; // "Assets/..." or empty (built-in set)
 	bool mapTileSetUnreadable_ = false; // the file could not be read: never written over with the built-in tiles shown meanwhile

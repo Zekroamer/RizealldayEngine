@@ -184,6 +184,7 @@ void EditorSuite::WriteSceneSettingsJson(void* outJson) const
 	mapchip["rows"] = mapRows_;
 	mapchip["cols"] = mapCols_;
 	mapchip["tileSize"] = Num(mapTileSize_);
+	if (mapPlaneXZ_) mapchip["plane"] = "xz"; // absent = the old upright X/Y layout
 	Json data = Json::array();
 	for (int r = 0; r < mapRows_; ++r) {
 		Json row = Json::array();
@@ -576,6 +577,10 @@ void EditorSuite::ReadSceneSettingsJson(const void* json)
 		SceneJson::Read(*mapJson, "rows", mapRows_);
 		SceneJson::Read(*mapJson, "cols", mapCols_);
 		SceneJson::Read(*mapJson, "tileSize", mapTileSize_);
+		std::string plane;
+		SceneJson::Read(*mapJson, "plane", plane);
+		mapPlaneXZ_ = plane == "xz";
+		mapBuiltRevision_ = ++mapGridRevision_; // a saved scene holds the objects its grid was built into
 		mapRows_ = (std::max)(mapRows_, 0);
 		mapCols_ = (std::max)(mapCols_, 0);
 		std::string tileSet; // scenes saved before tile sets have none: their ids are the built-in Wall .. Goal

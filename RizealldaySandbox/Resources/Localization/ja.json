@@ -1146,7 +1146,6 @@
 	"Build Level Objects": "レベルオブジェクトを生成",
 	"CSV file of this grid. Empty = Assets/Levels/<scene name>.csv": "このグリッドのCSVファイル。空欄 = Assets/Levels/<シーン名>.csv",
 	"Built-in tiles": "組み込みタイル",
-	"Level Grid (%dx%d):": "レベルグリッド (%dx%d):",
 	"Creates one child object per tile: its prefab, or a cube / marker when it has none.\nEach gets the tile's tag. Building again replaces them.": "タイルごとに子オブジェクトを1つ作成します: プレハブ、なければキューブ / マーカー。\nそれぞれにタイルのタグが付きます。もう一度生成すると置き換えます。",
 	"Tile set of this scene:": "このシーンのタイルセット:",
 	"Use another tile set...": "別のタイルセットを使う...",
@@ -1171,5 +1170,19 @@
 	"+ Add Tile": "+ タイルを追加",
 	"Remove Tile": "タイルを削除",
 	"This tile set file cannot be read (see the Console). Fix the file or choose another tile set.": "このタイルセットのファイルを読み込めません（コンソールを参照）。ファイルを修正するか、別のタイルセットを選んでください。",
-	"Those cells become Empty. Other scenes that use this tile set keep the number, which then means nothing.\nUndo brings the cells back, but not the tile: they show in purple until you paint them again.": "それらのマスは空になります。このタイルセットを使う他のシーンでは番号が残り、何も表さなくなります。\n元に戻すとマスは戻りますが、タイルは戻りません。塗り直すまで紫で表示されます。"
+	"Those cells become Empty. Other scenes that use this tile set keep the number, which then means nothing.\nUndo brings the cells back, but not the tile: they show in purple until you paint them again.": "それらのマスは空になります。このタイルセットを使う他のシーンでは番号が残り、何も表さなくなります。\n元に戻すとマスは戻りますが、タイルは戻りません。塗り直すまで紫で表示されます。",
+	"Grid size (1 to %d each). Tiles that still fit stay, new cells are Empty.": "グリッドのサイズ（それぞれ1～%d）。収まるタイルは残り、新しいマスは空になります。",
+	"Distance between tiles in the built level, and the size of the fallback cubes": "生成されたレベルでのタイルの間隔と、代わりのキューブの大きさ",
+	"Side view (X / Y)": "横から見る (X / Y)",
+	"Top-down (X / Z)": "上から見る (X / Z)",
+	"Side view: rows go up (platformer). Top-down: rows go into the distance, the level lies on the floor.": "横から見る: 行は上に並びます（プラットフォーマー）。上から見る: 行は奥に並び、レベルは床に置かれます。",
+	"Level Grid:": "レベルグリッド:",
+	"Zoom %.0f px": "ズーム %.0f px",
+	"Left drag paints, right drag erases.": "左ドラッグで塗り、右ドラッグで消します。",
+	"Build the level again after every finished paint stroke": "塗り終えるたびにレベルを再生成します",
+	"The grid has changed since the last Build.": "前回の生成からグリッドが変更されています。",
+	"Columns / Rows": "列 / 行",
+	"Tile Size": "タイルサイズ",
+	"Layout": "配置",
+	"Auto Build": "自動生成"
 }

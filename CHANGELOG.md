@@ -1,5 +1,16 @@
 # Changelog — Rizeallday Engine v2
 
+## [Unreleased]
+
+### Mapchip: membuat level lebih mudah
+- Ukuran grid (**Columns / Rows**, sampai 256x256) dan **Tile Size** bisa diatur di Inspector. Petak yang masih muat tetap ada, petak baru kosong.
+- **Layout**:
+  - **Tampak samping (X / Y)** untuk platformer.
+  - **Tampak atas (X / Z)**: level diletakkan di lantai, cocok untuk game 3D tampak atas.
+- Grid bisa di-scroll dan di-zoom. Mengecat cukup dengan drag: klik kiri untuk kuas, klik kanan untuk menghapus. Satu goresan menjadi satu langkah undo.
+- **Auto Build** membuat ulang level setiap selesai mengecat. Kalau tidak aktif, muncul peringatan saat grid sudah berubah sejak Build terakhir.
+- **Load Mapchip CSV** sekarang menandai scene belum tersimpan dan bisa di-undo. Sebelumnya grid yang dimuat bisa hilang saat editor ditutup tanpa peringatan.
+
 ## [2.10.0] — 2026-11-10
 
 ### Fitur Baru: Tile Set untuk Mapchip

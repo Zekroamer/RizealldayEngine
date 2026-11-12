@@ -82,6 +82,9 @@ struct EditorSuiteTestAccess {
 	static bool LoadMapCsv(EditorSuite& s, const std::string& file) { return s.LoadMapchipCSV(file); }
 	static std::filesystem::path MapCsvPath(const EditorSuite& s) { return s.MapchipCsvPath(); }
 	static bool BuildMap(EditorSuite& s, uint32_t id) { return s.BuildMapchipObjects(id); }
+	static bool ResizeMap(EditorSuite& s, int cols, int rows) { return s.ResizeMapchip(cols, rows); }
+	static bool& MapPlaneXZ(EditorSuite& s) { return s.mapPlaneXZ_; }
+	static bool MapBuildIsCurrent(const EditorSuite& s) { return s.MapchipBuildIsCurrent(); }
 	static MapchipTileSet& TileSet(EditorSuite& s) { return s.mapTileSet_; }
 	static const std::string& TileSetPath(const EditorSuite& s) { return s.mapTileSetPath_; }
 	static bool CreateTileSet(EditorSuite& s, const std::string& path) { return s.CreateMapchipTileSet(path); }
@@ -968,6 +971,74 @@ TEST_CASE(Mapchip, BuildUsesTheTileSet)
 	A::ProjectRoot(s) = savedRoot;
 	s.NewScene();
 	fs::remove_all(root, ec);
+}
+
+TEST_CASE(Mapchip, GridEditingForLevels)
+{
+	namespace fs = std::filesystem;
+	const fs::path dir = A::TempRoot() / "MapchipGrid";
+	std::error_code ec;
+	fs::remove_all(dir, ec);
+	fs::create_directories(dir, ec);
+	s.NewScene();
+
+	// Loading a CSV changes the scene: it is marked unsaved (the close dialog asks) and can be undone
+	std::ofstream(dir / "small.csv") << "1,2,3\n4,0,0\n";
+	A::Dirty(s) = false;
+	REQUIRE(A::LoadMapCsv(s, (dir / "small.csv").string()));
+	CHECK(A::Dirty(s));
+
+	// Resizing keeps what still fits and fills the rest with Empty; sizes stay within 1..256
+	REQUIRE(A::ResizeMap(s, 4, 3));
+	CHECK(A::MapCols(s) == 4);
+	CHECK(A::MapRows(s) == 3);
+	CHECK(A::MapGrid(s)[0] == (std::vector<int>{ 1, 2, 3, 0 }));
+	CHECK(A::MapGrid(s)[1] == (std::vector<int>{ 4, 0, 0, 0 }));
+	CHECK(A::MapGrid(s)[2] == (std::vector<int>{ 0, 0, 0, 0 }));
+	REQUIRE(A::ResizeMap(s, 2, 1));
+	CHECK(A::MapGrid(s).size() == 1u);
+	CHECK(A::MapGrid(s)[0] == (std::vector<int>{ 1, 2 }));
+	REQUIRE(A::ResizeMap(s, 0, 9999));
+	CHECK(A::MapCols(s) == 1);
+	CHECK(A::MapRows(s) == 256);
+	CHECK(A::MapGrid(s).size() == 256u);
+	CHECK(A::MapGrid(s)[0].size() == 1u);
+
+	// A top-down map lies on X/Z: row 0 is the far end (+Z), Y stays 0
+	std::ofstream(dir / "plane.csv") << "1,0\n0,1\n";
+	REQUIRE(A::LoadMapCsv(s, (dir / "plane.csv").string()));
+	A::MapPlaneXZ(s) = true;
+	GameObject& map = s.CreateGameObject("Map", GameObjectType::MapchipGrid);
+	map.hasMapchip = true;
+	const uint32_t mapId = map.id;
+	CHECK(!A::MapBuildIsCurrent(s)); // painted, never built
+	REQUIRE(A::BuildMap(s, mapId));
+	CHECK(A::MapBuildIsCurrent(s));
+	std::vector<Vector3> positions;
+	for (const GameObject& o : A::Objects(s)) {
+		if (o.parentId == static_cast<int>(mapId)) positions.push_back(o.translation);
+	}
+	REQUIRE(positions.size() == 2u);
+	std::sort(positions.begin(), positions.end(), [](const Vector3& a, const Vector3& b) { return a.x < b.x; });
+	CHECK_NEAR(positions[0].x, 0.0f, 1e-5f);
+	CHECK_NEAR(positions[0].y, 0.0f, 1e-5f);
+	CHECK_NEAR(positions[0].z, 1.0f, 1e-5f);
+	CHECK_NEAR(positions[1].x, 1.0f, 1e-5f);
+	CHECK_NEAR(positions[1].z, 0.0f, 1e-5f);
+
+	// Any grid change after a build means the scene no longer shows the grid
+	REQUIRE(A::ResizeMap(s, 3, 2));
+	CHECK(!A::MapBuildIsCurrent(s));
+
+	// The plane is part of the scene; a new scene starts upright (X/Y) again
+	const std::string saved = s.SerializeSceneToString();
+	s.NewScene();
+	CHECK(!A::MapPlaneXZ(s));
+	REQUIRE(s.DeserializeSceneFromString(saved));
+	CHECK(A::MapPlaneXZ(s));
+
+	s.NewScene();
+	fs::remove_all(dir, ec);
 }
 
 TEST_CASE(Mapchip, CsvPathBuildAndSceneReset)
