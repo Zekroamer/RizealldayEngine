@@ -752,6 +752,9 @@ public:
 	bool EnsureProjectScriptsProps();
 	/// Loads the DLL of the open project (or the workspace DLL) and builds it when it does not exist yet
 	void SyncScriptModuleWithProject();
+	/// True when there is no DLL yet, or a script source (Scripts/*.cpp, *.h) is newer than it (e.g. pulled from git
+	/// while the editor was closed): the DLL does not hold those scripts.
+	static bool ScriptsNeedRebuild(const std::filesystem::path& gameScriptsDir, const std::filesystem::path& dll);
 	/// Adds Scripts\<name>.cpp / .h (the ones that exist) to the scripts vcxproj and .filters
 	void AddScriptFilesToVcxproj(const std::vector<std::string>& classNames);
 	/// Copies engine sample scripts (e.g. Survivors*) into a per-project scripts folder. True when they are there now.

@@ -75,6 +75,7 @@ struct EditorSuiteTestAccess {
 	static void RunAutoSave(EditorSuite& s, double now) { s.UpdateAutoSave(now); }
 	static double LastAutoSave(const EditorSuite& s) { return s.lastAutoSaveTime_; }
 	static bool& Dirty(EditorSuite& s) { return s.isSceneDirty_; }
+	static bool ScriptsNeedRebuild(const std::filesystem::path& dir, const std::filesystem::path& dll) { return EditorSuite::ScriptsNeedRebuild(dir, dll); }
 	static std::vector<std::vector<int>>& MapGrid(EditorSuite& s) { return s.mapLayers_[0]; }
 	static std::vector<std::vector<std::vector<int>>>& MapLayers(EditorSuite& s) { return s.mapLayers_; }
 	static int& EditLayer(EditorSuite& s) { return s.mapEditLayer_; }
@@ -1211,6 +1212,90 @@ TEST_CASE(Mapchip, CsvPathBuildAndSceneReset)
 
 	s.NewScene();
 	fs::remove_all(dir, ec);
+}
+
+TEST_CASE(Project, ScriptsRebuildAfterAPull)
+{
+	// Sources pulled from git while the editor was closed are newer than the DLL the last build made: rebuild
+	namespace fs = std::filesystem;
+	const fs::path dir = A::TempRoot() / "PulledScripts";
+	std::error_code ec;
+	fs::remove_all(dir, ec);
+	fs::create_directories(dir / "GameScripts" / "Scripts", ec);
+	fs::create_directories(dir / "Library" / "Scripts", ec);
+	const fs::path scripts = dir / "GameScripts";
+	const fs::path dll = dir / "Library" / "Scripts" / "GameScripts.dll";
+	std::ofstream(scripts / "Scripts" / "Player.cpp") << "// player";
+	std::ofstream(scripts / "GameScripts.vcxproj") << "<Project />";
+	const auto now = fs::file_time_type::clock::now();
+	fs::last_write_time(scripts / "Scripts" / "Player.cpp", now - std::chrono::hours(2));
+	fs::last_write_time(scripts / "GameScripts.vcxproj", now - std::chrono::hours(2));
+
+	CHECK(A::ScriptsNeedRebuild(scripts, dll)); // no DLL yet (fresh clone)
+	std::ofstream(dll) << "dll";
+	fs::last_write_time(dll, now - std::chrono::hours(1));
+	CHECK(!A::ScriptsNeedRebuild(scripts, dll)); // built after the last change
+
+	std::ofstream(scripts / "Scripts" / "Boss.h") << "// a new script from git pull";
+	fs::last_write_time(scripts / "Scripts" / "Boss.h", now);
+	CHECK(A::ScriptsNeedRebuild(scripts, dll));
+	fs::last_write_time(scripts / "Scripts" / "Boss.h", now - std::chrono::hours(3));
+	CHECK(!A::ScriptsNeedRebuild(scripts, dll));
+	fs::last_write_time(scripts / "GameScripts.vcxproj", now); // the project file alone may not relink the DLL: no endless rebuilds
+	CHECK(!A::ScriptsNeedRebuild(scripts, dll));
+	fs::remove_all(dir, ec);
+}
+
+TEST_CASE(Project, RenamingTheStartupSceneUpdatesTheProject)
+{
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "StartupRename";
+	std::error_code ec;
+	fs::remove_all(root, ec);
+	fs::create_directories(root / "ProjectSettings", ec);
+	fs::create_directories(root / "Assets" / "Scenes", ec);
+	std::ofstream(root / "ProjectSettings" / "project.json")
+		<< R"({"projectName": "P", "engineVersion": "2.0.0", "startupScene": "Assets/Scenes/Start.scene.json", "gameTitle": "Game"})";
+	const fs::path savedRoot = A::ProjectRoot(s);
+	A::ProjectRoot(s) = root;
+	s.NewScene();
+	REQUIRE(s.SaveScene((root / "Assets" / "Scenes" / "Start.scene.json").string()));
+	s.AssetDb().Refresh();
+
+	auto startup = [&]() {
+		std::ifstream in(root / "ProjectSettings" / "project.json");
+		std::stringstream text;
+		text << in.rdbuf();
+		std::string value;
+		if (auto j = SceneJson::Parse(text.str())) SceneJson::Read(*j, "startupScene", value);
+		return value;
+	};
+	// Hierarchy > Rename Scene: the project's startup scene follows the file
+	REQUIRE(s.RenameCurrentScene("Title"));
+	CHECK_MSG(startup() == "Assets/Scenes/Title.scene.json", startup());
+	// Renamed in the Project panel: the same
+	REQUIRE(s.MoveAssetAndUpdateReferences((root / "Assets" / "Scenes" / "Title.scene.json").string(),
+		(root / "Assets" / "Scenes" / "Menu.scene.json").string()));
+	CHECK_MSG(startup() == "Assets/Scenes/Menu.scene.json", startup());
+	// The rest of project.json stays
+	{
+		std::ifstream in(root / "ProjectSettings" / "project.json");
+		std::stringstream text;
+		text << in.rdbuf();
+		std::string title;
+		if (auto j = SceneJson::Parse(text.str())) SceneJson::Read(*j, "gameTitle", title);
+		CHECK(title == "Game");
+	}
+	// Another scene renamed: the startup scene is left alone
+	s.NewScene();
+	REQUIRE(s.SaveScene((root / "Assets" / "Scenes" / "Other.scene.json").string()));
+	s.AssetDb().Refresh();
+	REQUIRE(s.RenameCurrentScene("Other2"));
+	CHECK(startup() == "Assets/Scenes/Menu.scene.json");
+
+	A::ProjectRoot(s) = savedRoot;
+	s.NewScene();
+	fs::remove_all(root, ec);
 }
 
 TEST_CASE(Project, CreateProjectRules)

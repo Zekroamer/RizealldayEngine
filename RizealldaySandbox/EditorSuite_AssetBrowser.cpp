@@ -1,4 +1,5 @@
 ﻿#include "EditorSuiteInternal.h"
+#include "SceneJson.h"
 
 using EditorSuiteDetail::SceneNameFromPath;
 using EditorSuiteDetail::IsSceneFile;
@@ -166,6 +167,24 @@ int EditorSuite::RepointAssetReferences(const std::string& from, const std::stri
 	}
 	if (repoint(buildStartupSceneBuf_, moved)) {
 		strncpy_s(buildStartupSceneBuf_, db.ToAbsolute(moved).string().c_str(), sizeof(buildStartupSceneBuf_) - 1);
+	}
+	// The project's startup scene too: otherwise the project (and a teammate's clone) opens another scene next time
+	if (!currentProjectRoot_.empty()) {
+		const std::filesystem::path projectFile = currentProjectRoot_ / "ProjectSettings" / "project.json";
+		std::ifstream in(projectFile, std::ios::binary);
+		std::stringstream text;
+		text << in.rdbuf();
+		in.close();
+		std::string startup;
+		if (std::optional<SceneJson::Json> settings = SceneJson::Parse(text.str()); settings && SceneJson::Read(*settings, "startupScene", startup) &&
+			repoint(startup, moved)) {
+			(*settings)["startupScene"] = moved;
+			if (EditorSuiteDetail::WriteFileAtomic(projectFile, SceneJson::DumpCompact(*settings))) {
+				LogMessage(std::format("[Project] Startup scene is now {}.", moved), 0);
+			} else {
+				LogMessage(std::format("[Project] Could not update the startup scene in {}.", projectFile.string()), 2);
+			}
+		}
 	}
 	if (repoint(materialEditorPath_, moved)) materialEditorPath_ = moved; // the graph window saves to the new name
 	resolvedAssetCache_.clear();

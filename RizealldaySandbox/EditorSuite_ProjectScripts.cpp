@@ -164,6 +164,25 @@ bool EditorSuite::EnsureProjectScriptsProps()
 	return true;
 }
 
+bool EditorSuite::ScriptsNeedRebuild(const fs::path& gameScriptsDir, const fs::path& dll)
+{
+	std::error_code ec;
+	const fs::file_time_type built = fs::last_write_time(dll, ec);
+	if (ec) return true; // no DLL (fresh clone, cleaned Library/)
+	auto newer = [&](const fs::path& file) {
+		std::error_code fileEc;
+		const fs::file_time_type changed = fs::last_write_time(file, fileEc);
+		return !fileEc && changed > built;
+	};
+	// Sources only: a .vcxproj change alone may not relink the DLL, and would then ask for a build on every open.
+	// A pulled script always brings its own .cpp / .h.
+	for (const auto& entry : fs::directory_iterator(gameScriptsDir / "Scripts", ec)) {
+		const std::string ext = entry.path().extension().string();
+		if (entry.is_regular_file(ec) && (ext == ".cpp" || ext == ".h") && newer(entry.path())) return true;
+	}
+	return false;
+}
+
 void EditorSuite::SyncScriptModuleWithProject()
 {
 	const fs::path projectDir = ProjectScriptsDir();
@@ -189,9 +208,10 @@ void EditorSuite::SyncScriptModuleWithProject()
 	if (projectDir.empty()) return;
 
 	EnsureProjectScriptsProps();
-	// A fresh clone has no Library/; a DLL from an older engine version is refused. Both just need a build.
-	if ((loadFailed || !fs::exists(wanted, ec)) && !isRunningTests_) { // self-tests never start MSBuild
-		LogMessage("[Scripts] Building the project's scripts (GameScripts.dll)...", 0);
+	// A fresh clone has no Library/; a DLL from an older engine version is refused; scripts pulled from git while the
+	// editor was closed are newer than the DLL (the source watcher only sees changes made while it runs). All need a build.
+	if ((loadFailed || ScriptsNeedRebuild(projectDir, wanted)) && !isRunningTests_) { // self-tests never start MSBuild
+		LogMessage("[Scripts] Building the project's scripts (GameScripts.dll): the scripts changed since the last build or it is missing...", 0);
 		const bool staleObjects = loadFailed && scriptModule_.LastLoadWasApiMismatch();
 		if (staleObjects) apiRebuildTried_ = true;
 		TriggerScriptBuild(staleObjects);

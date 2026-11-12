@@ -1,5 +1,11 @@
 # Changelog — Rizeallday Engine v2
 
+## [Unreleased]
+
+### Perbaikan
+- Setelah `git pull`, editor sekarang build ulang script project secara otomatis saat project dibuka, kalau ada file `.cpp`/`.h` di `GameScripts/Scripts` yang lebih baru dari `GameScripts.dll`. Sebelumnya teman satu tim tetap memakai DLL lama, sehingga script baru (misalnya `BossScript`) tidak terdaftar sampai mereka menekan Build Scripts sendiri.
+- Mengganti nama atau memindahkan scene startup (lewat Hierarchy > Rename Scene atau panel Project) sekarang juga memperbarui `startupScene` di `ProjectSettings/project.json`. Kalau startup scene tidak ditemukan saat project dibuka, Console menampilkan peringatan dan cara memperbaikinya.
+
 ## [2.11.0] — 2026-11-12
 
 ### Mapchip: membuat level lebih mudah

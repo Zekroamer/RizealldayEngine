@@ -584,6 +584,8 @@ bool EditorSuite::OpenProject(const std::string& folderPath)
 
 	std::filesystem::path sceneFullPath = currentProjectRoot_ / startupScene;
 	if (!std::filesystem::exists(sceneFullPath)) {
+		LogMessage(std::format("[Project] The startup scene '{}' does not exist (renamed or moved?). Opening another scene; set the right one in File > Build Settings > Startup Scene.",
+			startupScene), 1);
 		sceneFullPath = currentProjectRoot_ / "Assets" / "Scenes" / "SampleScene.scene.json";
 	}
 	if (!std::filesystem::exists(sceneFullPath)) {
