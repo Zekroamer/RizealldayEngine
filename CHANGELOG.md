@@ -9,6 +9,13 @@
   - **Tampak atas (X / Z)**: level diletakkan di lantai, cocok untuk game 3D tampak atas.
 - Grid bisa di-scroll dan di-zoom. Mengecat cukup dengan drag: klik kiri untuk kuas, klik kanan untuk menghapus. Satu goresan menjadi satu langkah undo.
 - **Auto Build** membuat ulang level setiap selesai mengecat. Kalau tidak aktif, muncul peringatan saat grid sudah berubah sejak Build terakhir.
+- **Lapisan (sumbu ketiga):** grid bisa punya sampai 64 lapisan (**Columns / Rows / Layers**).
+  - Pada Tampak samping, lapisan berikutnya ada di belakang (+Z). Pada Tampak atas, lapisan berikutnya satu lantai lebih tinggi (+Y).
+  - Slider **Edit Layer** memilih lapisan yang dicat, dan lapisan sebelumnya tampil samar di grid sebagai panduan.
+  - Ada tombol **Copy Layer to Next** dan **Clear Layer**.
+  - CSV menyimpan lapisan berurutan, dipisah satu baris kosong. CSV lama tetap terbaca sebagai satu lapisan.
+  - Muncul peringatan kalau petak terisi lebih dari 20.000, karena setiap petak menjadi satu objek.
+- **Save Mapchip CSV** sekarang ditulis lewat file sementara, jadi file lama tidak rusak kalau penulisan gagal.
 - **Load Mapchip CSV** sekarang menandai scene belum tersimpan dan bisa di-undo. Sebelumnya grid yang dimuat bisa hilang saat editor ditutup tanpa peringatan.
 
 ## [2.10.0] — 2026-11-10

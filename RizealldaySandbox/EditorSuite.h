@@ -994,9 +994,15 @@ private:
 	bool BuildMapchipObjects(uint32_t mapId);
 	/// The default 15x10 grid with a floor row and the built-in tile set (new scenes and scenes saved without mapchip data)
 	void ResetMapchip();
-	/// New grid size (each 1..kMaxMapchipSide): cells that still fit keep their tile, new ones are Empty. One undo step.
-	bool ResizeMapchip(int cols, int rows);
+	/// New grid size (cols/rows 1..kMaxMapchipSide, layers 1..kMaxMapchipLayers, -1 = keep): cells that still fit keep
+	/// their tile, new ones are Empty. One undo step.
+	bool ResizeMapchip(int cols, int rows, int layers = -1);
 	static constexpr int kMaxMapchipSide = 256;
+	static constexpr int kMaxMapchipLayers = 64;
+	/// Copies the edited layer onto the next one (adding a layer when it is the last) and edits that one
+	bool CopyMapchipLayerToNext();
+	void ClearMapchipLayer(); // empties the edited layer
+	std::vector<std::vector<int>>& EditedMapchipLayer() { return mapLayers_[mapEditLayer_]; }
 	/// True when the last Build made objects from the grid as it is now
 	bool MapchipBuildIsCurrent() const { return mapBuiltRevision_ == mapGridRevision_; }
 	void MarkMapchipChanged() { ++mapGridRevision_; }
@@ -1011,7 +1017,6 @@ private:
 	bool showTileSetWindow_ = false;
 	int pendingTileRemoveId_ = 0;        // kind waiting for the "used in N cells" confirmation
 	char newTileSetPathBuf_[256] = "";
-	bool ExportMapchipJSON(const std::string& filePath);
 
 	// Asset Browser File System helpers
 	void DrawDirectoryTreeNode(const std::filesystem::path& dirPath);
@@ -1381,20 +1386,21 @@ private:
 	int mapCols_ = 15;
 	float mapTileSize_ = 1.0f;
 	int selectedBrushTile_ = 1; // 0: Empty, 1: Wall, 2: Spike, 3: Spawn, 4: Goal
-	std::vector<std::vector<int>> mapGrid_;
+	// Layers of [row][column] tile ids, all mapRows_ x mapCols_: the third axis (+Z behind a side view, +Y above a top-down map)
+	std::vector<std::vector<std::vector<int>>> mapLayers_;
+	int mapEditLayer_ = 0; // editor only: the layer the Inspector grid paints
 	char mapFilePathBuf_[256] = ""; // empty = MapchipCsvPath()'s default
 	bool mapPlaneXZ_ = false;        // Build lays the grid on X/Z (top-down) instead of X/Y (side view); saved with the scene
 	bool mapAutoBuild_ = false;      // editor only: Build after every finished paint stroke
 	bool mapPainting_ = false;       // a paint stroke is in progress (mouse held over the grid)
 	float mapCellPx_ = 18.0f;        // editor only: grid cell size in the Inspector
-	int mapSizeEdit_[2] = { 15, 10 }; // columns / rows being typed, applied when the field is left
+	int mapSizeEdit_[3] = { 15, 10, 1 }; // columns / rows / layers being typed, applied when the field is left
 	bool mapSizeEditing_ = false;
 	uint64_t mapGridRevision_ = 1;   // bumped on every grid change
 	uint64_t mapBuiltRevision_ = 0;  // revision the last Build used
 	MapchipTileSet mapTileSet_ = MapchipTileSet::Default();
 	std::string mapTileSetPath_; // "Assets/..." or empty (built-in set)
 	bool mapTileSetUnreadable_ = false; // the file could not be read: never written over with the built-in tiles shown meanwhile
-	char mapJsonPathBuf_[256] = "Resources/levels/stage01.json";
 
 	// C++ Script Generator & Hot Reload State
 	ScriptModule scriptModule_{};

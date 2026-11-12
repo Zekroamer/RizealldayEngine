@@ -30,12 +30,17 @@ void EditorSuite::DrawMapchipInspectorSection()
 
 		// Size, tile size and layout of the level
 		ImGui::Spacing();
-		if (!mapSizeEditing_) { mapSizeEdit_[0] = mapCols_; mapSizeEdit_[1] = mapRows_; }
-		ImGui::SetNextItemWidth(160.0f);
-		ImGui::InputInt2(TrId("Columns / Rows"), mapSizeEdit_);
+		if (!mapSizeEditing_) {
+			mapSizeEdit_[0] = mapCols_;
+			mapSizeEdit_[1] = mapRows_;
+			mapSizeEdit_[2] = static_cast<int>(mapLayers_.size());
+		}
+		ImGui::SetNextItemWidth(200.0f);
+		ImGui::InputInt3(TrId("Columns / Rows / Layers"), mapSizeEdit_);
 		mapSizeEditing_ = ImGui::IsItemActive();
-		if (ImGui::IsItemDeactivatedAfterEdit()) ResizeMapchip(mapSizeEdit_[0], mapSizeEdit_[1]);
-		ImGui::SetItemTooltip(Tr("Grid size (1 to %d each). Tiles that still fit stay, new cells are Empty."), kMaxMapchipSide);
+		if (ImGui::IsItemDeactivatedAfterEdit()) ResizeMapchip(mapSizeEdit_[0], mapSizeEdit_[1], mapSizeEdit_[2]);
+		ImGui::SetItemTooltip(Tr("Grid size: columns and rows 1 to %d, layers 1 to %d (the third axis).\nTiles that still fit stay, new cells are Empty."),
+			kMaxMapchipSide, kMaxMapchipLayers);
 		ImGui::SetNextItemWidth(160.0f);
 		ImGui::DragFloat(TrId("Tile Size"), &mapTileSize_, 0.05f, 0.1f, 100.0f, "%.2f");
 		if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -54,6 +59,27 @@ void EditorSuite::DrawMapchipInspectorSection()
 			PushUndoSnapshot();
 		}
 		ImGui::SetItemTooltip("%s", Tr("Side view: rows go up (platformer). Top-down: rows go into the distance, the level lies on the floor."));
+
+		// Which layer the grid below paints, plus the layer tools
+		const int layerCount = static_cast<int>(mapLayers_.size());
+		mapEditLayer_ = std::clamp(mapEditLayer_, 0, layerCount - 1);
+		if (layerCount > 1) {
+			ImGui::SetNextItemWidth(160.0f);
+			ImGui::SliderInt(TrId("Edit Layer"), &mapEditLayer_, 0, layerCount - 1);
+			ImGui::SetItemTooltip("%s", mapPlaneXZ_ ? Tr("Layer 0 is the ground floor; each next layer is one tile higher.")
+				: Tr("Layer 0 is the front; each next layer is one tile further back."));
+		}
+		if (ImGui::SmallButton(TrId("Copy Layer to Next"))) CopyMapchipLayerToNext();
+		ImGui::SetItemTooltip("%s", Tr("Copies this layer onto the next one (adds a layer when this is the last) and edits that one"));
+		ImGui::SameLine();
+		if (ImGui::SmallButton(TrId("Clear Layer"))) ClearMapchipLayer();
+		int filled = 0;
+		for (const auto& layer : mapLayers_) {
+			for (const auto& row : layer) filled += static_cast<int>(std::count_if(row.begin(), row.end(), [](int t) { return t != 0; }));
+		}
+		if (filled > 20000) {
+			ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.25f, 1.0f), Tr("%d filled tiles: Build makes one object for each, which can make the scene slow."), filled);
+		}
 
 		// The grid: drag to paint with the brush, right mouse button erases. One undo step per stroke.
 		ImGui::Spacing();
@@ -78,15 +104,19 @@ void EditorSuite::DrawMapchipInspectorSection()
 			const int c1 = (std::min)(mapCols_ - 1, static_cast<int>((clipMax.x - origin.x) / step));
 			const int r0 = (std::max)(0, static_cast<int>((clipMin.y - origin.y) / step));
 			const int r1 = (std::min)(mapRows_ - 1, static_cast<int>((clipMax.y - origin.y) / step));
+			auto& grid = EditedMapchipLayer();
+			const auto* below = mapEditLayer_ > 0 ? &mapLayers_[mapEditLayer_ - 1] : nullptr; // shown faintly as a guide
 			for (int r = r0; r <= r1; ++r) {
 				for (int c = c0; c <= c1; ++c) {
 					const ImVec2 pMin(origin.x + c * step, origin.y + r * step);
-					const int tile = mapGrid_[r][c];
+					const int tile = grid[r][c];
 					ImU32 col = IM_COL32(40, 40, 45, 255);
 					if (const MapchipTileKind* kind = mapTileSet_.Find(tile)) {
 						col = ImGui::ColorConvertFloat4ToU32(ImVec4(kind->color[0], kind->color[1], kind->color[2], 1.0f));
 					} else if (tile != 0) {
 						col = IM_COL32(150, 40, 150, 255); // an id the tile set does not have: Build skips it
+					} else if (const MapchipTileKind* under = below ? mapTileSet_.Find((*below)[r][c]) : nullptr) {
+						col = ImGui::ColorConvertFloat4ToU32(ImVec4(under->color[0] * 0.35f + 0.1f, under->color[1] * 0.35f + 0.1f, under->color[2] * 0.35f + 0.1f, 1.0f));
 					}
 					drawList->AddRectFilled(pMin, ImVec2(pMin.x + mapCellPx_, pMin.y + mapCellPx_), col, 2.0f);
 				}
@@ -98,16 +128,16 @@ void EditorSuite::DrawMapchipInspectorSection()
 			const bool inGrid = mc >= 0 && mc < mapCols_ && mr >= 0 && mr < mapRows_;
 			if (active && inGrid) {
 				const int paint = ImGui::IsMouseDown(ImGuiMouseButton_Left) ? selectedBrushTile_ : 0;
-				if (mapGrid_[mr][mc] != paint) {
-					mapGrid_[mr][mc] = paint;
+				if (grid[mr][mc] != paint) {
+					grid[mr][mc] = paint;
 					MarkMapchipChanged();
 					isSceneDirty_ = true;
 				}
 				mapPainting_ = true;
 			}
 			if (hovered && inGrid) {
-				const MapchipTileKind* kind = mapTileSet_.Find(mapGrid_[mr][mc]);
-				ImGui::SetTooltip("(%d, %d)  %s", mc, mr, kind ? kind->name.c_str() : Tr("Empty"));
+				const MapchipTileKind* kind = mapTileSet_.Find(grid[mr][mc]);
+				ImGui::SetTooltip("(%d, %d, L%d)  %s", mc, mr, mapEditLayer_, kind ? kind->name.c_str() : Tr("Empty"));
 			}
 		}
 		ImGui::EndChild();
@@ -184,15 +214,19 @@ bool EditorSuite::BuildMapchipObjects(uint32_t mapId)
 	std::vector<uint32_t> prefabRoots;
 	const bool wasSpawning = isSpawningFromScript_;
 	isSpawningFromScript_ = true; // no per-object log line, selection change or undo step: one of each for the whole build below
+	const bool layered = mapLayers_.size() > 1;
+	for (int l = 0; l < static_cast<int>(mapLayers_.size()); ++l) {
 	for (int r = 0; r < mapRows_; ++r) {
 		for (int c = 0; c < mapCols_; ++c) {
-			const MapchipTileKind* kind = mapTileSet_.Find(mapGrid_[r][c]);
+			const MapchipTileKind* kind = mapTileSet_.Find(mapLayers_[l][r][c]);
 			if (!kind) continue; // Empty, or an id the tile set does not have (any more)
-			const std::string name = std::format("{}{} ({},{})", kBuiltPrefix, kind->name, c, r);
+			const std::string name = layered ? std::format("{}{} ({},{},L{})", kBuiltPrefix, kind->name, c, r, l)
+				: std::format("{}{} ({},{})", kBuiltPrefix, kind->name, c, r);
 			// Row 0 is the top of the grid: the top of a side view (X/Y), the far end (+Z) of a top-down map (X/Z).
-			// One tile = mapTileSize_ in the map object's space.
+			// Layers are the third axis: behind a side view (+Z), above a top-down map (+Y). One tile = mapTileSize_.
 			const float up = (mapRows_ - 1 - r) * mapTileSize_;
-			const Vector3 pos = mapPlaneXZ_ ? Vector3{ c * mapTileSize_, 0.0f, up } : Vector3{ c * mapTileSize_, up, 0.0f };
+			const float depth = l * mapTileSize_;
+			const Vector3 pos = mapPlaneXZ_ ? Vector3{ c * mapTileSize_, depth, up } : Vector3{ c * mapTileSize_, up, depth };
 			const uint32_t prefabId = kind->prefab.empty() ? 0u : InstantiatePrefabNow(kind->prefab, pos);
 			GameObject* o = prefabId ? FindGameObjectById(prefabId, false) : nullptr;
 			if (o) {
@@ -213,6 +247,7 @@ bool EditorSuite::BuildMapchipObjects(uint32_t mapId)
 			o->parentId = static_cast<int>(mapId);
 			++made;
 		}
+	}
 	}
 	isSpawningFromScript_ = wasSpawning;
 	RebuildHierarchyLinks();
@@ -299,19 +334,49 @@ bool EditorSuite::SaveMapchipTileSet()
 	return true;
 }
 
-bool EditorSuite::ResizeMapchip(int cols, int rows)
+bool EditorSuite::ResizeMapchip(int cols, int rows, int layers)
 {
 	cols = std::clamp(cols, 1, kMaxMapchipSide);
 	rows = std::clamp(rows, 1, kMaxMapchipSide);
-	if (cols == mapCols_ && rows == mapRows_) return true;
-	mapGrid_.resize(rows);
-	for (auto& row : mapGrid_) row.resize(cols, 0);
+	layers = layers < 0 ? static_cast<int>(mapLayers_.size()) : std::clamp(layers, 1, kMaxMapchipLayers);
+	if (cols == mapCols_ && rows == mapRows_ && layers == static_cast<int>(mapLayers_.size())) return true;
+	mapLayers_.resize(layers);
+	for (auto& layer : mapLayers_) {
+		layer.resize(rows);
+		for (auto& row : layer) row.resize(cols, 0);
+	}
 	mapCols_ = cols;
 	mapRows_ = rows;
+	mapEditLayer_ = (std::min)(mapEditLayer_, layers - 1);
 	MarkMapchipChanged();
 	isSceneDirty_ = true;
 	PushUndoSnapshot();
 	return true;
+}
+
+bool EditorSuite::CopyMapchipLayerToNext()
+{
+	if (mapEditLayer_ + 1 >= static_cast<int>(mapLayers_.size())) {
+		if (static_cast<int>(mapLayers_.size()) >= kMaxMapchipLayers) {
+			LogMessage(std::format("[Mapchip] A grid holds at most {} layers.", kMaxMapchipLayers), 1);
+			return false;
+		}
+		mapLayers_.push_back({});
+	}
+	mapLayers_[mapEditLayer_ + 1] = mapLayers_[mapEditLayer_];
+	++mapEditLayer_;
+	MarkMapchipChanged();
+	isSceneDirty_ = true;
+	PushUndoSnapshot();
+	return true;
+}
+
+void EditorSuite::ClearMapchipLayer()
+{
+	for (auto& row : EditedMapchipLayer()) std::fill(row.begin(), row.end(), 0);
+	MarkMapchipChanged();
+	isSceneDirty_ = true;
+	PushUndoSnapshot();
 }
 
 void EditorSuite::ResetMapchip()
@@ -324,30 +389,32 @@ void EditorSuite::ResetMapchip()
 	mapTileSet_ = MapchipTileSet::Default();
 	mapTileSetPath_.clear();
 	mapTileSetUnreadable_ = false;
-	mapGrid_.assign(mapRows_, std::vector<int>(mapCols_, 0));
-	for (int c = 0; c < mapCols_; ++c) mapGrid_[mapRows_ - 1][c] = 1; // floor
+	mapLayers_.assign(1, std::vector<std::vector<int>>(mapRows_, std::vector<int>(mapCols_, 0)));
+	mapEditLayer_ = 0;
+	for (int c = 0; c < mapCols_; ++c) mapLayers_[0][mapRows_ - 1][c] = 1; // floor
 }
 
 bool EditorSuite::SaveMapchipCSV(const std::string& filePath)
 {
-	std::filesystem::path p(filePath);
+	// Layers one after another, an empty line between them (a one-layer grid is the plain old CSV)
+	std::string text;
+	for (size_t l = 0; l < mapLayers_.size(); ++l) {
+		if (l > 0) text += '\n';
+		for (const auto& row : mapLayers_[l]) {
+			for (size_t c = 0; c < row.size(); ++c) {
+				if (c > 0) text += ',';
+				text += std::to_string(row[c]);
+			}
+			text += '\n';
+		}
+	}
+	const std::filesystem::path p(filePath);
 	std::error_code ec;
 	if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
-
-	std::ofstream file(filePath);
-	if (!file.is_open()) {
+	if (!EditorSuiteDetail::WriteFileAtomic(p, text)) {
 		LogMessage(std::format("[Mapchip] Cannot write {}", filePath), 2);
 		return false;
 	}
-
-	for (int r = 0; r < mapRows_; ++r) {
-		for (int c = 0; c < mapCols_; ++c) {
-			file << mapGrid_[r][c];
-			if (c < mapCols_ - 1) file << ",";
-		}
-		file << "\n";
-	}
-	file.close();
 	LogMessage(std::format("[Mapchip] Saved: {}", filePath), 0);
 	return true;
 }
@@ -360,78 +427,68 @@ bool EditorSuite::LoadMapchipCSV(const std::string& filePath)
 		return false;
 	}
 
-	std::vector<std::vector<int>> newGrid;
+	// An empty line ends a layer; empty lines before the first row or after the last one change nothing
+	std::vector<std::vector<std::vector<int>>> layers(1);
 	std::string line;
 	while (std::getline(file, line)) {
-		if (line.empty()) continue;
+		if (!line.empty() && line.back() == '\r') line.pop_back();
+		if (line.empty()) {
+			if (!layers.back().empty()) layers.emplace_back();
+			continue;
+		}
 		std::vector<int> row;
 		std::stringstream ss(line);
 		std::string val;
 		while (std::getline(ss, val, ',')) {
 			try { row.push_back(std::stoi(val)); } catch (...) { row.push_back(0); }
 		}
-		newGrid.push_back(row);
+		layers.back().push_back(std::move(row));
 	}
 	file.close();
+	if (layers.back().empty()) layers.pop_back();
+	if (layers.empty()) return false;
+	if (static_cast<int>(layers.size()) > kMaxMapchipLayers) layers.resize(kMaxMapchipLayers);
 
-	if (!newGrid.empty()) {
-		mapRows_ = static_cast<int>(newGrid.size());
-		mapCols_ = 0;
-		for (const auto& row : newGrid) mapCols_ = (std::max)(mapCols_, static_cast<int>(row.size()));
-		for (auto& row : newGrid) row.resize(mapCols_, 0); // short rows (a hand-edited CSV) end in Empty tiles
-		mapGrid_ = std::move(newGrid);
-		MarkMapchipChanged();
-		isSceneDirty_ = true; // the grid is saved with the scene: closing must ask, Ctrl+Z must undo the load
-		PushUndoSnapshot();
-		LogMessage(std::format("[Mapchip] Loaded ({}x{}): {}", mapCols_, mapRows_, filePath), 0);
-		return true;
+	// Every layer gets the same size: short rows and short layers end in Empty tiles
+	int rows = 0, cols = 0;
+	for (const auto& layer : layers) {
+		rows = (std::max)(rows, static_cast<int>(layer.size()));
+		for (const auto& row : layer) cols = (std::max)(cols, static_cast<int>(row.size()));
 	}
-	return false;
-}
-
-bool EditorSuite::ExportMapchipJSON(const std::string& filePath)
-{
-	std::filesystem::path p(filePath);
-	if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path());
-
-	std::ofstream file(filePath);
-	if (!file.is_open()) return false;
-
-	file << "{\n";
-	file << "  \"cols\": " << mapCols_ << ",\n";
-	file << "  \"rows\": " << mapRows_ << ",\n";
-	file << "  \"tileSize\": " << mapTileSize_ << ",\n";
-	file << "  \"data\": [\n";
-	for (int r = 0; r < mapRows_; ++r) {
-		file << "    [";
-		for (int c = 0; c < mapCols_; ++c) {
-			file << mapGrid_[r][c];
-			if (c < mapCols_ - 1) file << ", ";
-		}
-		file << "]";
-		if (r < mapRows_ - 1) file << ",";
-		file << "\n";
+	rows = (std::min)(rows, kMaxMapchipSide);
+	cols = (std::min)(cols, kMaxMapchipSide);
+	for (auto& layer : layers) {
+		layer.resize(rows);
+		for (auto& row : layer) row.resize(cols, 0);
 	}
-	file << "  ]\n";
-	file << "}\n";
-	file.close();
-	LogMessage(std::format("[Mapchip] Exported JSON: {}", filePath), 0);
+	mapRows_ = rows;
+	mapCols_ = cols;
+	mapLayers_ = std::move(layers);
+	mapEditLayer_ = (std::min)(mapEditLayer_, static_cast<int>(mapLayers_.size()) - 1);
+	MarkMapchipChanged();
+	isSceneDirty_ = true; // the grid is saved with the scene: closing must ask, Ctrl+Z must undo the load
+	PushUndoSnapshot();
+	LogMessage(std::format("[Mapchip] Loaded ({}x{}, {} layer(s)): {}", mapCols_, mapRows_, mapLayers_.size(), filePath), 0);
 	return true;
 }
 
 int EditorSuite::CountMapchipTiles(int id) const
 {
 	int count = 0;
-	for (const auto& row : mapGrid_) count += static_cast<int>(std::count(row.begin(), row.end(), id));
+	for (const auto& layer : mapLayers_) {
+		for (const auto& row : layer) count += static_cast<int>(std::count(row.begin(), row.end(), id));
+	}
 	return count;
 }
 
 int EditorSuite::RemoveMapchipTileKind(int id)
 {
 	int cleared = 0;
-	for (auto& row : mapGrid_) {
-		for (int& cell : row) {
-			if (cell == id) { cell = 0; ++cleared; }
+	for (auto& layer : mapLayers_) {
+		for (auto& row : layer) {
+			for (int& cell : row) {
+				if (cell == id) { cell = 0; ++cleared; }
+			}
 		}
 	}
 	mapTileSet_.Remove(id);

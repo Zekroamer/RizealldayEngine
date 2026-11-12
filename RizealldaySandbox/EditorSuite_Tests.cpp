@@ -75,14 +75,22 @@ struct EditorSuiteTestAccess {
 	static void RunAutoSave(EditorSuite& s, double now) { s.UpdateAutoSave(now); }
 	static double LastAutoSave(const EditorSuite& s) { return s.lastAutoSaveTime_; }
 	static bool& Dirty(EditorSuite& s) { return s.isSceneDirty_; }
-	static std::vector<std::vector<int>>& MapGrid(EditorSuite& s) { return s.mapGrid_; }
+	static std::vector<std::vector<int>>& MapGrid(EditorSuite& s) { return s.mapLayers_[0]; }
+	static std::vector<std::vector<std::vector<int>>>& MapLayers(EditorSuite& s) { return s.mapLayers_; }
+	static int& EditLayer(EditorSuite& s) { return s.mapEditLayer_; }
+	static bool CopyLayerToNext(EditorSuite& s) { return s.CopyMapchipLayerToNext(); }
+	static void ClearLayer(EditorSuite& s) { s.ClearMapchipLayer(); }
+	static int CountTiles(const EditorSuite& s, int id) { return s.CountMapchipTiles(id); }
+	static int RemoveTileKind(EditorSuite& s, int id) { return s.RemoveMapchipTileKind(id); }
 	static int MapRows(const EditorSuite& s) { return s.mapRows_; }
 	static int MapCols(const EditorSuite& s) { return s.mapCols_; }
 	static char* MapFileBuf(EditorSuite& s) { return s.mapFilePathBuf_; }
 	static bool LoadMapCsv(EditorSuite& s, const std::string& file) { return s.LoadMapchipCSV(file); }
+	static bool SaveMapCsv(EditorSuite& s, const std::string& file) { return s.SaveMapchipCSV(file); }
 	static std::filesystem::path MapCsvPath(const EditorSuite& s) { return s.MapchipCsvPath(); }
 	static bool BuildMap(EditorSuite& s, uint32_t id) { return s.BuildMapchipObjects(id); }
 	static bool ResizeMap(EditorSuite& s, int cols, int rows) { return s.ResizeMapchip(cols, rows); }
+	static bool ResizeMap3(EditorSuite& s, int cols, int rows, int layers) { return s.ResizeMapchip(cols, rows, layers); }
 	static bool& MapPlaneXZ(EditorSuite& s) { return s.mapPlaneXZ_; }
 	static bool MapBuildIsCurrent(const EditorSuite& s) { return s.MapchipBuildIsCurrent(); }
 	static MapchipTileSet& TileSet(EditorSuite& s) { return s.mapTileSet_; }
@@ -1036,6 +1044,89 @@ TEST_CASE(Mapchip, GridEditingForLevels)
 	CHECK(!A::MapPlaneXZ(s));
 	REQUIRE(s.DeserializeSceneFromString(saved));
 	CHECK(A::MapPlaneXZ(s));
+
+	s.NewScene();
+	fs::remove_all(dir, ec);
+}
+
+TEST_CASE(Mapchip, LayersMakeThreeDimensionalLevels)
+{
+	namespace fs = std::filesystem;
+	const fs::path dir = A::TempRoot() / "MapchipLayers";
+	std::error_code ec;
+	fs::remove_all(dir, ec);
+	fs::create_directories(dir, ec);
+	s.NewScene();
+	CHECK(A::MapLayers(s).size() == 1u); // scenes start (and old scenes load) with one layer
+
+	// Layers: 1..64, each the same columns x rows; the edited layer stays inside
+	REQUIRE(A::ResizeMap3(s, 3, 2, 3));
+	REQUIRE(A::MapLayers(s).size() == 3u);
+	for (const auto& layer : A::MapLayers(s)) {
+		REQUIRE(layer.size() == 2u);
+		CHECK(layer[0].size() == 3u);
+	}
+	A::EditLayer(s) = 2;
+	REQUIRE(A::ResizeMap3(s, 3, 2, 1));
+	CHECK(A::EditLayer(s) == 0);
+	REQUIRE(A::ResizeMap3(s, 3, 2, 999));
+	CHECK(A::MapLayers(s).size() == 64u);
+
+	// A CSV holds the layers one after another, separated by an empty line; an old CSV is one layer
+	std::ofstream(dir / "layers.csv") << "1,0\n\n0,2\n\n";
+	REQUIRE(A::LoadMapCsv(s, (dir / "layers.csv").string()));
+	REQUIRE(A::MapLayers(s).size() == 2u);
+	CHECK(A::MapLayers(s)[0][0] == (std::vector<int>{ 1, 0 }));
+	CHECK(A::MapLayers(s)[1][0] == (std::vector<int>{ 0, 2 }));
+	REQUIRE(A::SaveMapCsv(s, (dir / "again.csv").string()));
+	REQUIRE(A::LoadMapCsv(s, (dir / "again.csv").string()));
+	REQUIRE(A::MapLayers(s).size() == 2u);
+	CHECK(A::MapLayers(s)[1][0] == (std::vector<int>{ 0, 2 }));
+
+	// Side view: the next layer lies behind (+Z); top-down: the next layer is the floor above (+Y)
+	GameObject& map = s.CreateGameObject("Map", GameObjectType::MapchipGrid);
+	map.hasMapchip = true;
+	const uint32_t mapId = map.id;
+	auto built = [&](const char* tag) -> const GameObject* {
+		for (const GameObject& o : A::Objects(s)) {
+			if (o.parentId == static_cast<int>(mapId) && o.tag == tag) return &o;
+		}
+		return nullptr;
+	};
+	REQUIRE(A::BuildMap(s, mapId));
+	REQUIRE(built("Wall") != nullptr);
+	REQUIRE(built("Spike") != nullptr);
+	CHECK_NEAR(built("Wall")->translation.z, 0.0f, 1e-5f);
+	CHECK_NEAR(built("Spike")->translation.z, 1.0f, 1e-5f);
+	CHECK_NEAR(built("Spike")->translation.x, 1.0f, 1e-5f);
+	CHECK(built("Spike")->name.find(",L1)") != std::string::npos);
+	A::MapPlaneXZ(s) = true;
+	REQUIRE(A::BuildMap(s, mapId));
+	CHECK_NEAR(built("Wall")->translation.y, 0.0f, 1e-5f);
+	CHECK_NEAR(built("Spike")->translation.y, 1.0f, 1e-5f);
+	A::MapPlaneXZ(s) = false;
+
+	// All layers are saved with the scene
+	const std::string saved = s.SerializeSceneToString();
+	s.NewScene();
+	REQUIRE(s.DeserializeSceneFromString(saved));
+	REQUIRE(A::MapLayers(s).size() == 2u);
+	CHECK(A::MapLayers(s)[1][0] == (std::vector<int>{ 0, 2 }));
+
+	// Tiles are counted and removed in every layer
+	CHECK(A::CountTiles(s, 2) == 1);
+	// Copy to next: the last layer gets a new copy above it, and that copy is edited next; Clear empties one layer
+	A::EditLayer(s) = 1;
+	REQUIRE(A::CopyLayerToNext(s));
+	REQUIRE(A::MapLayers(s).size() == 3u);
+	CHECK(A::EditLayer(s) == 2);
+	CHECK(A::MapLayers(s)[2][0] == (std::vector<int>{ 0, 2 }));
+	CHECK(A::CountTiles(s, 2) == 2);
+	A::ClearLayer(s);
+	CHECK(A::MapLayers(s)[2][0] == (std::vector<int>{ 0, 0 }));
+	CHECK(A::MapLayers(s)[1][0] == (std::vector<int>{ 0, 2 }));
+	CHECK(A::RemoveTileKind(s, 2) == 1);
+	CHECK(A::CountTiles(s, 2) == 0);
 
 	s.NewScene();
 	fs::remove_all(dir, ec);

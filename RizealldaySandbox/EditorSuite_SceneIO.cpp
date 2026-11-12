@@ -185,16 +185,25 @@ void EditorSuite::WriteSceneSettingsJson(void* outJson) const
 	mapchip["cols"] = mapCols_;
 	mapchip["tileSize"] = Num(mapTileSize_);
 	if (mapPlaneXZ_) mapchip["plane"] = "xz"; // absent = the old upright X/Y layout
-	Json data = Json::array();
-	for (int r = 0; r < mapRows_; ++r) {
-		Json row = Json::array();
-		for (int c = 0; c < mapCols_; ++c) {
-			const bool inRange = r < static_cast<int>(mapGrid_.size()) && c < static_cast<int>(mapGrid_[r].size());
-			row.push_back(inRange ? mapGrid_[r][c] : 0);
+	auto layerJson = [&](const std::vector<std::vector<int>>& layer) {
+		Json data = Json::array();
+		for (int r = 0; r < mapRows_; ++r) {
+			Json row = Json::array();
+			for (int c = 0; c < mapCols_; ++c) {
+				const bool inRange = r < static_cast<int>(layer.size()) && c < static_cast<int>(layer[r].size());
+				row.push_back(inRange ? layer[r][c] : 0);
+			}
+			data.push_back(std::move(row));
 		}
-		data.push_back(std::move(row));
+		return data;
+	};
+	// "data" is layer 0, as before layers existed; the others follow in "moreLayers"
+	mapchip["data"] = mapLayers_.empty() ? Json::array() : layerJson(mapLayers_[0]);
+	if (mapLayers_.size() > 1) {
+		Json more = Json::array();
+		for (size_t l = 1; l < mapLayers_.size(); ++l) more.push_back(layerJson(mapLayers_[l]));
+		mapchip["moreLayers"] = std::move(more);
 	}
-	mapchip["data"] = std::move(data);
 	if (!mapTileSetPath_.empty()) {
 		mapchip["tileSet"] = mapTileSetPath_;
 		WriteAssetGuid(AssetDb(), mapchip, "tileSetGuid", mapTileSetPath_);
@@ -581,26 +590,31 @@ void EditorSuite::ReadSceneSettingsJson(const void* json)
 		SceneJson::Read(*mapJson, "plane", plane);
 		mapPlaneXZ_ = plane == "xz";
 		mapBuiltRevision_ = ++mapGridRevision_; // a saved scene holds the objects its grid was built into
-		mapRows_ = (std::max)(mapRows_, 0);
-		mapCols_ = (std::max)(mapCols_, 0);
+		mapRows_ = std::clamp(mapRows_, 0, kMaxMapchipSide);
+		mapCols_ = std::clamp(mapCols_, 0, kMaxMapchipSide);
 		std::string tileSet; // scenes saved before tile sets have none: their ids are the built-in Wall .. Goal
 		ReadAssetReference(AssetDb(), *mapJson, "tileSet", "tileSetGuid", tileSet);
 		UseMapchipTileSet(tileSet);
 
-		const Json* dataJson = SceneJson::Find(*mapJson, "data");
-		if (dataJson && dataJson->is_array()) {
-			mapGrid_.assign(mapRows_, std::vector<int>(mapCols_, 0));
+		// Layer 0 is "data" (as before layers existed), the rest "moreLayers"; a missing one is Empty
+		auto readLayer = [&](const Json* dataJson, std::vector<std::vector<int>>& layer) {
+			layer.assign(mapRows_, std::vector<int>(mapCols_, 0));
+			if (!dataJson || !dataJson->is_array()) return;
 			for (int r = 0; r < mapRows_ && r < static_cast<int>(dataJson->size()); ++r) {
 				const Json& rowJson = (*dataJson)[static_cast<size_t>(r)];
 				if (!rowJson.is_array()) continue;
 				for (int c = 0; c < mapCols_ && c < static_cast<int>(rowJson.size()); ++c) {
 					const Json& cell = rowJson[static_cast<size_t>(c)];
-					if (cell.is_number()) mapGrid_[r][c] = static_cast<int>(cell.get<double>());
+					if (cell.is_number()) layer[r][c] = static_cast<int>(cell.get<double>());
 				}
 			}
-		} else {
-			mapGrid_.assign(mapRows_, std::vector<int>(mapCols_, 0)); // rows/cols changed: the old grid no longer fits
-		}
+		};
+		const Json* more = SceneJson::Find(*mapJson, "moreLayers");
+		const size_t extra = more && more->is_array() ? (std::min)(more->size(), static_cast<size_t>(kMaxMapchipLayers - 1)) : 0;
+		mapLayers_.assign(1 + extra, {});
+		readLayer(SceneJson::Find(*mapJson, "data"), mapLayers_[0]);
+		for (size_t l = 0; l < extra; ++l) readLayer(&(*more)[l], mapLayers_[l + 1]);
+		mapEditLayer_ = (std::min)(mapEditLayer_, static_cast<int>(mapLayers_.size()) - 1);
 	} else {
 		ResetMapchip(); // a scene saved without a grid must not show the previous scene's
 	}

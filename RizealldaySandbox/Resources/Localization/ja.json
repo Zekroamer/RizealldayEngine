@@ -1171,7 +1171,6 @@
 	"Remove Tile": "タイルを削除",
 	"This tile set file cannot be read (see the Console). Fix the file or choose another tile set.": "このタイルセットのファイルを読み込めません（コンソールを参照）。ファイルを修正するか、別のタイルセットを選んでください。",
 	"Those cells become Empty. Other scenes that use this tile set keep the number, which then means nothing.\nUndo brings the cells back, but not the tile: they show in purple until you paint them again.": "それらのマスは空になります。このタイルセットを使う他のシーンでは番号が残り、何も表さなくなります。\n元に戻すとマスは戻りますが、タイルは戻りません。塗り直すまで紫で表示されます。",
-	"Grid size (1 to %d each). Tiles that still fit stay, new cells are Empty.": "グリッドのサイズ（それぞれ1～%d）。収まるタイルは残り、新しいマスは空になります。",
 	"Distance between tiles in the built level, and the size of the fallback cubes": "生成されたレベルでのタイルの間隔と、代わりのキューブの大きさ",
 	"Side view (X / Y)": "横から見る (X / Y)",
 	"Top-down (X / Z)": "上から見る (X / Z)",
@@ -1181,8 +1180,16 @@
 	"Left drag paints, right drag erases.": "左ドラッグで塗り、右ドラッグで消します。",
 	"Build the level again after every finished paint stroke": "塗り終えるたびにレベルを再生成します",
 	"The grid has changed since the last Build.": "前回の生成からグリッドが変更されています。",
-	"Columns / Rows": "列 / 行",
 	"Tile Size": "タイルサイズ",
 	"Layout": "配置",
-	"Auto Build": "自動生成"
+	"Auto Build": "自動生成",
+	"Grid size: columns and rows 1 to %d, layers 1 to %d (the third axis).\nTiles that still fit stay, new cells are Empty.": "グリッドのサイズ: 列と行は1～%d、レイヤーは1～%d（3つ目の軸）。\n収まるタイルは残り、新しいマスは空になります。",
+	"Layer 0 is the ground floor; each next layer is one tile higher.": "レイヤー0は1階です。次のレイヤーはタイル1つ分高くなります。",
+	"Layer 0 is the front; each next layer is one tile further back.": "レイヤー0は一番手前です。次のレイヤーはタイル1つ分奥になります。",
+	"Copies this layer onto the next one (adds a layer when this is the last) and edits that one": "このレイヤーを次のレイヤーにコピーし（最後のレイヤーなら追加）、そのレイヤーを編集します",
+	"%d filled tiles: Build makes one object for each, which can make the scene slow.": "%d マスが埋まっています: 生成するとそれぞれ1つのオブジェクトになり、シーンが重くなることがあります。",
+	"Columns / Rows / Layers": "列 / 行 / レイヤー",
+	"Edit Layer": "編集するレイヤー",
+	"Copy Layer to Next": "次のレイヤーにコピー",
+	"Clear Layer": "レイヤーを消去"
 }
