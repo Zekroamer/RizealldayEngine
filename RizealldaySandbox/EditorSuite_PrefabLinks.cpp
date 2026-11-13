@@ -23,7 +23,7 @@ namespace {
 	{
 		return key == "id" || key == "prefab" || key == "prefabNode" || key == "prefabNodeKey" || key == "prefabOverrides" ||
 			key == "prefabGuid" || key == "parentId" || key == "attachedParentId" ||
-			key == "nestedPrefab" || key == "nestedNode" || key == "nestedOverrides" || key == "variantOverrides";
+			key == "nestedPrefab" || key == "nestedNode" || key == "nestedOverrides" || key == "variantOverrides" || key == "siblingOrder";
 	}
 
 	// The root's place in the scene belongs to the instance

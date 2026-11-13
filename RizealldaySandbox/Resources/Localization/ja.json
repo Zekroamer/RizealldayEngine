@@ -196,6 +196,8 @@
 	"Duplicate": "複製",
 	"Delete GameObject": "ゲームオブジェクトを削除",
 	"Unparent": "親子関係を解除",
+	"Move Up": "上へ移動",
+	"Move Down": "下へ移動",
 	"Rename Scene": "シーン名を変更",
 	"Save as Prefab": "プレハブとして保存",
 	"Saves this object and its children to Assets/Prefabs/<name>.prefab.json": "このオブジェクトと子を Assets/Prefabs/<name>.prefab.json に保存",

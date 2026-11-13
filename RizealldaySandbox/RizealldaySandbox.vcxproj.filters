@@ -188,6 +188,9 @@
     <ClInclude Include="SceneMerge.h">
       <Filter>editor</Filter>
     </ClInclude>
+    <ClInclude Include="SiblingOrder.h">
+      <Filter>editor</Filter>
+    </ClInclude>
     <ClInclude Include="NavGrid.h">
       <Filter>editor</Filter>
     </ClInclude>

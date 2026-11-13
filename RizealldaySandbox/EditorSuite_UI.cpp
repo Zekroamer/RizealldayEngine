@@ -517,6 +517,8 @@ void EditorSuite::DrawHierarchyPanel()
 
 				// Reparenting is deferred until after the rows are drawn so the tree is not modified while iterating it
 				bool hasPendingReparent = false;
+				uint32_t pendingSiblingMoveId = 0;
+				int pendingSiblingMove = 0;
 				uint32_t pendingReparentChildId = 0;
 				int pendingReparentParentId = -1;
 
@@ -631,6 +633,14 @@ void EditorSuite::DrawHierarchyPanel()
 							pendingReparentChildId = obj.id;
 							pendingReparentParentId = -1;
 						}
+						if (ImGui::MenuItem(TrId("Move Up"))) {
+							pendingSiblingMoveId = obj.id;
+							pendingSiblingMove = -1;
+						}
+						if (ImGui::MenuItem(TrId("Move Down"))) {
+							pendingSiblingMoveId = obj.id;
+							pendingSiblingMove = 1;
+						}
 						ImGui::Separator();
 						if (isPrefabLinked && ImGui::MenuItem(TrId("Open Prefab"))) {
 							const std::string prefabToOpen = obj.prefabSource;
@@ -714,6 +724,7 @@ void EditorSuite::DrawHierarchyPanel()
 				if (hasPendingReparent) {
 					ReparentGameObject(pendingReparentChildId, pendingReparentParentId, true);
 				}
+				if (pendingSiblingMove != 0) MoveGameObjectAmongSiblings(pendingSiblingMoveId, pendingSiblingMove);
 				ImGui::TreePop();
 			}
 		}

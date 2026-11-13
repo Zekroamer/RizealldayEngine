@@ -23,6 +23,7 @@
 #include "AutoSave.h"
 #include "MapchipTileSet.h"
 #include "SceneMerge.h"
+#include "SiblingOrder.h"
 #include "NodeGraph.h"
 #include "GraphEditorModel.h"
 #include "base/DXCManager.h"
@@ -182,6 +183,12 @@ struct EditorSuiteTestAccess {
 		return false;
 	}
 	static void Log(EditorSuite& s, const std::string& text, int type) { s.LogMessage(text, type); }
+	static int LogCount(const EditorSuite& s, const std::string& part)
+	{
+		int count = 0;
+		for (const auto& entry : s.consoleLogs_) count += entry.message.find(part) != std::string::npos ? 1 : 0;
+		return count;
+	}
 	static void PrepareForTest(EditorSuite& s)
 	{
 		s.sceneState_ = EditorSceneState::Edit; // a failed test must not leave Play mode behind
@@ -267,6 +274,291 @@ TEST_CASE(Json, InvalidInputKeepsScene)
 	CHECK(!s.DeserializeSceneFromString("[1, 2, 3]"));
 	CHECK(A::Objects(s).size() == count);
 	CHECK(s.SerializeSceneToString() == before);
+}
+
+// ===========================================================================
+// Git-friendly scene and prefab files (objects in id order, sibling order per object)
+// ===========================================================================
+
+namespace {
+	std::string ReadWholeFile(const std::filesystem::path& file)
+	{
+		std::ifstream in(file, std::ios::binary);
+		std::stringstream ss;
+		ss << in.rdbuf();
+		return ss.str();
+	}
+
+	std::vector<uint32_t> ObjectOrder(EditorSuite& s)
+	{
+		std::vector<uint32_t> ids;
+		for (const GameObject& o : A::Objects(s)) ids.push_back(o.id);
+		return ids;
+	}
+
+	std::vector<uint32_t> FileIds(const std::string& text, const char* listKey = "gameObjects")
+	{
+		std::vector<uint32_t> ids;
+		const std::optional<SceneJson::Json> j = SceneJson::Parse(text);
+		if (!j || !j->contains(listKey)) return ids;
+		for (const auto& o : (*j)[listKey]) ids.push_back(o.value("id", 0u));
+		return ids;
+	}
+
+	std::vector<std::string> Lines(const std::string& text)
+	{
+		std::vector<std::string> lines;
+		std::istringstream in(text);
+		for (std::string line; std::getline(in, line);) lines.push_back(line);
+		return lines;
+	}
+
+	// Lines that differ between two files with the same line count (-1 = the counts differ)
+	int ChangedLines(const std::string& a, const std::string& b)
+	{
+		const std::vector<std::string> la = Lines(a), lb = Lines(b);
+		if (la.size() != lb.size()) return -1;
+		int changed = 0;
+		for (size_t i = 0; i < la.size(); ++i) changed += la[i] != lb[i] ? 1 : 0;
+		return changed;
+	}
+}
+
+TEST_CASE(SceneFiles, SiblingKeysKeepWhatIsInOrder)
+{
+	using Keys = std::vector<std::optional<double>>;
+	CHECK((SiblingOrder::AssignKeys(Keys{ 1.0, 2.0, 3.0, 4.0 }) == std::vector<double>{ 1, 2, 3, 4 }));
+	// The last one moved to the front / the first one to the end: only it gets a new key
+	CHECK((SiblingOrder::AssignKeys(Keys{ 4.0, 1.0, 2.0, 3.0 }) == std::vector<double>{ 0, 1, 2, 3 }));
+	CHECK((SiblingOrder::AssignKeys(Keys{ 2.0, 3.0, 4.0, 1.0 }) == std::vector<double>{ 2, 3, 4, 5 }));
+	// New objects: whole numbers while they fit, else between the neighbours
+	CHECK((SiblingOrder::AssignKeys(Keys{ 1.0, std::nullopt, 5.0 }) == std::vector<double>{ 1, 2, 5 }));
+	CHECK((SiblingOrder::AssignKeys(Keys{ 1.0, std::nullopt, 2.0 }) == std::vector<double>{ 1, 1.5, 2 }));
+	CHECK((SiblingOrder::AssignKeys(Keys{ std::nullopt, std::nullopt, std::nullopt }) == std::vector<double>{ 1, 2, 3 }));
+	CHECK((SiblingOrder::AssignKeys(Keys{ std::nullopt, 7.0 }) == std::vector<double>{ 6, 7 }));
+	// Two objects with one key (a duplicate): one keeps it
+	CHECK((SiblingOrder::AssignKeys(Keys{ 1.0, 1.0, 3.0 }) == std::vector<double>{ 1, 2, 3 }));
+	// No room left between two neighbours: everything is numbered again
+	CHECK((SiblingOrder::AssignKeys(Keys{ 1.0, std::nullopt, std::nextafter(1.0, 2.0) }) == std::vector<double>{ 1, 2, 3 }));
+}
+
+TEST_CASE(SceneFiles, IdOrderInFileHierarchyOrderAfterLoad)
+{
+	const std::filesystem::path file = A::TempRoot() / "SceneFiles" / "Order.scene.json";
+	const uint32_t a = s.CreateCube("A", { 0.0f, 0.0f, 0.0f }).id;
+	const uint32_t b = s.CreateCube("B", { 1.0f, 0.0f, 0.0f }).id;
+	const uint32_t c = s.CreateCube("C", { 2.0f, 0.0f, 0.0f }).id;
+	const uint32_t child = s.CreateCube("Child", { 0.0f, 1.0f, 0.0f }).id;
+	REQUIRE(s.ReparentGameObject(child, static_cast<int>(a), false));
+	REQUIRE(s.MoveGameObjectAmongSiblings(c, -1));
+	REQUIRE(s.MoveGameObjectAmongSiblings(c, -1)); // C, A, B
+	CHECK(!s.MoveGameObjectAmongSiblings(child, -1)); // the only child: nowhere to go
+	const std::vector<uint32_t> before = ObjectOrder(s);
+	CHECK(A::IndexOf(s, c) < A::IndexOf(s, a));
+	CHECK(A::IndexOf(s, a) < A::IndexOf(s, b));
+
+	REQUIRE(s.SaveScene(file.string()));
+	const std::string text = ReadWholeFile(file);
+	const std::vector<uint32_t> ids = FileIds(text);
+	CHECK(ids.size() == before.size());
+	CHECK_MSG(std::is_sorted(ids.begin(), ids.end()), "objects must be written in id order");
+	CHECK(text.find("\"formatVersion\": 1") != std::string::npos);
+	CHECK(text.find("\"siblingOrder\"") != std::string::npos);
+
+	REQUIRE(s.LoadScene(file.string()));
+	CHECK_MSG(ObjectOrder(s) == before, "the Hierarchy order must survive save + load");
+	const GameObject* loadedChild = s.FindGameObjectById(child, false);
+	REQUIRE(loadedChild != nullptr);
+	CHECK(loadedChild->parentId == static_cast<int>(a));
+}
+
+TEST_CASE(SceneFiles, MovingOneObjectChangesOnlyItsLine)
+{
+	const std::filesystem::path file = A::TempRoot() / "SceneFiles" / "Move.scene.json";
+	s.CreateCube("A", { 0.0f, 0.0f, 0.0f });
+	const uint32_t b = s.CreateCube("B", { 1.0f, 0.0f, 0.0f }).id;
+	s.CreateCube("C", { 2.0f, 0.0f, 0.0f });
+	REQUIRE(s.SaveScene(file.string()));
+	const std::string first = ReadWholeFile(file);
+	s.ResetUndoHistory();
+
+	A::MergeAllowed(s) = false; // each move is its own undo step
+	REQUIRE(s.MoveGameObjectAmongSiblings(b, -1));
+	REQUIRE(s.SaveScene(file.string()));
+	const std::string moved = ReadWholeFile(file);
+	CHECK_MSG(ChangedLines(first, moved) == 1, "moving one object must change one line (its sibling order)");
+
+	A::MergeAllowed(s) = false;
+	REQUIRE(s.MoveGameObjectAmongSiblings(b, 1)); // back again
+	A::MergeAllowed(s) = false;
+	REQUIRE(s.MoveGameObjectAmongSiblings(b, 1)); // and below C
+	REQUIRE(s.SaveScene(file.string()));
+	CHECK(ChangedLines(first, ReadWholeFile(file)) == 1);
+
+	s.Undo(); // undo puts it back in the list: its old key is still in order, so the file is the first one again
+	s.Undo();
+	s.Undo();
+	REQUIRE(s.SaveScene(file.string()));
+	CHECK(ReadWholeFile(file) == first);
+}
+
+TEST_CASE(SceneFiles, UnchangedSaveIsByteIdentical)
+{
+	const std::filesystem::path file = A::TempRoot() / "SceneFiles" / "Same.scene.json";
+	const uint32_t a = s.CreateCube("A", { 0.25f, 0.5f, -3.0f }).id;
+	const uint32_t child = s.CreateSphere("Ball", { 0.1f, 1.0f, 0.0f }).id;
+	REQUIRE(s.ReparentGameObject(child, static_cast<int>(a), false));
+	A::ResizeMap(s, 4, 3);
+	A::MapGrid(s)[1][2] = 3;
+	REQUIRE(s.SaveScene(file.string()));
+	const std::string first = ReadWholeFile(file);
+	REQUIRE(s.LoadScene(file.string()));
+	REQUIRE(s.SaveScene(file.string()));
+	CHECK_MSG(ReadWholeFile(file) == first, "saving an unchanged scene must give the same bytes");
+
+	// Prefab: saved from the scene, then opened in Prefab Mode and saved without changes
+	A::ProjectRoot(s) = A::TempRoot() / "SceneFilesPrefab";
+	const uint32_t second = s.CreateCube("Second", { 0.0f, 2.0f, 0.0f }).id;
+	REQUIRE(s.ReparentGameObject(second, static_cast<int>(a), false));
+	if (GameObject* stackRoot = s.FindGameObjectById(a, false)) stackRoot->translation = {}; // Prefab Mode shows the root at the origin
+	REQUIRE(s.SavePrefab(a, "Stack"));
+	const std::filesystem::path prefabFile = A::TempRoot() / "SceneFilesPrefab" / "Assets" / "Prefabs" / "Stack.prefab.json";
+	const std::string prefabText = ReadWholeFile(prefabFile);
+	const std::vector<uint32_t> nodeIds = FileIds(prefabText, "objects");
+	CHECK(nodeIds == (std::vector<uint32_t>{ 1, 2, 3 })); // node key + 1, root first
+	REQUIRE(s.OpenPrefabMode("Stack"));
+	REQUIRE(s.SavePrefabMode());
+	CHECK_MSG(ReadWholeFile(prefabFile) == prefabText, "saving an unchanged prefab must give the same bytes");
+
+	// Reordering a node in Prefab Mode changes only that node's line; instances follow the new order
+	const GameObject* root = s.FindGameObjectById(A::Objects(s)[A::Primary(s)].id, false);
+	REQUIRE(root != nullptr && root->childrenIds.size() == 2);
+	const uint32_t secondInPrefab = root->childrenIds[1];
+	REQUIRE(s.MoveGameObjectAmongSiblings(secondInPrefab, -1));
+	REQUIRE(s.SavePrefabMode());
+	CHECK(ChangedLines(prefabText, ReadWholeFile(prefabFile)) == 1);
+	s.ClosePrefabMode();
+	const uint32_t instance = s.InstantiatePrefabNow("Stack", { 5.0f, 0.0f, 0.0f });
+	const GameObject* inst = s.FindGameObjectById(instance, false);
+	REQUIRE(inst != nullptr && inst->childrenIds.size() == 2);
+	const GameObject* firstChild = s.FindGameObjectById(inst->childrenIds[0], false);
+	REQUIRE(firstChild != nullptr);
+	CHECK_MSG(firstChild->name == "Second", firstChild->name);
+	A::ProjectRoot(s).clear();
+}
+
+TEST_CASE(SceneFiles, OldFormatKeepsOrderAndIsRewrittenOnce)
+{
+	namespace fs = std::filesystem;
+	const fs::path file = A::TempRoot() / "SceneFiles" / "Old.scene.json";
+	fs::create_directories(file.parent_path());
+	// Written before 2.13: Hierarchy order, no sibling order
+	std::ofstream(file, std::ios::binary) << R"({"sceneName": "Old", "gameObjects": [
+		{"id": 30, "name": "Third", "type": 0, "parentId": -1},
+		{"id": 10, "name": "First", "type": 0, "parentId": -1},
+		{"id": 20, "name": "Child", "type": 0, "parentId": 30},
+		{"id": 5, "name": "Last", "type": 0, "parentId": -1}]})";
+	const std::vector<uint32_t> fileOrder{ 30, 10, 20, 5 };
+	REQUIRE(s.LoadScene(file.string()));
+	CHECK(ObjectOrder(s) == fileOrder);
+
+	const std::string notice = "was rewritten once in the git-friendly layout";
+	const int before = A::LogCount(s, notice);
+	REQUIRE(s.SaveScene(file.string()));
+	CHECK(A::LogCount(s, notice) == before + 1);
+	const std::string text = ReadWholeFile(file);
+	CHECK((FileIds(text) == std::vector<uint32_t>{ 5, 10, 20, 30 }));
+	REQUIRE(s.SaveScene(file.string()));
+	CHECK_MSG(A::LogCount(s, notice) == before + 1, "only the first save says so");
+	CHECK(ReadWholeFile(file) == text);
+
+	REQUIRE(s.LoadScene(file.string()));
+	CHECK(ObjectOrder(s) == fileOrder);
+	REQUIRE(s.SaveScene(file.string()));
+	CHECK(A::LogCount(s, notice) == before + 1);
+}
+
+TEST_CASE(SceneFiles, GitMergeFileMergesIndependentEdits)
+{
+	namespace fs = std::filesystem;
+	std::string version;
+	if (EngineUpdate::RunHiddenProcess(L"git --version", {}, &version) != 0) {
+		A::Log(s, "[Test] SceneFiles.GitMergeFileMergesIndependentEdits skipped: git is not on PATH.", 1);
+		return;
+	}
+	const fs::path dir = A::TempRoot() / "SceneFilesGit";
+	fs::create_directories(dir);
+	fs::remove_all(dir);
+	const fs::path basePath = dir / "Base" / "Level.scene.json"; // every copy has the scene's own name, as in a real repository
+
+	// The shared scene: four cubes and a 6x6 Mapchip, written by the editor
+	REQUIRE(s.DeserializeSceneFromString(R"({"gameObjects": [
+		{"id": 100, "name": "A", "type": 1, "hasMesh": true, "parentId": -1},
+		{"id": 200, "name": "B", "type": 1, "hasMesh": true, "parentId": -1},
+		{"id": 300, "name": "C", "type": 1, "hasMesh": true, "parentId": -1},
+		{"id": 400, "name": "D", "type": 1, "hasMesh": true, "parentId": -1}]})"));
+	A::ResizeMap(s, 6, 6);
+	REQUIRE(s.SaveScene(basePath.string()));
+
+	// Each side opens the base, edits it and saves; then git merges them line by line
+	const auto side = [&](const std::string& name, const auto& edit) {
+		REQUIRE_MSG(s.LoadScene(basePath.string()), name);
+		edit();
+		const fs::path out = dir / name / "Level.scene.json";
+		REQUIRE_MSG(s.SaveScene(out.string()), name);
+	};
+	const auto addObject = [&](uint32_t id, const char* name) {
+		std::optional<SceneJson::Json> j = SceneJson::Parse(s.SerializeSceneToString());
+		REQUIRE(j.has_value());
+		(*j)["gameObjects"].push_back({ { "id", id }, { "name", name }, { "type", 1 }, { "parentId", -1 } });
+		REQUIRE(s.DeserializeSceneFromString(j->dump()));
+	};
+	const auto translate = [&](uint32_t id, const Vector3& t) {
+		GameObject* o = s.FindGameObjectById(id, false);
+		REQUIRE(o != nullptr);
+		o->translation = t;
+	};
+	const auto merge = [&](const std::string& ours, const std::string& theirs) {
+		const fs::path result = dir / ("Merged_" + ours + "_" + theirs) / "Level.scene.json";
+		fs::create_directories(result.parent_path());
+		fs::copy_file(dir / ours / "Level.scene.json", result, fs::copy_options::overwrite_existing);
+		std::string output;
+		const std::wstring cmd = L"git merge-file -q \"" + result.wstring() + L"\" \"" + basePath.wstring() + L"\" \"" + (dir / theirs / "Level.scene.json").wstring() + L"\"";
+		const int conflicts = EngineUpdate::RunHiddenProcess(cmd, dir, &output);
+		CHECK_MSG(conflicts == 0, ours + " + " + theirs + ": git merge-file reported conflicts " + output);
+		CHECK_MSG(s.LoadScene(result.string()), ours + " + " + theirs + ": the merged file must load");
+	};
+	const auto at = [&](uint32_t id) { const GameObject* o = s.FindGameObjectById(id, false); return o ? o->translation : Vector3{ -999.0f, -999.0f, -999.0f }; };
+
+	// 1. Both add an object (new ids are random since 2.12, so they land in different places)
+	side("AddA", [&] { addObject(150, "NewA"); });
+	side("AddB", [&] { addObject(350, "NewB"); });
+	merge("AddA", "AddB");
+	CHECK(s.FindGameObjectById(150, false) != nullptr);
+	CHECK(s.FindGameObjectById(350, false) != nullptr);
+	CHECK(A::Objects(s).size() == 6);
+
+	// 2. Edits to objects next to each other in the file
+	side("EditB", [&] { translate(200, { 2.0f, 0.0f, 0.0f }); });
+	side("EditC", [&] { translate(300, { 0.0f, 3.0f, 0.0f }); });
+	merge("EditB", "EditC");
+	CHECK(at(200).x == 2.0f);
+	CHECK(at(300).y == 3.0f);
+
+	// 3. One reorders the Hierarchy while the other edits an object next to the moved one
+	side("Reorder", [&] { REQUIRE(s.MoveGameObjectAmongSiblings(400, -1)); });
+	side("EditC2", [&] { translate(300, { 0.0f, 0.0f, 4.0f }); });
+	merge("Reorder", "EditC2");
+	CHECK(A::IndexOf(s, 400) >= 0 && A::IndexOf(s, 400) < A::IndexOf(s, 300));
+	CHECK(at(300).z == 4.0f);
+
+	// 4. Painting different Mapchip rows
+	side("Row1", [&] { A::MapGrid(s)[1][2] = 1; });
+	side("Row4", [&] { A::MapGrid(s)[4][3] = 2; });
+	merge("Row1", "Row4");
+	CHECK(A::MapRows(s) == 6);
+	CHECK(A::MapGrid(s)[1][2] == 1);
+	CHECK(A::MapGrid(s)[4][3] == 2);
 }
 
 // ===========================================================================
