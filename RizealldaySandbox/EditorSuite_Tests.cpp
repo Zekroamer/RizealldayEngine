@@ -75,6 +75,10 @@ struct EditorSuiteTestAccess {
 	static std::vector<uint32_t>& Extra(EditorSuite& s) { return s.extraSelection_; }
 	static bool& AutoSaveInTests(EditorSuite& s) { return s.autoSaveInTests_; }
 	static bool& MergeDriverInstallInTests(EditorSuite& s) { return s.mergeDriverInstallInTests_; }
+	static bool& ExternalWatchInTests(EditorSuite& s) { return s.externalWatchInTests_; }
+	static void PollOpenFile(EditorSuite& s, float dt) { s.PollOpenFileChanges(dt); }
+	static bool ApplyOpenFile(EditorSuite& s) { return s.ApplyOpenFileChange(); }
+	static uint32_t PrefabRoot(const EditorSuite& s) { return s.prefabMode_.rootId; }
 	static void RunAutoSave(EditorSuite& s, double now) { s.UpdateAutoSave(now); }
 	static double LastAutoSave(const EditorSuite& s) { return s.lastAutoSaveTime_; }
 	static bool& Dirty(EditorSuite& s) { return s.isSceneDirty_; }
@@ -196,6 +200,7 @@ struct EditorSuiteTestAccess {
 		s.lastAutoSaveTime_ = 0.0;
 		s.autoSaveInTests_ = false;
 		s.mergeDriverInstallInTests_ = false;
+		s.externalWatchInTests_ = false;
 		s.NewScene();
 		s.ResetUndoHistory();
 	}
@@ -11962,6 +11967,219 @@ TEST_CASE(MergeConflicts, GitMergeShowsConflictInEditor)
 	A::SyncScripts(s);
 	s.NewScene();
 	removeRepo();
+}
+
+// ===========================================================================
+// Pull while the editor is open: the open scene / prefab follows its file on disk
+// ===========================================================================
+
+namespace {
+SceneJson::Json& PulledObj(SceneJson::Json& file, const char* list, const char* key, int64_t value)
+{
+	for (auto& o : file[list]) {
+		if (o[key] == value) return o;
+	}
+	static SceneJson::Json none;
+	return none;
+}
+
+// What a git pull does: the file gets new text and a newer time
+void ReplaceOnDisk(const std::filesystem::path& file, const std::function<void(SceneJson::Json&)>& change)
+{
+	SceneJson::Json j = *SceneJson::Parse(ReadFileText(file));
+	change(j);
+	std::ofstream(file, std::ios::binary | std::ios::trunc) << SceneJson::DumpCompact(j);
+	std::filesystem::last_write_time(file, std::filesystem::last_write_time(file) + std::chrono::seconds(2));
+}
+
+// Scene with "Crate" and "Barrel", saved and opened; returns {crate, barrel}
+std::pair<uint32_t, uint32_t> OpenPullScene(EditorSuite& s, const std::filesystem::path& scene)
+{
+	std::error_code ec;
+	std::filesystem::remove_all(scene.parent_path(), ec);
+	std::filesystem::create_directories(scene.parent_path(), ec);
+	s.NewScene();
+	const uint32_t crate = s.CreateCube("Crate", { 1.0f, 0.0f, 0.0f }).id;
+	const uint32_t barrel = s.CreateCube("Barrel", { -1.0f, 0.0f, 0.0f }).id;
+	s.SaveScene(scene.string());
+	s.LoadScene(scene.string());
+	return { crate, barrel };
+}
+
+void AddPulledObject(SceneJson::Json& j, uint32_t copyOf)
+{
+	SceneJson::Json pulled = PulledObj(j, "gameObjects", "id", copyOf);
+	pulled["id"] = 900001;
+	pulled["name"] = "Pulled";
+	j["gameObjects"].push_back(pulled);
+}
+}
+
+TEST_CASE(PullWhileOpen, CleanSceneReloadsKeepingSelection)
+{
+	const std::filesystem::path scene = A::TempRoot() / "PullWhileOpenClean" / "Level.scene.json";
+	const auto [crate, barrel] = OpenPullScene(s, scene);
+	A::Select(s, crate);
+	A::Extra(s).push_back(barrel);
+	A::EditorCam(s).translation = { 3.0f, 4.0f, 5.0f };
+	ReplaceOnDisk(scene, [&](auto& j) {
+		PulledObj(j, "gameObjects", "id", crate)["translation"] = { 3, 0, 0 };
+		AddPulledObject(j, crate);
+	});
+
+	// Self-tests never poll unless a test asks
+	A::PollOpenFile(s, 1.0f);
+	CHECK(s.FindGameObjectByName("Pulled", false) == nullptr);
+
+	A::ExternalWatchInTests(s) = true;
+	A::PollOpenFile(s, 1.0f);
+	A::ExternalWatchInTests(s) = false;
+	REQUIRE(s.FindGameObjectByName("Pulled", false) != nullptr);
+	CHECK(s.FindGameObjectById(crate, false)->translation.x == 3.0f);
+	CHECK(!s.IsSceneDirty());
+	REQUIRE(A::Primary(s) >= 0);
+	CHECK(A::Objects(s)[A::Primary(s)].id == crate);
+	CHECK(A::Extra(s).size() == 1u && A::Extra(s)[0] == barrel);
+	CHECK(A::EditorCam(s).translation.x == 3.0f && A::EditorCam(s).translation.z == 5.0f);
+	CHECK(A::LogHas(s, "changed on disk (a git pull?): reloaded"));
+
+	// Nothing changed since: the next poll does nothing
+	CHECK(!A::ApplyOpenFile(s));
+	s.NewScene();
+}
+
+TEST_CASE(PullWhileOpen, DirtySceneMergesPulledChanges)
+{
+	namespace fs = std::filesystem;
+	const fs::path scene = A::TempRoot() / "PullWhileOpenDirty" / "Level.scene.json";
+	const auto [crate, barrel] = OpenPullScene(s, scene);
+	A::Select(s, barrel);
+	s.FindGameObjectById(barrel, false)->name = "My Edit";
+	s.FindGameObjectById(crate, false)->translation.x = 5.0f;
+	s.PushUndoSnapshot();
+	A::Dirty(s) = true;
+	ReplaceOnDisk(scene, [&](auto& j) {
+		PulledObj(j, "gameObjects", "id", crate)["translation"] = { 7, 0, 0 }; // the same field: a conflict
+		AddPulledObject(j, crate);
+	});
+
+	REQUIRE(A::ApplyOpenFile(s));
+	CHECK(s.FindGameObjectById(barrel, false)->name == "My Edit");
+	CHECK(s.FindGameObjectByName("Pulled", false) != nullptr);
+	CHECK(s.FindGameObjectById(crate, false)->translation.x == 5.0f); // mine until decided
+	CHECK(s.IsSceneDirty());
+	CHECK(A::ScenePath(s) == scene.string());
+	REQUIRE(A::Primary(s) >= 0);
+	CHECK(A::Objects(s)[A::Primary(s)].id == barrel);
+	const auto& conflicts = A::MergeConflicts(s).conflicts;
+	REQUIRE(conflicts.size() == 1u);
+	CHECK(conflicts[0].objectId == crate);
+	CHECK(conflicts[0].field == "translation");
+	CHECK(fs::exists(scene.string() + MergeDriver::kReportSuffix));
+	CHECK(A::MergeConflictsWindowOpen(s));
+
+	// Theirs from the window, then Save keeps everything
+	REQUIRE(A::ResolveMergeConflict(s, 0, true));
+	CHECK(std::abs(s.FindGameObjectById(crate, false)->translation.x - 7.0f) < 1e-4f);
+	REQUIRE(s.SaveScene(scene.string()));
+	const std::string saved = ReadFileText(scene);
+	CHECK(saved.find("Pulled") != std::string::npos);
+	CHECK(saved.find("My Edit") != std::string::npos);
+	CHECK(!fs::exists(scene.string() + MergeDriver::kReportSuffix));
+	s.NewScene();
+}
+
+TEST_CASE(PullWhileOpen, SaveMergesInsteadOfOverwriting)
+{
+	// No poll ran (the editor was busy): Save itself notices the pulled file
+	const std::filesystem::path scene = A::TempRoot() / "PullWhileOpenSave" / "Level.scene.json";
+	const auto [crate, barrel] = OpenPullScene(s, scene);
+	s.FindGameObjectById(barrel, false)->name = "My Edit";
+	s.PushUndoSnapshot();
+	A::Dirty(s) = true;
+	ReplaceOnDisk(scene, [&](auto& j) { AddPulledObject(j, crate); });
+
+	REQUIRE(s.SaveScene(scene.string()));
+	CHECK(s.FindGameObjectByName("Pulled", false) != nullptr); // the open scene shows it too
+	const std::string saved = ReadFileText(scene);
+	CHECK(saved.find("Pulled") != std::string::npos);
+	CHECK(saved.find("My Edit") != std::string::npos);
+	CHECK(!s.IsSceneDirty());
+	CHECK(!A::ApplyOpenFile(s)); // what Save wrote is the new baseline
+	s.NewScene();
+}
+
+TEST_CASE(PullWhileOpen, PlayWaitsUntilStop)
+{
+	const std::filesystem::path scene = A::TempRoot() / "PullWhileOpenPlay" / "Level.scene.json";
+	const auto [crate, barrel] = OpenPullScene(s, scene);
+	(void)barrel;
+	s.StartPlayMode();
+	ReplaceOnDisk(scene, [&](auto& j) { AddPulledObject(j, crate); });
+	const std::string pulled = ReadFileText(scene);
+	const auto pulledTime = std::filesystem::last_write_time(scene);
+
+	CHECK(!A::ApplyOpenFile(s));
+	CHECK(!A::ApplyOpenFile(s));
+	CHECK(s.FindGameObjectByName("Pulled", false) == nullptr);
+	CHECK(ReadFileText(scene) == pulled); // nothing written while Play runs
+	CHECK(std::filesystem::last_write_time(scene) == pulledTime);
+	CHECK(!std::filesystem::exists(scene.string() + MergeDriver::kReportSuffix));
+
+	s.StopPlayMode();
+	REQUIRE(A::ApplyOpenFile(s));
+	CHECK(s.FindGameObjectByName("Pulled", false) != nullptr);
+	s.NewScene();
+}
+
+TEST_CASE(PullWhileOpen, PrefabModeReloadsAndSaveMerges)
+{
+	namespace fs = std::filesystem;
+	const fs::path savedRoot = A::ProjectRoot(s);
+	MakeTowerInstances(s, "PullWhileOpenPrefab");
+	const fs::path file = A::TempRoot() / "PullWhileOpenPrefab" / "Assets" / "Prefabs" / "Tower.prefab.json";
+	REQUIRE(s.OpenPrefabMode("Tower"));
+	auto top = [&]() -> GameObject* {
+		for (auto& o : A::Objects(s)) if (o.prefabNodeKey == 1 && o.prefabSource == "Tower") return &o;
+		return nullptr;
+	};
+	REQUIRE(top() != nullptr);
+	A::Select(s, top()->id);
+
+	// Clean: the stage follows the pulled prefab, the selection stays on the same node
+	ReplaceOnDisk(file, [](auto& j) { PulledObj(j, "objects", "prefabNodeKey", 1)["materialColor"] = { 0, 0, 1, 1 }; });
+	REQUIRE(A::ApplyOpenFile(s));
+	REQUIRE(top() != nullptr);
+	CHECK_NEAR(top()->materialColor.z, 1.0f, 1e-5f);
+	CHECK(A::Primary(s) >= 0 && A::Objects(s)[A::Primary(s)].prefabNodeKey == 1);
+	CHECK(!s.IsSceneDirty());
+
+	// Dirty: the edit stays, Save merges the pulled change in and keeps the file's ids
+	top()->name = "My Top";
+	s.PushUndoSnapshot();
+	A::Dirty(s) = true;
+	ReplaceOnDisk(file, [](auto& j) { PulledObj(j, "objects", "prefabNodeKey", 0)["name"] = "Pulled Tower"; });
+	const std::string before = ReadFileText(file);
+	CHECK(!A::ApplyOpenFile(s));
+	CHECK(top()->name == "My Top");
+	REQUIRE(s.SaveScene(A::ScenePath(s))); // Prefab Mode: writes the prefab
+	const std::string saved = ReadFileText(file);
+	CHECK(saved.find("My Top") != std::string::npos);
+	CHECK(saved.find("Pulled Tower") != std::string::npos);
+	auto beforeJson = *SceneJson::Parse(before);
+	auto savedJson = *SceneJson::Parse(saved);
+	CHECK(PulledObj(savedJson, "objects", "prefabNodeKey", 1)["id"] ==
+		PulledObj(beforeJson, "objects", "prefabNodeKey", 1)["id"]);
+	REQUIRE(top() != nullptr);
+	CHECK(top()->name == "My Top");
+	const GameObject* root = s.FindGameObjectById(A::PrefabRoot(s), false);
+	REQUIRE(root != nullptr);
+	CHECK(root->name == "Pulled Tower"); // the stage shows the merge
+
+	s.ClosePrefabMode();
+	A::ProjectRoot(s) = savedRoot;
+	s.ClearPrefabCache();
+	s.NewScene();
 }
 
 

@@ -639,6 +639,12 @@ public:
 	void ClosePrefabMode();
 	bool IsInPrefabMode() const { return prefabMode_.active; }
 	void DrawPrefabModeBar();
+	// Pull while open (EditorSuite_ExternalChanges.cpp): what the open scene / prefab file held when it was last read or written
+	struct OpenFileRecord {
+		std::string path; ///< empty = nothing watched (new scene)
+		std::string text;
+		std::filesystem::file_time_type time{};
+	};
 	struct PrefabModeState {
 		bool active = false;
 		std::string prefab;
@@ -647,7 +653,22 @@ public:
 		std::string scenePath;
 		std::string sceneName;
 		bool sceneDirty = false;
+		OpenFileRecord sceneRecord; // the scene's record, back when Prefab Mode closes
 	};
+	OpenFileRecord openFileRecord_; ///< the scene, or the prefab in Prefab Mode
+	bool externalWatchInTests_ = false; // self-tests never poll unless a test asks
+	float externalWatchTimer_ = 0.0f;
+	bool externalChangeWaitLogged_ = false;
+	void RecordOpenFile(const std::string& path, const std::string* writtenText = nullptr); ///< reads the file when no text is given
+	void PollOpenFileChanges(float deltaTime);
+	/// Applies a change of the open file on disk: reload when clean, in-editor scene merge when dirty, nothing in Play. True = applied.
+	bool ApplyOpenFileChange();
+	/// base = recorded text, ours = the open scene, theirs = `theirs`; the result replaces the open scene (one undo step)
+	bool MergeOpenSceneWith(const std::string& theirs);
+	/// Prefab Mode: maps the instance ids in `prefab` (a prefab file being written) to the recorded file's ids by prefabNodeKey
+	void UseRecordedPrefabIds(void* prefabJson) const; // SceneJson::Json*
+	void ReloadPrefabModeInstance();
+	void AddMergeResult(const SceneMerge::Result& result); ///< conflicts into the report + Merge Conflicts window
 	PrefabModeState prefabMode_;
 	bool HasPrefab(const std::string& prefabName);
 	void ClearPrefabCache();

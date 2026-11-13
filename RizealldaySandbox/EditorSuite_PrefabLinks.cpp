@@ -378,6 +378,7 @@ bool EditorSuite::OpenPrefabMode(const std::string& prefabName)
 	state.scenePath = currentScenePath_;
 	state.sceneName = currentSceneName_;
 	state.sceneDirty = isSceneDirty_;
+	state.sceneRecord = openFileRecord_; // NewScene below clears it
 	PushUndoSnapshot(); // a pending edit belongs to the scene history
 	prefabModeUndo_ = std::move(undoCommands_);
 	prefabModeRedo_ = std::move(redoCommands_);
@@ -399,11 +400,13 @@ bool EditorSuite::OpenPrefabMode(const std::string& prefabName)
 		undoCommands_ = std::move(prefabModeUndo_);
 		redoCommands_ = std::move(prefabModeRedo_);
 		isSceneDirty_ = state.sceneDirty;
+		openFileRecord_ = state.sceneRecord;
 		return false;
 	}
 	prefabMode_ = std::move(state);
 	prefabMode_.active = true;
 	currentScenePath_ = ResolvePrefabFile(prefabName).string();
+	RecordOpenFile(currentScenePath_);
 	currentSceneName_ = prefabName;
 	selectedObjectIndex_ = FindGameObjectIndexById(prefabMode_.rootId);
 	ResetUndoHistory();
@@ -434,6 +437,7 @@ void EditorSuite::ClosePrefabMode()
 	DeserializeSceneFromString(state.sceneJson);
 	currentScenePath_ = state.scenePath;
 	currentSceneName_ = state.sceneName;
+	openFileRecord_ = state.sceneRecord; // a change on disk meanwhile is picked up by the next poll
 	SyncLinkedPrefabs(); // the instances show what was saved
 	ResetUndoHistory(); // the baseline is the scene as it is now; the sync itself is not an undo step
 	undoCommands_ = std::move(prefabModeUndo_);

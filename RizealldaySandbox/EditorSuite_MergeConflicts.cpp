@@ -82,7 +82,7 @@ void EditorSuite::LoadMergeReport()
 		std::ifstream prefabIn(currentScenePath_, std::ios::binary);
 		const std::string prefabText((std::istreambuf_iterator<char>(prefabIn)), std::istreambuf_iterator<char>());
 		if (const std::optional<Json> prefab = SceneJson::Parse(prefabText); prefab && prefab->is_object()) {
-			if (const Json* objects = SceneJson::Find(*prefab, "gameObjects"); objects && objects->is_array()) {
+			if (const Json* objects = SceneJson::Find(*prefab, "objects"); objects && objects->is_array()) { // prefab files list "objects"
 				for (const Json& o : *objects) {
 					uint32_t id = 0;
 					int key = -1;

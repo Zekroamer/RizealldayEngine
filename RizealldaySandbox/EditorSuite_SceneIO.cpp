@@ -943,10 +943,21 @@ bool EditorSuite::SaveScene(const std::string& filePath)
 		std::filesystem::create_directories(p.parent_path(), ec); // a failure shows up as a failed write below
 	}
 
-	if (!WriteProjectFile(p, SerializeSceneToString())) {
+	// Never overwrite a change made on disk since the file was read (a git pull): merge it into the open scene first
+	if (!openFileRecord_.path.empty() && openFileRecord_.path == targetPath) {
+		std::ifstream in(targetPath, std::ios::binary);
+		const std::string disk((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		if (in.is_open() && disk != openFileRecord_.text && !MergeOpenSceneWith(disk)) {
+			LogMessage(std::format("[Scene] Not saved: {} changed on disk and could not be merged with the open scene.", targetPath), 2);
+			return false;
+		}
+	}
+	const std::string text = SerializeSceneToString();
+	if (!WriteProjectFile(p, text)) {
 		LogMessage(std::format("[Scene] Could not write {} (read-only, disk full or used by another program). The scene is not saved.", targetPath), 2);
 		return false;
 	}
+	RecordOpenFile(targetPath, &text);
 
 	isSceneDirty_ = false;
 	DiscardAutoSave(currentScenePath_); // an untitled scene saved for the first time leaves its copy behind otherwise
@@ -993,6 +1004,7 @@ bool EditorSuite::RenameCurrentScene(const std::string& newName)
 		}
 	}
 	currentScenePath_ = newPath.string();
+	if (!openFileRecord_.path.empty()) openFileRecord_.path = currentScenePath_;
 	strncpy_s(openScenePathBuf_, currentScenePath_.c_str(), sizeof(openScenePathBuf_) - 1);
 	currentSceneName_ = name;
 	LogMessage(std::format("[Scene] Renamed the scene to '{}'.", name), 0);
@@ -1019,6 +1031,7 @@ bool EditorSuite::LoadScene(const std::string& filePath)
 	currentScenePath_ = filePath;
 	currentSceneName_ = SceneNameFromPath(filePath);
 	isSceneDirty_ = false;
+	RecordOpenFile(filePath);
 
 	// Linked prefab instances pick up prefab edits made since this scene was saved
 	if (sceneState_ == EditorSceneState::Edit && !IsStandaloneMode() && !PrefabInstanceRoots("").empty()) SyncLinkedPrefabs();
@@ -1059,6 +1072,7 @@ void EditorSuite::NewScene()
 	extraSelection_.clear();
 	gameObjects_.clear();
 	mergeConflicts_ = {};
+	openFileRecord_ = {};
 	currentSceneName_ = "SampleScene";
 	currentScenePath_ = (GetScenesDirectory() / "SampleScene.scene.json").string();
 	isSceneDirty_ = false;
