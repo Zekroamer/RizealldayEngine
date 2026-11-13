@@ -292,10 +292,15 @@ bool EditorSuite::UseMapchipTileSet(const std::string& path)
 	mapTileSet_ = MapchipTileSet::Default();
 	mapTileSetUnreadable_ = false;
 	if (selectedBrushTile_ != 0 && !mapTileSet_.Find(selectedBrushTile_)) selectedBrushTile_ = 0;
+	tileSetRecord_ = {};
 	if (path.empty()) return true;
 	std::ifstream in(TileSetFile(currentProjectRoot_, path), std::ios::binary);
 	std::stringstream text;
 	text << in.rdbuf();
+	if (in) {
+		const std::string read = text.str();
+		RecordAssetFile(tileSetRecord_, TileSetFile(currentProjectRoot_, path), &read);
+	}
 	std::string why = "the file cannot be opened";
 	std::optional<MapchipTileSet> set = in ? MapchipTileSet::FromJson(text.str(), &why) : std::nullopt;
 	if (!set) {
@@ -332,10 +337,19 @@ bool EditorSuite::SaveMapchipTileSet()
 	const std::filesystem::path file = TileSetFile(currentProjectRoot_, mapTileSetPath_);
 	std::error_code ec;
 	std::filesystem::create_directories(file.parent_path(), ec);
-	if (!WriteProjectFile(file, mapTileSet_.ToJson())) {
+	const std::string text = mapTileSet_.ToJson();
+	if (AssetFileChangedOnDisk(tileSetRecord_, file)) {
+		const std::string kept = KeepConflictCopy(file, text);
+		UseMapchipTileSet(mapTileSetPath_);
+		LogMessage(std::format("[Mapchip] {} changed on disk (a git pull?): loaded that version instead of overwriting it. Your edit is kept in {}",
+			mapTileSetPath_, kept), 1);
+		return false;
+	}
+	if (!WriteProjectFile(file, text)) {
 		LogMessage(std::format("[Mapchip] Cannot write tile set {}", file.string()), 2);
 		return false;
 	}
+	RecordAssetFile(tileSetRecord_, file, &text);
 	return true;
 }
 

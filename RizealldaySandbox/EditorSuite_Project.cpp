@@ -88,6 +88,32 @@ namespace {
 	}
 }
 
+bool EditorSuite::DeferWhileGitBusy()
+{
+	if (!AssetDatabase::GitIsBusy(currentProjectRoot_)) return false;
+	projectMigrationsPending_ = true; // PollOpenFileChanges runs them again once git is done
+	return true;
+}
+
+void EditorSuite::RunProjectFileMigrations()
+{
+	projectMigrationsPending_ = false;
+	// Projects made before 2.12 do not ignore the temporary files a crash during a save can leave behind
+	if (const std::filesystem::path gitignore = currentProjectRoot_ / ".gitignore"; !ProjectIsReadOnly() && std::filesystem::exists(gitignore) && !DeferWhileGitBusy()) {
+		std::ifstream in(gitignore, std::ios::binary);
+		std::stringstream text;
+		text << in.rdbuf();
+		in.close();
+		std::string content = text.str();
+		if (content.find("*.tmp") == std::string::npos) {
+			if (!content.empty() && content.back() != '\n') content += '\n';
+			content += "*.tmp\n";
+			if (WriteProjectFile(gitignore, content)) LogMessage("[Project] Added *.tmp to .gitignore (files a crash during a save can leave behind).", 0);
+		}
+	}
+	InstallMergeDriver();
+}
+
 void EditorSuite::InstallMergeDriver()
 {
 	if (currentProjectRoot_.empty() || isRunningTests_ && !mergeDriverInstallInTests_) return;
@@ -104,7 +130,7 @@ void EditorSuite::InstallMergeDriver()
 	std::vector<std::string> changed;
 	// Shared files: a read-only project must not write them
 	auto ensureLines = [&](const char* name, const std::vector<std::string>& lines) {
-		if (ProjectIsReadOnly()) return;
+		if (ProjectIsReadOnly() || DeferWhileGitBusy()) return;
 		const std::filesystem::path file = root / name;
 		std::ifstream in(file, std::ios::binary);
 		std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -644,20 +670,7 @@ bool EditorSuite::OpenProject(const std::string& folderPath)
 	strncpy_s(openProjectFolderBuf_, currentProjectRoot_.string().c_str(), sizeof(openProjectFolderBuf_) - 1);
 	strncpy_s(buildGameTitleBuf_, (gameTitle.empty() ? projectName : gameTitle).c_str(), sizeof(buildGameTitleBuf_) - 1);
 	strncpy_s(buildOutputDirBuf_, (currentProjectRoot_ / "Build").string().c_str(), sizeof(buildOutputDirBuf_) - 1); // not next to the editor: updates replace that folder
-	// Projects made before 2.12 do not ignore the temporary files a crash during a save can leave behind
-	if (const std::filesystem::path gitignore = currentProjectRoot_ / ".gitignore"; !ProjectIsReadOnly() && std::filesystem::exists(gitignore)) {
-		std::ifstream in(gitignore, std::ios::binary);
-		std::stringstream text;
-		text << in.rdbuf();
-		in.close();
-		std::string content = text.str();
-		if (content.find("*.tmp") == std::string::npos) {
-			if (!content.empty() && content.back() != '\n') content += '\n';
-			content += "*.tmp\n";
-			if (WriteProjectFile(gitignore, content)) LogMessage("[Project] Added *.tmp to .gitignore (files a crash during a save can leave behind).", 0);
-		}
-	}
-	InstallMergeDriver();
+	RunProjectFileMigrations();
 	SyncScriptModuleWithProject(); // before the scene so its scripts come from the project's DLL
 
 	std::filesystem::path sceneFullPath = currentProjectRoot_ / startupScene;

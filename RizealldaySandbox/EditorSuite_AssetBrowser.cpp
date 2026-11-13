@@ -162,6 +162,7 @@ int EditorSuite::RepointAssetReferences(const std::string& from, const std::stri
 	// File-path state of the editor itself (not part of the scene content)
 	if (repoint(currentScenePath_, moved)) {
 		currentScenePath_ = db.ToAbsolute(moved).string();
+		if (!openFileRecord_.path.empty()) openFileRecord_.path = currentScenePath_; // a move is not a change of the content
 		strncpy_s(openScenePathBuf_, currentScenePath_.c_str(), sizeof(openScenePathBuf_) - 1);
 		if (!prefabMode_.active) currentSceneName_ = SceneNameFromPath(currentScenePath_); // renamed in the Project panel: the Hierarchy header follows
 	}

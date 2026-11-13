@@ -195,7 +195,7 @@ bool EditorSuite::EnsureProjectScriptsProps()
 	const fs::path dir = ProjectScriptsDir();
 	if (dir.empty()) return false;
 	// Older projects list each script: switch them to wildcards once (the file is shared, so not in a read-only project)
-	if (!ProjectIsReadOnly()) {
+	if (!ProjectIsReadOnly() && !DeferWhileGitBusy()) {
 		for (const auto& [file, filters] : { std::pair{ dir / "GameScripts.vcxproj", false }, std::pair{ dir / "GameScripts.vcxproj.filters", true } }) {
 			const std::string text = ReadTextFile(file);
 			const std::string wildcards = UseScriptWildcards(text, filters);

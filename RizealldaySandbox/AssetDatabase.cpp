@@ -110,6 +110,13 @@ void AssetDatabase::Refresh()
 	}
 }
 
+bool AssetDatabase::GitIsBusy(const fs::path& projectRoot)
+{
+	// shortcut: a project inside a git worktree or submodule has a .git file, not a folder; follow its gitdir if teams use those
+	std::error_code ec;
+	return !projectRoot.empty() && fs::exists(projectRoot / ".git" / "index.lock", ec);
+}
+
 std::vector<std::string> AssetDatabase::AllGuids() const
 {
 	std::vector<std::string> guids;
@@ -124,7 +131,7 @@ std::string AssetDatabase::RegisterFile(const fs::path& absFile, const std::stri
 	std::string guid = ReadMetaGuid(metaPath);
 	const bool usable = IsValidGuid(guid) && !guidToPath_.contains(guid);
 	if (!usable) {
-		if (readOnly_) return {};
+		if (readOnly_ || GitIsBusy(root_)) return {}; // during a pull git may be about to write this very .meta
 		// From the path, not random: every teammate's editor writes the same .meta, so git sees no change to fight over
 		guid.clear();
 		for (int salt = 0; guid.empty() || guidToPath_.contains(guid); ++salt) guid = PathGuid(Key(assetPath), salt);

@@ -286,13 +286,38 @@ bool EditorSuite::SavePrefab(uint32_t rootId, const std::string& prefabName, con
 	std::error_code ec;
 	const std::filesystem::path path = ResolvePrefabFile(name);
 	std::filesystem::create_directories(path.parent_path(), ec);
-	if (!WriteProjectFile(path, SceneJson::DumpCompact(prefab))) {
+	// The prefab open in Prefab Mode keeps the ids of its file, and a change pulled since it was opened is merged, not overwritten
+	const bool openInPrefabMode = prefabMode_.active && name == prefabMode_.prefab && path.string() == openFileRecord_.path;
+	if (openInPrefabMode) UseRecordedPrefabIds(&prefab);
+	std::string text = SceneJson::DumpCompact(prefab);
+	SceneMerge::Result merged;
+	if (openInPrefabMode) {
+		std::ifstream in(path, std::ios::binary);
+		const std::string disk((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		if (in.is_open() && disk != openFileRecord_.text) {
+			merged = SceneMerge::Merge(openFileRecord_.text, text, disk);
+			if (!merged.ok) {
+				LogMessage(std::format("[Prefab] Not saved: {} changed on disk and could not be merged with your edits: {}", path.string(), merged.error), 2);
+				return false;
+			}
+			text = merged.mergedText;
+		}
+	}
+	if (!WriteProjectFile(path, text)) {
 		LogMessage(std::format("[Prefab] Cannot write '{}'.", path.string()), 2);
 		return false;
 	}
 
 	// Variants and prefabs that nest this one are resolved from it: load them all again
 	ClearPrefabCache();
+	if (openInPrefabMode) {
+		RecordOpenFile(path.string(), &text);
+		if (merged.ok) {
+			LogMessage(std::format("[Prefab] {} changed on disk (a git pull?): merged it with your edits before saving.", path.string()), 1);
+			ReloadPrefabModeInstance(); // the stage shows the pulled changes too
+			AddMergeResult(merged);
+		}
+	}
 	LogMessage(std::format("[Prefab] Saved '{}' ({} object(s)) to {}", name, order.size(), path.string()), 0);
 	return true;
 }
