@@ -661,6 +661,7 @@ void EditorSuite::Update(float deltaTime, Input* input)
 	// Poll GameScripts/Scripts/*.cpp|*.h for file saves when Auto Build Scripts is enabled
 	if (!IsStandaloneMode()) {
 		PollScriptSourceWatcher(deltaTime);
+		PollOpenFileChanges(deltaTime); // a git pull replaced the open scene / prefab
 #ifdef USE_IMGUI
 		PollShaderWatcher(deltaTime);
 #endif
