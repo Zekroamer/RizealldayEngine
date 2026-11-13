@@ -23,6 +23,7 @@
 #include "AutoSave.h"
 #include "MapchipTileSet.h"
 #include "SceneMerge.h"
+#include "MergeDriver.h"
 #include "NodeGraph.h"
 #include "GraphEditorModel.h"
 #include "base/DXCManager.h"
@@ -73,6 +74,7 @@ struct EditorSuiteTestAccess {
 	static int Primary(const EditorSuite& s) { return s.selectedObjectIndex_; }
 	static std::vector<uint32_t>& Extra(EditorSuite& s) { return s.extraSelection_; }
 	static bool& AutoSaveInTests(EditorSuite& s) { return s.autoSaveInTests_; }
+	static bool& MergeDriverInstallInTests(EditorSuite& s) { return s.mergeDriverInstallInTests_; }
 	static void RunAutoSave(EditorSuite& s, double now) { s.UpdateAutoSave(now); }
 	static double LastAutoSave(const EditorSuite& s) { return s.lastAutoSaveTime_; }
 	static bool& Dirty(EditorSuite& s) { return s.isSceneDirty_; }
@@ -187,6 +189,7 @@ struct EditorSuiteTestAccess {
 		s.autoSaveEnabled_ = true;
 		s.lastAutoSaveTime_ = 0.0;
 		s.autoSaveInTests_ = false;
+		s.mergeDriverInstallInTests_ = false;
 		s.NewScene();
 		s.ResetUndoHistory();
 	}
@@ -11662,6 +11665,141 @@ TEST_CASE(SceneMerge, MalformedOrNewerInputIsRefused)
 	const SceneMerge::Result fresh = SceneMerge::Merge("", R"({"gameObjects": [{"id": 1, "name": "A"}]})", R"({"gameObjects": [{"id": 2, "name": "B"}]})");
 	REQUIRE_MSG(fresh.ok, fresh.error);
 	CHECK((*SceneJson::Parse(fresh.mergedText))["gameObjects"].size() == 2u);
+}
+
+namespace {
+	std::filesystem::path ThisExe()
+	{
+		wchar_t buf[MAX_PATH] = {};
+		GetModuleFileNameW(nullptr, buf, MAX_PATH);
+		return buf;
+	}
+
+	std::string ReadFileText(const std::filesystem::path& file)
+	{
+		std::ifstream in(file, std::ios::binary);
+		return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	}
+}
+
+TEST_CASE(MergeDriver, CommandLineModeMergesFiles)
+{
+	// Runs this exe the way git does: `<exe> --merge-driver %O %A %B %P` from the repository root
+	namespace fs = std::filesystem;
+	const fs::path dir = A::TempRoot() / "MergeDriverCli";
+	std::error_code ec;
+	fs::remove_all(dir, ec);
+	fs::create_directories(dir / "Assets", ec);
+	const fs::path report = dir / "Assets" / "Level.scene.json.merge.json";
+	auto run = [&](const std::string& ours, const std::string& theirs) {
+		std::ofstream(dir / ".merge_file_O", std::ios::binary) << kMergeBase;
+		std::ofstream(dir / ".merge_file_A", std::ios::binary) << ours;
+		std::ofstream(dir / ".merge_file_B", std::ios::binary) << theirs;
+		fs::remove(report, ec);
+		std::string output;
+		return EngineUpdate::RunHiddenProcess(L"\"" + ThisExe().wstring() + L"\" --merge-driver .merge_file_O .merge_file_A .merge_file_B Assets/Level.scene.json", dir, &output);
+	};
+
+	// Clean: both additions in "ours", no report
+	CHECK(run(MergeSide([](auto& j) { j["gameObjects"].push_back(MergeObject(30, "Coin")); }),
+		MergeSide([](auto& j) { j["gameObjects"].push_back(MergeObject(40, "Tree")); })) == 0);
+	const auto clean = SceneJson::Parse(ReadFileText(dir / ".merge_file_A"));
+	REQUIRE(clean.has_value());
+	CHECK((*clean)["gameObjects"].size() == 4u);
+	CHECK(!fs::exists(report));
+
+	// Conflict: still exit 0 and valid JSON with ours kept; theirs goes to the report next to %P
+	CHECK(run(MergeSide([](auto& j) { MergeObj(j, 20)["translation"] = { 5, 0, 0 }; }),
+		MergeSide([](auto& j) { MergeObj(j, 20)["translation"] = { 7, 0, 0 }; })) == 0);
+	const auto conflicted = SceneJson::Parse(ReadFileText(dir / ".merge_file_A"));
+	REQUIRE(conflicted.has_value());
+	CHECK(MergedObj(*conflicted, 20)->at("translation") == SceneJson::Json({ 5, 0, 0 }));
+	std::vector<SceneMerge::Conflict> conflicts;
+	std::vector<SceneMerge::Note> notes;
+	std::string error;
+	REQUIRE_MSG(SceneMerge::ReportFromJson(ReadFileText(report), conflicts, notes, &error), error);
+	REQUIRE(conflicts.size() == 1u);
+	CHECK(conflicts[0].objectId == 20u);
+	CHECK(conflicts[0].field == "translation");
+	CHECK(conflicts[0].theirs == "[7,0,0]");
+
+	// Malformed: non-zero, "ours" untouched, no report
+	const std::string ours = MergeSide([](auto& j) { MergeObj(j, 20)["name"] = "Boss"; });
+	CHECK(run(ours, "{ broken") != 0);
+	CHECK(ReadFileText(dir / ".merge_file_A") == ours);
+	CHECK(!fs::exists(report));
+	CHECK(!fs::exists(dir / ".merge_file_A.tmp"));
+	fs::remove_all(dir, ec);
+}
+
+TEST_CASE(MergeDriver, LinesAndCommandText)
+{
+	std::string text = "* text=auto\r\n*.scene.json merge=rizescene";
+	CHECK(MergeDriver::AppendMissingLines(text, { "*.scene.json merge=rizescene", "*.prefab.json merge=rizescene" }));
+	CHECK_MSG(text == "* text=auto\r\n*.scene.json merge=rizescene\r\n*.prefab.json merge=rizescene\r\n", text);
+	CHECK(!MergeDriver::AppendMissingLines(text, { "*.prefab.json merge=rizescene" }));
+	std::string empty;
+	CHECK(MergeDriver::AppendMissingLines(empty, { "*.merge.json" }));
+	CHECK(empty == "*.merge.json\n");
+
+	// Quoted (spaces in the install folder) with forward slashes, which git's sh keeps as they are
+	CHECK_MSG(MergeDriver::DriverCommand("C:\\Program Files\\Rize\\Editor\\RizealldaySandbox.exe") ==
+		"\"C:/Program Files/Rize/Editor/RizealldaySandbox.exe\" --merge-driver %O %A %B %P",
+		MergeDriver::DriverCommand("C:\\Program Files\\Rize\\Editor\\RizealldaySandbox.exe"));
+}
+
+TEST_CASE(MergeDriver, ProjectOpenInstallsDriver)
+{
+	namespace fs = std::filesystem;
+	std::string output;
+	if (EngineUpdate::RunHiddenProcess(L"git --version", {}, &output) == -1) {
+		A::Log(s, "[Tests] MergeDriver.ProjectOpenInstallsDriver skipped: git is not on PATH.", 1);
+		return;
+	}
+	const fs::path root = A::TempRoot() / "MergeDriverRepo";
+	std::error_code ec;
+	fs::remove_all(root, ec);
+	fs::create_directories(root / "ProjectSettings", ec);
+	fs::create_directories(root / "Assets" / "Scenes", ec);
+	std::ofstream(root / "ProjectSettings" / "project.json") << R"({"projectName": "Team", "startupScene": "Assets/Scenes/Main.scene.json"})";
+	std::ofstream(root / "Assets" / "Scenes" / "Main.scene.json") << R"({"sceneName": "Main", "gameObjects": []})";
+	std::ofstream(root / ".gitattributes", std::ios::binary) << "* text=auto\n";
+	REQUIRE(EngineUpdate::RunHiddenProcess(L"git init -q", root, &output) == 0);
+	// The editor was somewhere else last time: the path must be rewritten
+	REQUIRE(EngineUpdate::RunHiddenProcess(L"git config --local merge.rizescene.driver \"\\\"C:/Old/RizealldaySandbox.exe\\\" --merge-driver %O %A %B %P\"", root, &output) == 0);
+
+	const fs::path savedRoot = A::ProjectRoot(s);
+	const fs::path savedDirectory = A::CurrentDirectory(s);
+	A::MergeDriverInstallInTests(s) = true;
+	REQUIRE(s.OpenProject(root.string()));
+	auto config = [&](const wchar_t* key) {
+		std::string value;
+		EngineUpdate::RunHiddenProcess(std::wstring(L"git config --local --get ") + key, root, &value);
+		while (!value.empty() && (value.back() == '\n' || value.back() == '\r')) value.pop_back();
+		return value;
+	};
+	const std::string attributes = ReadFileText(root / ".gitattributes");
+	CHECK_MSG(attributes == "* text=auto\n*.scene.json merge=rizescene\n*.prefab.json merge=rizescene\n", attributes);
+	CHECK_MSG(ReadFileText(root / ".gitignore").find("*.merge.json") != std::string::npos, ReadFileText(root / ".gitignore"));
+	CHECK_MSG(config(L"merge.rizescene.driver") == MergeDriver::DriverCommand(ThisExe()), config(L"merge.rizescene.driver"));
+	CHECK(!config(L"merge.rizescene.name").empty());
+	CHECK(A::LogHas(s, "Scene merge driver set up"));
+
+	// Git sees the driver for scene files
+	std::string attr;
+	EngineUpdate::RunHiddenProcess(L"git check-attr merge -- Assets/Scenes/Main.scene.json", root, &attr);
+	CHECK_MSG(attr.find("rizescene") != std::string::npos, attr);
+
+	// Opening again changes nothing
+	REQUIRE(s.OpenProject(root.string()));
+	CHECK(ReadFileText(root / ".gitattributes") == attributes);
+
+	A::MergeDriverInstallInTests(s) = false;
+	A::ProjectRoot(s) = savedRoot;
+	A::CurrentDirectory(s) = savedDirectory;
+	A::SyncScripts(s);
+	s.NewScene();
+	fs::remove_all(root, ec);
 }
 
 

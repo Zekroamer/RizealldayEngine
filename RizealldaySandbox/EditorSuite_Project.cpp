@@ -1,6 +1,7 @@
 ﻿#include "EditorSuiteInternal.h"
 #include "SceneJson.h"
 #include "EngineUpdate.h"
+#include "MergeDriver.h"
 #include "base/EngineVersion.h"
 
 namespace {
@@ -36,12 +37,14 @@ namespace {
 			"imgui.ini\n"
 			"GameScripts/RizeEngine.props\n"
 			"GameScripts/x64/\n"
-			"*.tmp\n");
+			"*.tmp\n"
+			"*.merge.json\n");
 		WriteFile(root / ".gitattributes",
 			"* text=auto\n"
 			"*.png binary\n*.jpg binary\n*.jpeg binary\n*.dds binary\n*.tga binary\n*.bmp binary\n"
 			"*.fbx binary\n*.glb binary\n*.bin binary\n"
-			"*.wav binary\n*.mp3 binary\n*.ogg binary\n*.m4a binary\n");
+			"*.wav binary\n*.mp3 binary\n*.ogg binary\n*.m4a binary\n"
+			"*.scene.json merge=rizescene\n*.prefab.json merge=rizescene\n");
 		WriteFile(root / "README.md",
 			"# " + name + "\n\n"
 			"Game project for Rizeallday Engine " + kEngineVersion + ".\n\n"
@@ -82,6 +85,62 @@ namespace {
 			return "[Project] Git repository created; the first commit failed (set git user.name / user.email, then commit).";
 		}
 		return "[Project] Git repository created with a first commit. Add a remote and push: git remote add origin <url> && git push -u origin HEAD";
+	}
+}
+
+void EditorSuite::InstallMergeDriver()
+{
+	if (currentProjectRoot_.empty() || isRunningTests_ && !mergeDriverInstallInTests_) return;
+	const std::filesystem::path root = currentProjectRoot_;
+	std::string output;
+	const int inside = EngineUpdate::RunHiddenProcess(L"git rev-parse --is-inside-work-tree", root, &output);
+	if (inside == -1) {
+		if (!gitMissingLogged_) LogMessage("[Git] Git is not installed (not on PATH): the scene merge driver is not set up.", 1);
+		gitMissingLogged_ = true;
+		return;
+	}
+	if (inside != 0 || output.find("true") == std::string::npos) return; // not a git working tree: leave it alone
+
+	std::vector<std::string> changed;
+	// Shared files: a read-only project must not write them
+	auto ensureLines = [&](const char* name, const std::vector<std::string>& lines) {
+		if (ProjectIsReadOnly()) return;
+		const std::filesystem::path file = root / name;
+		std::ifstream in(file, std::ios::binary);
+		std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		in.close();
+		if (MergeDriver::AppendMissingLines(text, lines) && WriteProjectFile(file, text)) changed.push_back(name);
+	};
+	ensureLines(".gitattributes", { "*.scene.json merge=rizescene", "*.prefab.json merge=rizescene" });
+	ensureLines(".gitignore", { std::string("*") + MergeDriver::kReportSuffix });
+
+	// Per-PC config: rewritten when the editor moved
+	wchar_t exePath[MAX_PATH] = {};
+	GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+	const std::pair<std::string, std::string> settings[] = {
+		{ "merge.rizescene.name", "Rizeallday scene merge" },
+		{ "merge.rizescene.driver", MergeDriver::DriverCommand(exePath) },
+	};
+	for (const auto& [key, value] : settings) {
+		std::string current;
+		const std::wstring wideKey = std::filesystem::path(key).wstring();
+		if (EngineUpdate::RunHiddenProcess(L"git config --local --get " + wideKey, root, &current) == 0) {
+			while (!current.empty() && (current.back() == '\n' || current.back() == '\r')) current.pop_back();
+			if (current == value) continue;
+		}
+		std::string escaped; // the value is one quoted argument: escape its inner quotes
+		for (char c : value) escaped += c == '"' ? std::string("\\\"") : std::string(1, c);
+		std::string error;
+		if (EngineUpdate::RunHiddenProcess(L"git config --local " + wideKey + L" \"" + std::filesystem::path(escaped).wstring() + L"\"", root, &error) == 0) {
+			changed.push_back("git config " + key);
+		} else {
+			LogMessage(std::format("[Git] Could not set {}: {}", key, error), 1);
+		}
+	}
+	if (!changed.empty()) {
+		std::string list;
+		for (const std::string& c : changed) list += (list.empty() ? "" : ", ") + c;
+		LogMessage(std::format("[Git] Scene merge driver set up ({}). Scenes and prefabs now merge object by object on pull.", list), 0);
 	}
 }
 
@@ -201,7 +260,10 @@ bool EditorSuite::CreateNewProject(const std::string& parentFolder, const std::s
 		AddRecentProject(projPath);
 		// .meta files first, so the first commit is complete
 		AssetDb().Refresh();
-		if (newProjectInitGit_ && !isRunningTests_) LogMessage(InitGitRepository(projPath), 0);
+		if (newProjectInitGit_ && !isRunningTests_) {
+			LogMessage(InitGitRepository(projPath), 0);
+			InstallMergeDriver();
+		}
 
 		LogMessage(std::format("[Project] Created new project '{}' at: {}", name, projPath.string()), 0);
 		return true;
@@ -595,6 +657,7 @@ bool EditorSuite::OpenProject(const std::string& folderPath)
 			if (WriteProjectFile(gitignore, content)) LogMessage("[Project] Added *.tmp to .gitignore (files a crash during a save can leave behind).", 0);
 		}
 	}
+	InstallMergeDriver();
 	SyncScriptModuleWithProject(); // before the scene so its scripts come from the project's DLL
 
 	std::filesystem::path sceneFullPath = currentProjectRoot_ / startupScene;
