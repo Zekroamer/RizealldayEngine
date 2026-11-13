@@ -1,5 +1,30 @@
 # Changelog — Rizeallday Engine v2
 
+## [Unreleased]
+
+### Kerja tim: merge scene
+- **Scene dan prefab disimpan dalam format yang ramah git.** Objek ditulis berurutan menurut ID, dan urutan di Hierarchy disimpan per objek (urutan saudara). Dua orang yang menambah objek atau mengubah objek yang bersebelahan kini biasanya bisa di-merge langsung, juga lewat tombol merge di GitHub web. Menyimpan scene tanpa perubahan menghasilkan file yang sama persis. Scene lama ditulis ulang satu kali saat pertama disimpan (Console mengingatkan untuk meng-commit perubahan itu sendiri).
+- Hierarchy: klik kanan > **Move Up** / **Move Down** untuk mengubah urutan. Hanya objek yang dipindah yang berubah di file.
+- **Merge driver.** Saat project dibuka, editor otomatis menambahkan `*.scene.json` / `*.prefab.json` ke `.gitattributes` dan mendaftarkan dirinya di git config lokal (Console menampilkan "[Git] Scene merge driver set up"). Saat pull di Visual Studio (atau git di PC), scene dan prefab digabung per objek dan per field, Mapchip per petak, pengaturan scene per pengaturan. Objek yang dihapus satu pihak tapi diubah pihak lain tetap disimpan, dan anak dari objek yang dihapus dipindah ke root.
+- **Window > Merge Conflicts.** Kalau dua orang mengubah field yang sama dengan nilai berbeda, scene sementara memakai nilai sendiri dan konfliknya dicatat di `<file>.merge.json` (di-gitignore). Saat scene dibuka, window ini menampilkan objek, field, nilai **Mine** dan **Theirs**, dengan tombol **Use Mine** / **Use Theirs** per baris dan untuk semua. Pilihan langsung terlihat di scene dan bisa di-undo. Selama masih ada yang belum diputuskan, menu bar menampilkan tulisan kuning. Layar konflik Visual Studio tidak lagi muncul untuk scene.
+- File yang tidak bisa dibaca atau versi formatnya lebih baru tidak disentuh merge driver, jadi git memakai penanganan konflik biasa.
+
+### Kerja tim: pull dengan editor tetap terbuka
+- Scene yang terbuka (dan prefab di Prefab Mode) dimuat ulang otomatis kalau berubah karena pull, dengan kamera dan seleksi tetap. Kalau ada perubahan yang belum disimpan, editor menggabungkannya dengan versi hasil pull (konflik masuk ke Merge Conflicts). Pull saat Play diterapkan setelah Stop.
+- **Save tidak pernah menimpa** file yang berubah di disk sejak dibaca: editor merge dulu, baru menulis.
+- Tile set dan Timeline ikut dimuat ulang setelah pull. Kalau ada editan lokal yang belum disimpan, versi hasil pull yang dipakai dan editan sendiri disimpan di `Library/Conflicts`.
+- Selama git bekerja (`.git/index.lock` ada), editor tidak membuat `.meta`, tidak mengubah `.gitignore`/`.vcxproj`, dan menunda reload. Pull tidak lagi gagal karena "untracked file would be overwritten".
+
+### Fitur Baru: UI game di scene
+- **GameObject > UI**: Canvas, Panel, Image, Text, Progress Bar, Button. Elemen UI adalah objek scene biasa, jadi ikut undo, prefab, merge, save/load dan export.
+- Komponen **Canvas** (area referensi 1280x720, diskalakan menurut tinggi window, jadi tidak melar di layar 16:10 atau 21:9) dan **UI Rect** (anchor, pivot, offset, ukuran). Elemen digambar di Game view (Edit dan Play) dan di game hasil export, di atas tampilan 3D dan di bawah UI dari kode.
+- **UI Text** (sampai 255 byte, ukuran, warna, perataan, huruf Jepang), **UI Image** (texture + warna), **UI Progress Bar** (nilai 0..1, warna isi dan latar), **UI Button** (label, warna normal/hover/ditekan, ukuran label).
+- Script API v17: `SetUIText`, `SetUIVisible`, `SetUIProgress`, `SetUIColor`, `SetUIImage` dan `SelectUIButton` mencari elemen lewat nama. Klik tombol (mouse, atau Enter/Space/pad A pada tombol yang dipilih) memanggil `OnUIButton(name)` di semua script. Fungsi UI lama (`UIText`, `UIButton`, ...) tetap bekerja.
+- Window **UI Editor** untuk mengatur layout canvas.
+
+### Panduan
+- `GUIDE_JA.md` bab 4 menjelaskan pull/push di Visual Studio dengan editor terbuka, Window > Merge Conflicts, larangan "Keep Current" / "Take Incoming" untuk scene dan prefab, dan cara menyelesaikan pull request yang tidak bisa di-merge di GitHub web (merge `origin/master` ke branch di Visual Studio). `README_TEAM.md` diperbarui.
+
 ## [2.12.0] — 2026-11-12
 
 ### Kerja tim dengan GitHub
