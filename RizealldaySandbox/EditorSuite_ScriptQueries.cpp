@@ -460,6 +460,8 @@ void EditorSuite::ResetScriptRuntimeState()
 	pendingReparents_.clear();
 	pendingParticleBursts_.clear();
 	effectParameterOverrides_.clear();
+	uiHoverId_ = uiPressedId_ = uiSelectedButtonId_ = 0;
+	uiPointerWasDown_ = false;
 	if (musicVoice_ != 0) {
 		Audio::GetInstance()->StopAudio(musicVoice_);
 	}

@@ -88,10 +88,48 @@ Project Hub の最近使ったプロジェクトをダブルクリック、ま�
 3. この PC 用の `GameScripts/RizeEngine.props` が作られ、スクリプトが自動でビルドされます。
 
 ### 毎日のルール
-- `git pull` の前に **エディターを閉じる（または Play を止める）**。
-- **シーンは一人ずつ編集**。みんなで使う部分はプレハブにする（マージの衝突を防ぐ）。
-- `.meta` をコミットする。`Library/`、`GameScripts/RizeEngine.props` はコミットしない（`.gitignore` 済み）。
+- pull / push は **Visual Studio の Git**（**Git > Pull** / **Git > Push**、または Git Changes ウィンドウ）で行います。**エディターと Visual Studio は開いたままで大丈夫**です。
+- **同じシーンを何人で編集してもかまいません**。シーンとプレハブはオブジェクトごと・項目ごとにマージされます（下の「シーンのマージ」）。
+- `.meta` をコミットする。`Library/`、`GameScripts/RizeEngine.props`、`*.merge.json` はコミットしない（`.gitignore` 済み）。
 - プロジェクトが新しいエンジンで保存されていると警告が出ます。その場合は最新の zip をインストールしてください。
+
+### エディターを開いたまま pull する
+- 開いているシーン（プレハブモードのプレハブも）が pull で変わると、エディターが自動で読み込み直します。カメラと選択はそのまま。Console に「changed on disk (a git pull?): reloaded.」と出ます。
+- **未保存の変更がある場合**は、自分の変更と pull した内容をシーン内でマージします。**Save** で両方が保存されます。同じ項目を両方が変えていたら、下の **Merge Conflicts** で決めます。
+- **Play 中**に pull したときは、**Stop** した後に反映されます。
+- Save は、ディスク上のファイルが pull で変わっていればマージしてから書き込みます。仲間の変更を上書きすることはありません。
+- タイルセットとタイムラインも pull で読み込み直されます。未保存の編集があった場合は pull した方が読み込まれ、自分の編集は `Library/Conflicts` にコピーとして残ります（Console にパスが出ます）。
+- Git が作業している間（`.git/index.lock` がある間）、エディターは `.meta` などのファイルを書かず、読み込み直しも Git が終わるまで待ちます。pull が「untracked file would be overwritten」で止まることはありません。
+- スクリプトは pull 後に自動で再ビルドされます。push のためにエディターを閉じる必要もありません。
+
+### シーンのマージ（Merge Conflicts）
+初めてプロジェクトを開いたとき、エディターが Git の**マージドライバー**を自動で設定します（`.gitattributes` に 2 行、この PC の Git 設定に 1 つ。Console に「[Git] Scene merge driver set up」と出ます）。`.gitattributes` の変更は一度コミットしてください。それ以降、Visual Studio で pull すると `*.scene.json` と `*.prefab.json` はオブジェクトごと・項目ごと（マップチップは 1 マスごと）にマージされます。
+
+- 別々のオブジェクトや別々の項目を変えただけなら、何も聞かれずにマージされます。
+- **同じオブジェクトの同じ項目**を両方が違う値に変えた場合だけ「マージ競合」になります。シーンはいったん**自分の値**のまま保存され、Visual Studio の競合画面は出ません。
+- そのシーンをエディターで開くと **Window > Merge Conflicts**（日本語表示: ウィンドウ > マージ競合）が開き、メニューバーに黄色で「未決定のマージ競合 N 件」と表示されます。
+  1. 一覧で、オブジェクト・項目・**Mine**（自分）・**Theirs**（相手）の値を確認する。
+  2. 行ごとに **Use Mine**（自分の値）か **Use Theirs**（相手の値）を押す。まとめて決めるときは **Use Mine for All** / **Use Theirs for All**。選んだ値はすぐシーンに反映され、Ctrl+Z で戻せます。
+  3. すべて決めると黄色の表示が消えます。**シーンを保存してコミット・プッシュ**します。
+- 片方が削除し、もう片方が変更したオブジェクトは**残されます**。削除されたオブジェクトの下に追加された子はルートに移されます。どちらも Merge Conflicts の「Notes」（メモ）に出ます。
+- Play 中は決められません（Stop してから）。
+
+> **Visual Studio の競合画面で、シーン（`*.scene.json`）とプレハブ（`*.prefab.json`）に「Keep Current」/「Take Incoming」（現在の内容を保持 / 受信した内容を取得）を絶対に使わないでください。** ファイルを丸ごと片方にするので、もう片方の変更がすべて消えます。
+> シーンが Visual Studio の競合画面に出たときは、この PC でまだマージドライバーが設定されていません。Git Changes ウィンドウで **Abort**（マージの中止）を押し、エディターでプロジェクトを一度開いてから、もう一度 pull してください。
+> スクリプト（`.cpp` / `.h`）の競合は、Visual Studio のマージエディターで普通に解決してかまいません。
+
+### GitHub で「マージできない」プルリクエスト
+GitHub の Web 画面ではマージドライバーが動かないので、同じシーンを両方が変えたプルリクエストは「This branch has conflicts」になることがあります。Web 画面の **Resolve conflicts** でシーンの `<<<<<<<` を手で直さないでください（シーンが壊れます）。代わりに、ブランチの担当者が自分の PC で:
+1. Visual Studio でそのブランチをチェックアウトする。
+2. **Git > Fetch** の後、Git リポジトリ ウィンドウ（**Git > Manage Branches**）で `origin/master` を右クリック > **Merge 'origin/master' into '<ブランチ名>'**。
+3. エディターでシーンを開き、Merge Conflicts が出たら上の手順で決めて保存し、コミットする。
+4. **Git > Push**。GitHub のプルリクエストがマージできる状態になります。
+
+### Git に優しい保存形式
+- シーンとプレハブは、オブジェクトを ID 順に書き、ヒエラルキーの順番はオブジェクトごとの「兄弟順」で持ちます。二人が別々にオブジェクトを追加しても、GitHub の Web 画面でもそのままマージできることが多くなります。
+- 順番を変えるときは、Hierarchy でオブジェクトを右クリック > **Move Up**（上へ移動）/ **Move Down**（下へ移動）。変わるのは動かしたオブジェクトの行だけです。
+- 何も変えずに保存したシーンは、前とまったく同じ内容になります（差分が出ません）。
+- 古いシーンは、最初の保存で一度だけ新しい形式に書き直されます（Console に「rewritten once in the git-friendly layout」）。その変更は一人がまとめてコミットしてください。
 
 ## 5. エディターの基本操作
 | 場所 | 内容 |
@@ -242,6 +280,16 @@ ai.Tick(dt);   // Update の最後に（JustEntered() が 1 回の Update の間
 | `UIRect`, `UIImage(path, x, y, w, h)`, `UIProgressBar(...)` | 図形・画像・ゲージ |
 | `UIButton("Retry", x, y, w, h, selected)` | クリック、または selected で Enter / パッド A |
 
+シーンに置いた UI（**GameObject > UI** で作るキャンバスと UI 要素）は、オブジェクト名で操作します（見つからないと `false`）:
+| 関数 | 説明 |
+|---|---|
+| `SetUIText("Score", "Score 10")` | UI Text の文字、または UI Button のラベル |
+| `SetUIVisible("PauseMenu", true)` | 表示 / 非表示（子も一緒に） |
+| `SetUIProgress("HPBar", 0.5f)` | UI Progress Bar の値（0〜1） |
+| `SetUIColor(name, color)`, `SetUIImage(name, "Assets/Textures/heart.png")` | 色・画像 |
+| `SelectUIButton("Retry")` | ボタンを選択状態に（Enter / Space / パッド A で押せる） |
+| `void OnUIButton(const char* name) override` | ボタンが押されたときに全スクリプトに届く |
+
 ### 音・パーティクル・見た目の演出
 | 関数 | 説明 |
 |---|---|
@@ -332,6 +380,8 @@ GameObject* spike = FindNearestWithTag("Spike"); // 一番近いもの
 | 複数選択 | Hierarchy で Ctrl / Shift + クリック。ギズモでまとめて動かせます |
 | 閉じるときの「保存しない」 | このセッションで作ったファイル（シーン・プレハブ・グラフなど）の一覧が出て、チェックしたものをごみ箱へ移せます |
 | マップチップ | 上の「9. マップチップでレベルを作る」 |
+| エディターを開いたままの pull、シーンのマージ | 上の「4. チームでの開発（Git）」、**Window > Merge Conflicts** |
+| シーンに置くゲーム UI（キャンバス・パネル・画像・テキスト・ボタン・プログレスバー） | **GameObject > UI**。選んだ UI 要素（なければ最初のキャンバス、それもなければ新しいキャンバス）の下に作られます。位置・アンカー・ピボットは Inspector の **UI Rect**、スクリプトからは名前で操作（7 章の UI） |
 
 ## 11. エンジンの更新
 新しい `RizealldayEngine-x.y.z.zip` を受け取ったら:
@@ -354,6 +404,10 @@ GameObject* spike = FindNearestWithTag("Spike"); // 一番近いもの
 | 敵が経路を見つけない | 壁・床に Collider と **Static** が付いているか確認 |
 | マップチップのレイヤーが選べない | 「列 / 行 / レイヤー」の 3 つ目の数字を 2 以上にする（入力後 Enter）。または「次のレイヤーにコピー」 |
 | Build したのにモデルが出ない | Tile Set Editor でプレハブ名を確認（Console に「Prefab ... was not found」）。プレハブを直したら Build し直す |
+| メニューバーに黄色で「未決定のマージ競合」 | **Window > Merge Conflicts** で全部 **Use Mine** / **Use Theirs** を決めて、シーンを保存・コミット |
+| Visual Studio の競合画面にシーンやプレハブが出た | **Keep Current / Take Incoming は使わない**。マージを **Abort** → エディターでプロジェクトを開く（マージドライバーが設定される）→ もう一度 pull |
+| GitHub のプルリクエストが「This branch has conflicts」 | Web 画面で直さない。Visual Studio で `origin/master` をブランチにマージしてから push（4 章） |
+| 自分のタイルセット / タイムラインの編集が pull で消えた | `Library/Conflicts` にコピーがあります（Console にパス） |
 | 更新に失敗した | エンジンのフォルダーのファイルを開いているプログラムを閉じて再実行（失敗しても前のバージョンは残ります） |
 
 不具合を見つけたら、Console のログと再現手順をエンジン担当に送ってください。修正版の zip で更新できます。

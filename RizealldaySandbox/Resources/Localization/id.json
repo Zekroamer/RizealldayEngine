@@ -1,5 +1,12 @@
 ﻿{
 	"_language": "Bahasa Indonesia",
+	"UI Button": "Tombol UI",
+	"Button": "Tombol",
+	"Label": "Label",
+	"Label Size": "Ukuran Label",
+	"Normal Color": "Warna Normal",
+	"Hover Color": "Warna Saat Disorot",
+	"Pressed Color": "Warna Saat Ditekan",
 	"UI Text": "Teks UI",
 	"UI Progress Bar": "Bilah Progres UI",
 	"Progress Bar": "Bilah Progres",

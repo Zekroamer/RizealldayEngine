@@ -399,12 +399,20 @@ struct EngineAPI {
 	bool (*setLookPreset)(void* ctx, const char* name) = nullptr;
 	// Particle graph parameters (API v16)
 	bool (*setEffectParameter)(void* ctx, uint32_t id, const char* name, float x, float y, float z, float w) = nullptr;
+
+	// Game UI elements saved in the scene (objects with UI Rect), found by object name (API v17). false = no such element.
+	bool (*uiSetText)(void* ctx, const char* element, const char* text) = nullptr;   // UI Text, or a UI Button's label
+	bool (*uiSetVisible)(void* ctx, const char* element, bool visible) = nullptr; // the object's active flag (children follow)
+	bool (*uiSetProgress)(void* ctx, const char* element, float value01) = nullptr;
+	bool (*uiSetColor)(void* ctx, const char* element, Vector4 color) = nullptr;  // Image tint, Text colour, Button normal colour, Progress Bar fill
+	bool (*uiSetImage)(void* ctx, const char* element, const char* texturePath) = nullptr;
+	bool (*uiSelectButton)(void* ctx, const char* element) = nullptr;             // nullptr / "" clears the selection
 };
 
 /// Engine <-> GameScripts.dll compatibility check. Bump kScriptApiVersion when the meaning of the API changes;
 /// layout changes of EngineAPI / ScriptGameObjectView / ScriptBase are caught automatically by the sizes.
 /// The fingerprint is defined at the end of this header (it needs the complete ScriptBase).
-constexpr uint32_t kScriptApiVersion = 16; // 4: Animator, 5: ShakeCamera / Hitstop / input actions, 6: MoveCharacter, 7: FindPath, 8: KeepAcrossScenes, 9: material outline, 10: camera input + projection + prewarm + post-processing, 11: animation layers + bones + IK + ragdoll, 12: audio buses + pitch + 3D + components by name, 13: fog in ScriptPostProcess, 14: orthographic camera size, 15: impact pulse + look presets, 16: particle graph parameters
+constexpr uint32_t kScriptApiVersion = 17; // 4: Animator, 5: ShakeCamera / Hitstop / input actions, 6: MoveCharacter, 7: FindPath, 8: KeepAcrossScenes, 9: material outline, 10: camera input + projection + prewarm + post-processing, 11: animation layers + bones + IK + ragdoll, 12: audio buses + pitch + 3D + components by name, 13: fog in ScriptPostProcess, 14: orthographic camera size, 15: impact pulse + look presets, 16: particle graph parameters, 17: scene UI elements by name + OnUIButton
 
 /// Size of the UI canvas used by the UI* helpers (stretched over the game view)
 constexpr float kUICanvasWidth = 1280.0f;
@@ -468,6 +476,8 @@ public:
 	virtual void OnCollisionExit(GameObject& other) { (void)other; }
 	/// An animation event of the object's Animator fired (event name set in the Animator window, e.g. "hit")
 	virtual void OnAnimationEvent(const char* eventName) { (void)eventName; }
+	/// A UI Button of the scene was clicked (or confirmed with Enter / Space / pad A while selected). Every script receives it.
+	virtual void OnUIButton(const char* buttonName) { (void)buttonName; }
 	virtual void OnDestroy() {}
 	virtual void OnAfterReload() {}
 
@@ -754,6 +764,32 @@ public:
 		UIRect(x, y, w, h, back);
 		UIRect(x, y, w * v, h, fill);
 	}
+	// ---- Game UI elements saved in the scene, by object name (false = no such element) ----
+	/// Text of a UI Text, or the label of a UI Button (UTF-8)
+	bool SetUIText(const char* element, const char* text) const {
+		return engineApi_ && engineApi_->uiSetText && element && text && engineApi_->uiSetText(engineApi_->hostContext, element, text);
+	}
+	/// Shows or hides the element and its children
+	bool SetUIVisible(const char* element, bool visible) const {
+		return engineApi_ && engineApi_->uiSetVisible && element && engineApi_->uiSetVisible(engineApi_->hostContext, element, visible);
+	}
+	/// Value of a UI Progress Bar, clamped to 0..1
+	bool SetUIProgress(const char* element, float value01) const {
+		return engineApi_ && engineApi_->uiSetProgress && element && engineApi_->uiSetProgress(engineApi_->hostContext, element, value01);
+	}
+	/// Image tint, Text colour, Button normal colour or Progress Bar fill (each component the element has)
+	bool SetUIColor(const char* element, Vector4 color) const {
+		return engineApi_ && engineApi_->uiSetColor && element && engineApi_->uiSetColor(engineApi_->hostContext, element, color);
+	}
+	/// Texture of a UI Image, e.g. "Assets/Textures/heart.png" ("" = plain colour)
+	bool SetUIImage(const char* element, const char* texturePath) const {
+		return engineApi_ && engineApi_->uiSetImage && element && texturePath && engineApi_->uiSetImage(engineApi_->hostContext, element, texturePath);
+	}
+	/// Marks one UI Button as selected (drawn as hovered; Enter / Space / pad A click it). nullptr / "" = none.
+	bool SelectUIButton(const char* element) const {
+		return engineApi_ && engineApi_->uiSelectButton && engineApi_->uiSelectButton(engineApi_->hostContext, element ? element : "");
+	}
+
 	/// Mouse position on the UI canvas; false when the mouse is outside the game view
 	bool GetMouseCanvasPosition(Vector2& outCanvas) const {
 		Vector2 pixels{};

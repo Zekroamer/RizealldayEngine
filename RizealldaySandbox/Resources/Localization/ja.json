@@ -1,5 +1,12 @@
 ﻿{
 	"_language": "日本語",
+	"UI Button": "UI ボタン",
+	"Button": "ボタン",
+	"Label": "ラベル",
+	"Label Size": "ラベルのサイズ",
+	"Normal Color": "通常の色",
+	"Hover Color": "ホバー時の色",
+	"Pressed Color": "押下時の色",
 	"UI Text": "UI テキスト",
 	"UI Progress Bar": "UI プログレスバー",
 	"Progress Bar": "プログレスバー",

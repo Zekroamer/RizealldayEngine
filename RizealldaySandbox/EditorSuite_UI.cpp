@@ -886,6 +886,7 @@ void EditorSuite::DrawHierarchyCreationMenu()
 		if (ImGui::MenuItem(TrId("Image"))) CreateUIObject(UIObjectKind::Image);
 		if (ImGui::MenuItem(TrId("Text"))) CreateUIObject(UIObjectKind::Text);
 		if (ImGui::MenuItem(TrId("Progress Bar"))) CreateUIObject(UIObjectKind::ProgressBar);
+		if (ImGui::MenuItem(TrId("Button"))) CreateUIObject(UIObjectKind::Button);
 		ImGui::EndMenu();
 	}
 

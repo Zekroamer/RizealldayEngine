@@ -13065,6 +13065,164 @@ TEST_CASE(GameUI, AnchorPresetKeepsTheVisibleRectangle)
 	checkScreen();
 }
 
+namespace {
+	/// Records every OnUIButton it hears (built into the exe, like CrashingScript)
+	struct UIButtonListener : ScriptBase {
+		std::vector<std::string>* clicks = nullptr;
+		void OnUIButton(const char* buttonName) override { if (clicks) clicks->push_back(buttonName); }
+	};
+
+	void AddUIButtonListener(EditorSuite& s, std::vector<std::string>* clicks)
+	{
+		GameObject& obj = s.CreateGameObject("Listener", GameObjectType::Empty);
+		auto script = new UIButtonListener();
+		script->clicks = clicks;
+		GameObject::ScriptComponent component;
+		component.className = "UIButtonListener";
+		static const ScriptModule sNoDll; // see AddCrashingScript
+		component.instance = ScriptInstancePtr(script, ScriptDeleter{ &sNoDll });
+		obj.scripts.push_back(std::move(component));
+	}
+
+	/// A UI Button named `name` at reference (x, y), size w x h, top-left anchored
+	uint32_t MakeTestButton(EditorSuite& s, const char* name, float x, float y, float w, float h)
+	{
+		A::Select(s, 0);
+		const uint32_t id = s.CreateUIObject(UIObjectKind::Button);
+		GameObject* obj = s.FindGameObjectById(id, false);
+		obj->name = name;
+		SetPlacement(*obj->components.Get<UIRectComponent>(kUIRectComponent), 0, 0, 0, 0, 0, 0, x, y, w, h);
+		return id;
+	}
+}
+
+TEST_CASE(GameUI, ButtonClickReachesScriptsOnlyInPlay)
+{
+	s.NewScene();
+	const uint32_t buttonId = MakeTestButton(s, "Start", 100.0f, 100.0f, 200.0f, 100.0f);
+	REQUIRE(s.FindGameObjectById(buttonId, false)->components.Has(kUIButtonComponent));
+	std::vector<std::string> clicks;
+	AddUIButtonListener(s, &clicks);
+
+	// 1280x720 view: reference pixels = view pixels. Hit testing finds the topmost element.
+	CHECK(s.HitTestGameUI(150.0f, 150.0f, 1280.0f, 720.0f) == s.FindGameObjectById(buttonId, false));
+	CHECK(s.HitTestGameUI(50.0f, 50.0f, 1280.0f, 720.0f) == nullptr);
+	CHECK(s.HitTestGameUI(300.0f, 150.0f, 1280.0f, 720.0f) == nullptr); // right edge is outside
+	// 2560x1440: everything twice as large
+	CHECK(s.HitTestGameUI(500.0f, 300.0f, 2560.0f, 1440.0f) == s.FindGameObjectById(buttonId, false));
+
+	const auto frame = [&](float x, float y, bool down, bool confirm = false) {
+		GameUIPointer p;
+		p.x = x;
+		p.y = y;
+		p.viewWidth = 1280.0f;
+		p.viewHeight = 720.0f;
+		p.inside = true;
+		p.down = down;
+		p.confirm = confirm;
+		s.UpdateGameUIInput(p);
+	};
+	const auto click = [&](float x0, float y0, float x1, float y1) { frame(x0, y0, false); frame(x0, y0, true); frame(x1, y1, false); };
+
+	click(150.0f, 150.0f, 150.0f, 150.0f);
+	CHECK(clicks.empty()); // Edit mode
+
+	A::State(s) = EditorSceneState::Play;
+	click(150.0f, 150.0f, 160.0f, 160.0f);
+	REQUIRE(clicks.size() == 1);
+	CHECK(clicks[0] == "Start");
+	click(150.0f, 150.0f, 600.0f, 600.0f); // released elsewhere
+	click(600.0f, 600.0f, 150.0f, 150.0f); // pressed elsewhere
+	CHECK(clicks.size() == 1);
+
+	// Enter / pad A click only the button a script selected
+	frame(600.0f, 600.0f, false, true);
+	CHECK(clicks.size() == 1);
+	EngineAPI& api = A::Api(s);
+	CHECK(api.uiSelectButton(api.hostContext, "Start"));
+	frame(600.0f, 600.0f, false, true);
+	REQUIRE(clicks.size() == 2);
+	CHECK(clicks[1] == "Start");
+	CHECK(!api.uiSelectButton(api.hostContext, "Nothing"));
+	frame(600.0f, 600.0f, false, true);
+	CHECK(clicks.size() == 2);
+
+	// A panel drawn over the button takes the click; a hidden button gets none
+	A::Select(s, 0);
+	SetPlacement(*MakeTestPanel(s, { 0.0f, 0.0f, 0.0f, 1.0f }), 0, 0, 0, 0, 0, 0, 100, 100, 50, 50);
+	click(120.0f, 120.0f, 120.0f, 120.0f);
+	click(250.0f, 150.0f, 250.0f, 150.0f);
+	REQUIRE(clicks.size() == 3);
+	s.FindGameObjectById(buttonId, false)->isActive = false;
+	click(250.0f, 150.0f, 250.0f, 150.0f);
+	CHECK(clicks.size() == 3);
+	A::State(s) = EditorSceneState::Edit;
+}
+
+TEST_CASE(GameUI, ScriptApiChangesWhatIsDrawn)
+{
+	s.NewScene();
+	UIRenderer::GetInstance()->Clear();
+	A::RecordGameViewRect(s, 1920.0f, 1080.0f);
+	MakeBlackBackdrop(s);
+	EngineAPI& api = A::Api(s);
+	void* host = api.hostContext;
+
+	// Progress bar over reference rows 320..400 (signature row 4), text over rows 80..160 (row 1)
+	const uint32_t barId = s.CreateUIObject(UIObjectKind::ProgressBar);
+	s.FindGameObjectById(barId, false)->name = "HP";
+	SetPlacement(*s.FindGameObjectById(barId, false)->components.Get<UIRectComponent>(kUIRectComponent), 0, 0, 1, 0, 0.5f, 0, 0, 320, 0, 80);
+	A::Select(s, 0);
+	const uint32_t textId = s.CreateUIObject(UIObjectKind::Text);
+	s.FindGameObjectById(textId, false)->name = "Score";
+	SetPlacement(*s.FindGameObjectById(textId, false)->components.Get<UIRectComponent>(kUIRectComponent), 0, 0, 1, 0, 0.5f, 0, 0, 80, 0, 80);
+	s.FindGameObjectById(textId, false)->components.Get<UITextComponent>(kUITextComponent)->size = 80.0f;
+
+	CHECK(api.uiSetProgress(host, "HP", 0.25f));
+	CHECK(api.uiSetColor(host, "HP", { 1.0f, 0.0f, 0.0f, 1.0f }));
+	CHECK(api.uiSetText(host, "Score", ""));
+	const std::vector<float> quarter = CaptureGameViewSignature(s);
+	const auto red = [](const std::vector<float>& sig, int col) { return SignatureCell(sig, col, 4, 0) > 250.0f && SignatureCell(sig, col, 4, 1) < 5.0f; };
+	CHECK(red(quarter, 3) && !red(quarter, 4));
+	CHECK(SignatureCell(quarter, 8, 1, 0) < 5.0f); // no text yet
+
+	CHECK(api.uiSetText(host, "Score", "MMMM"));
+	CHECK(api.uiSetProgress(host, "HP", 2.0f)); // clamped
+	const std::vector<float> full = CaptureGameViewSignature(s);
+	CHECK(SignatureCell(full, 7, 1, 0) > 30.0f || SignatureCell(full, 8, 1, 0) > 30.0f);
+	CHECK(red(full, 15));
+
+	CHECK(api.uiSetVisible(host, "HP", false));
+	const std::vector<float> hidden = CaptureGameViewSignature(s);
+	CHECK(SignatureCell(hidden, 3, 4, 0) < 5.0f);
+	CHECK(api.uiSetVisible(host, "HP", true));
+	CHECK(red(CaptureGameViewSignature(s), 3));
+
+	// A button selected by a script is drawn with its hover colour
+	const uint32_t buttonId = MakeTestButton(s, "Retry", 0.0f, 560.0f, 1280.0f, 80.0f); // signature row 7
+	UIButtonComponent* button = s.FindGameObjectById(buttonId, false)->components.Get<UIButtonComponent>(kUIButtonComponent);
+	button->normalColor = { 0.0f, 0.0f, 1.0f, 1.0f };
+	button->hoverColor = { 0.0f, 1.0f, 0.0f, 1.0f };
+	CHECK(api.uiSetText(host, "Retry", ""));
+	CHECK(std::string(button->label).empty());
+	CHECK(SignatureCell(CaptureGameViewSignature(s), 1, 7, 2) > 250.0f);
+	CHECK(api.uiSelectButton(host, "Retry"));
+	CHECK(SignatureCell(CaptureGameViewSignature(s), 1, 7, 1) > 250.0f);
+	CHECK(!api.uiSelectButton(host, "")); // clears the selection
+	CHECK(SignatureCell(CaptureGameViewSignature(s), 1, 7, 2) > 250.0f);
+
+	// Image texture, and names that are not UI elements
+	CHECK(api.uiSetImage(host, "Retry", "Assets/x.png") == false); // a button has no UI Image
+	CHECK(!api.uiSetText(host, "Nobody", "x"));
+	CHECK(!api.uiSetVisible(host, "Canvas", false)); // the canvas has no UI Rect
+	A::Select(s, 0);
+	const uint32_t imageId = s.CreateUIObject(UIObjectKind::Image);
+	s.FindGameObjectById(imageId, false)->name = "Icon";
+	CHECK(api.uiSetImage(host, "Icon", "Resources/circle.png"));
+	CHECK(std::string(s.FindGameObjectById(imageId, false)->components.Get<UIImageComponent>(kUIImageComponent)->texture) == "Resources/circle.png");
+	A::RecordGameViewRect(s, 0.0f, 0.0f);
+}
+
 int EditorSuite::RunSelfTests(const std::string& filter)
 {
 	namespace fs = std::filesystem;

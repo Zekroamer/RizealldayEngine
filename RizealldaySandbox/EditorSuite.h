@@ -91,6 +91,8 @@ enum class GizmoAxis {
 };
 
 enum class UIObjectKind; // UIComponents.h
+struct GameUIPointer;     // UIComponents.h
+namespace UILayout { struct Rect; }
 
 enum class GameObjectType {
 	Empty,
@@ -415,6 +417,19 @@ public:
 	uint32_t uiEditorDragId_ = 0;
 	int uiEditorDragEdges_ = -1; // -1 = no drag, 0 = move, else UIEditing::Edge flags
 	void DrawUIEditorWindow();
+	/// Every active UI element with its screen rectangle, in draw order (later = on top), for a view of this size (pixels)
+	void ForEachGameUIElement(float viewWidth, float viewHeight, const std::function<void(const GameObject&, const UILayout::Rect&)>& fn);
+	/// Topmost active UI element under a view pixel, or nullptr. Shared by button input and the UI Editor.
+	const GameObject* HitTestGameUI(float x, float y, float viewWidth, float viewHeight);
+	/// UI Button hover / press / click for one frame. Clicks call ScriptBase::OnUIButton only in Play and the exported game.
+	void UpdateGameUIInput(const GameUIPointer& pointer);
+	/// A UI element (object with UI Rect) by name, or nullptr
+	GameObject* FindUIElementByName(const char* name);
+	void DispatchUIButtonClick(const char* name);
+	uint32_t uiHoverId_ = 0;          // UI Button under the mouse
+	uint32_t uiPressedId_ = 0;        // UI Button the left button went down on
+	uint32_t uiSelectedButtonId_ = 0; // set by scripts (SelectUIButton): drawn as hovered, clicked by Enter / pad A
+	bool uiPointerWasDown_ = false;
 	/// During Play: advances every Timeline component and applies its tracks and events
 	void UpdateTimelines(float deltaTime);
 	std::shared_ptr<Timeline> GetTimeline(const std::string& assetPath);
