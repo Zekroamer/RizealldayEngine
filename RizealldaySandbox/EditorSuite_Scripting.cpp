@@ -15,6 +15,15 @@ void EditorSuite::UpdateScripts(float deltaTime)
 	TickScriptTimers(deltaTime);
 	RefreshAllScriptObjectViews();
 
+	// UI Buttons: OnUIButton runs before this frame's Update
+	GameUIPointer pointer;
+	pointer.inside = GetGameViewMousePosition(pointer.x, pointer.y, pointer.viewWidth, pointer.viewHeight);
+	if (currentInput_) {
+		pointer.down = currentInput_->IsPressMouse(0);
+		pointer.confirm = currentInput_->TriggerKey(DIK_RETURN) || currentInput_->TriggerKey(DIK_SPACE) || currentInput_->TriggerGamepadButton(XINPUT_GAMEPAD_A);
+	}
+	UpdateGameUIInput(pointer);
+
 	// Instantiate/Destroy from scripts are deferred, so gameObjects_ does not change size inside this loop.
 	// Objects are still re-fetched by index after each callback instead of holding references across it.
 	for (size_t i = 0; i < gameObjects_.size(); ++i) {
@@ -329,6 +338,55 @@ void EditorSuite::SetupEngineAPI()
 	};
 	engineApi_.uiMeasureText = [](void*, const char* text, float size) -> float {
 		return UIRenderer::GetInstance()->MeasureText(text, size);
+	};
+	// Game UI elements saved in the scene, by object name (API v17)
+	engineApi_.uiSetText = [](void* ctx, const char* element, const char* text) -> bool {
+		GameObject* obj = ctx && text ? static_cast<EditorSuite*>(ctx)->FindUIElementByName(element) : nullptr;
+		if (!obj) return false;
+		UITextComponent* t = obj->components.Get<UITextComponent>(kUITextComponent);
+		UIButtonComponent* b = obj->components.Get<UIButtonComponent>(kUIButtonComponent);
+		if (t) strncpy_s(t->text, text, _TRUNCATE);
+		if (b) strncpy_s(b->label, text, _TRUNCATE);
+		return t || b;
+	};
+	engineApi_.uiSetVisible = [](void* ctx, const char* element, bool visible) -> bool {
+		auto* self = static_cast<EditorSuite*>(ctx);
+		GameObject* obj = self ? self->FindUIElementByName(element) : nullptr;
+		if (!obj) return false;
+		obj->isActive = visible;
+		// A script holding a view of the element must not write the old flag back
+		if (auto it = self->scriptObjectViews_.find(obj->id); it != self->scriptObjectViews_.end()) it->second->isActive = visible;
+		return true;
+	};
+	engineApi_.uiSetProgress = [](void* ctx, const char* element, float value01) -> bool {
+		GameObject* obj = ctx && std::isfinite(value01) ? static_cast<EditorSuite*>(ctx)->FindUIElementByName(element) : nullptr;
+		UIProgressBarComponent* bar = obj ? obj->components.Get<UIProgressBarComponent>(kUIProgressBarComponent) : nullptr;
+		if (bar) bar->value = std::clamp(value01, 0.0f, 1.0f);
+		return bar != nullptr;
+	};
+	engineApi_.uiSetColor = [](void* ctx, const char* element, Vector4 color) -> bool {
+		GameObject* obj = ctx ? static_cast<EditorSuite*>(ctx)->FindUIElementByName(element) : nullptr;
+		if (!obj) return false;
+		bool any = false;
+		if (auto* c = obj->components.Get<UIImageComponent>(kUIImageComponent)) { c->color = color; any = true; }
+		if (auto* c = obj->components.Get<UITextComponent>(kUITextComponent)) { c->color = color; any = true; }
+		if (auto* c = obj->components.Get<UIButtonComponent>(kUIButtonComponent)) { c->normalColor = color; any = true; }
+		if (auto* c = obj->components.Get<UIProgressBarComponent>(kUIProgressBarComponent)) { c->fillColor = color; any = true; }
+		return any;
+	};
+	engineApi_.uiSetImage = [](void* ctx, const char* element, const char* texturePath) -> bool {
+		GameObject* obj = ctx && texturePath ? static_cast<EditorSuite*>(ctx)->FindUIElementByName(element) : nullptr;
+		UIImageComponent* image = obj ? obj->components.Get<UIImageComponent>(kUIImageComponent) : nullptr;
+		if (image) strncpy_s(image->texture, texturePath, _TRUNCATE);
+		return image != nullptr;
+	};
+	engineApi_.uiSelectButton = [](void* ctx, const char* element) -> bool {
+		auto* self = static_cast<EditorSuite*>(ctx);
+		if (!self) return false;
+		const GameObject* obj = self->FindUIElementByName(element);
+		const bool isButton = obj && obj->components.Has(kUIButtonComponent);
+		self->uiSelectedButtonId_ = isButton ? obj->id : 0; // nullptr / "" / not a button = no selection
+		return isButton;
 	};
 
 	engineApi_.loadScene = [](void* ctx, const char* sceneNameOrPath) {
