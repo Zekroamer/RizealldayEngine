@@ -88,6 +88,8 @@ enum class GizmoAxis {
 	Center = 3
 };
 
+enum class UIObjectKind; // UIComponents.h
+
 enum class GameObjectType {
 	Empty,
 	Cube,
@@ -383,6 +385,13 @@ public:
 	static void RegisterVfxComponents();
 	static void RegisterTimelineComponent();
 	static void RegisterTerrainComponent();
+	// Game UI (EditorSuite_GameUI.cpp): Canvas, UI Rect, UI Image data components
+	static void RegisterGameUIComponents();
+	/// GameObject > UI: a new object under the selected canvas or element, else under the scene's first canvas
+	/// (a new canvas when there is none). Returns its id.
+	uint32_t CreateUIObject(UIObjectKind kind);
+	/// Fills the UI renderer's canvas layer with the scene's canvases for a view of this size (pixels)
+	void DrawGameUI(float viewWidth, float viewHeight);
 	/// During Play: advances every Timeline component and applies its tracks and events
 	void UpdateTimelines(float deltaTime);
 	std::shared_ptr<Timeline> GetTimeline(const std::string& assetPath);

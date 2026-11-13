@@ -133,6 +133,7 @@ struct EditorSuiteTestAccess {
 		s.UpdateWorldMatrices();
 	}
 	static RenderTexture& GameViewRT(EditorSuite& s) { return s.gameViewRT_; }
+	static void RecordGameViewRect(EditorSuite& s, float w, float h) { s.RecordGameViewRect(0.0f, 0.0f, w, h); }
 	static RenderTexture& EditViewRT(EditorSuite& s) { return s.editViewRT_; }
 	static GraphEditorModel& MaterialEditor(EditorSuite& s) { return s.materialEditor_; }
 	static void ForgetEffectMaterials(EditorSuite& s) { s.effectMaterials_.clear(); } // as after a restart
@@ -11339,6 +11340,220 @@ TEST_CASE(EditorUX, TimelineTargetSurvivesRenameById)
 // ===========================================================================
 // Runner
 // ===========================================================================
+
+// ===========================================================================
+// Game UI: canvases and UI elements saved in the scene
+// ===========================================================================
+
+TEST_CASE(GameUI, LayoutPlacesAnchorsPivotAndNesting)
+{
+	const auto place = [](float ax0, float ay0, float ax1, float ay1, float px, float py, float ox, float oy, float w, float h) {
+		UILayout::Placement p;
+		p.anchorMinX = ax0; p.anchorMinY = ay0; p.anchorMaxX = ax1; p.anchorMaxY = ay1;
+		p.pivotX = px; p.pivotY = py; p.offsetX = ox; p.offsetY = oy; p.width = w; p.height = h;
+		return p;
+	};
+	const auto check = [&](const UILayout::Rect& r, float x, float y, float w, float h) {
+		CHECK_MSG(std::abs(r.x - x) < 0.01f && std::abs(r.y - y) < 0.01f && std::abs(r.width - w) < 0.01f && std::abs(r.height - h) < 0.01f,
+			std::format("got ({}, {}, {}, {}), expected ({}, {}, {}, {})", r.x, r.y, r.width, r.height, x, y, w, h));
+	};
+	const UILayout::Rect screen{ 0.0f, 0.0f, 1280.0f, 720.0f };
+	CHECK_NEAR(UILayout::CanvasScale(720.0f), 1.0f, 0.0001f);
+	CHECK_NEAR(UILayout::CanvasScale(1080.0f), 1.5f, 0.0001f);
+
+	// Top-left corner, pivot top-left
+	check(UILayout::Place(screen, place(0, 0, 0, 0, 0, 0, 20, 30, 100, 50), 1.0f), 20, 30, 100, 50);
+	// Centre, pivot centre
+	const UILayout::Rect centre = UILayout::Place(screen, place(0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0, 0, 200, 100), 1.0f);
+	check(centre, 540, 310, 200, 100);
+	// Bottom-right corner, pivot bottom-right, offset inwards
+	check(UILayout::Place(screen, place(1, 1, 1, 1, 1, 1, -10, -10, 100, 50), 1.0f), 1170, 660, 100, 50);
+	// Same anchor, pivot centre: the offset now moves the element's centre
+	check(UILayout::Place(screen, place(1, 1, 1, 1, 0.5f, 0.5f, -60, -35, 100, 50), 1.0f), 1170, 660, 100, 50);
+	// Stretched over the whole parent with a 20 px inset
+	check(UILayout::Place(screen, place(0, 0, 1, 1, 0.5f, 0.5f, 0, 0, -40, -40), 1.0f), 20, 20, 1240, 680);
+	// Stretched along the bottom edge only: full width, 60 high
+	check(UILayout::Place(screen, place(0, 1, 1, 1, 0.5f, 1, 0, 0, 0, 60), 1.0f), 0, 660, 1280, 60);
+
+	// Nested: inside the centre panel, stretched with a 10 px inset, and a child pinned to its top-left corner
+	check(UILayout::Place(centre, place(0, 0, 1, 1, 0.5f, 0.5f, 0, 0, -20, -20), 1.0f), 550, 320, 180, 80);
+	check(UILayout::Place(centre, place(0, 0, 0, 0, 0, 0, 5, 5, 10, 10), 1.0f), 545, 315, 10, 10);
+
+	// 16:9 vs 21:9 at 1080 high: same scale, so a centred element keeps its size and a right-anchored one follows the edge
+	const float scale = UILayout::CanvasScale(1080.0f);
+	check(UILayout::Place({ 0, 0, 1920, 1080 }, place(0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0, 0, 200, 100), scale), 810, 465, 300, 150);
+	check(UILayout::Place({ 0, 0, 2520, 1080 }, place(0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0, 0, 200, 100), scale), 1110, 465, 300, 150);
+	check(UILayout::Place({ 0, 0, 1920, 1080 }, place(1, 0, 1, 0, 1, 0, -20, 20, 100, 50), scale), 1740, 30, 150, 75);
+	check(UILayout::Place({ 0, 0, 2520, 1080 }, place(1, 0, 1, 0, 1, 0, -20, 20, 100, 50), scale), 2340, 30, 150, 75);
+}
+
+TEST_CASE(GameUI, MenuCreatesElementsUnderACanvas)
+{
+	// Nothing selected and no canvas yet: a canvas is made for the panel
+	A::Select(s, 0);
+	const uint32_t panel = s.CreateUIObject(UIObjectKind::Panel);
+	const GameObject* panelObj = s.FindGameObjectById(panel, false);
+	REQUIRE(panelObj != nullptr);
+	CHECK(panelObj->components.Has(kUIRectComponent));
+	CHECK(panelObj->components.Has(kUIImageComponent));
+	const GameObject* canvas = s.FindGameObjectById(static_cast<uint32_t>(panelObj->parentId), false);
+	REQUIRE(canvas != nullptr);
+	CHECK(canvas->components.Has(kCanvasComponent));
+	const uint32_t canvasId = canvas->id;
+
+	// The new panel is selected: an image goes under it
+	const uint32_t image = s.CreateUIObject(UIObjectKind::Image);
+	CHECK(s.FindGameObjectById(image, false)->parentId == static_cast<int>(panel));
+
+	// Something that is not UI is selected: the scene's canvas is used, no second canvas appears
+	A::Select(s, s.CreateCube("Crate", { 0.0f, 0.0f, 0.0f }).id);
+	const uint32_t second = s.CreateUIObject(UIObjectKind::Image);
+	CHECK(s.FindGameObjectById(second, false)->parentId == static_cast<int>(canvasId));
+	int canvases = 0;
+	for (const GameObject& o : A::Objects(s)) canvases += o.components.Has(kCanvasComponent) ? 1 : 0;
+	CHECK(canvases == 1);
+
+	// A canvas is always a new root
+	A::Select(s, panel);
+	CHECK(s.FindGameObjectById(s.CreateUIObject(UIObjectKind::Canvas), false)->parentId == -1);
+}
+
+namespace {
+	/// A panel with a solid colour; returns its UI Rect
+	UIRectComponent* MakeTestPanel(EditorSuite& s, const Vector4& color)
+	{
+		const uint32_t id = s.CreateUIObject(UIObjectKind::Panel);
+		GameObject* obj = s.FindGameObjectById(id, false);
+		obj->components.Get<UIImageComponent>(kUIImageComponent)->color = color;
+		return obj->components.Get<UIRectComponent>(kUIRectComponent);
+	}
+	void SetPlacement(UIRectComponent& r, float ax0, float ay0, float ax1, float ay1, float px, float py, float ox, float oy, float w, float h)
+	{
+		r.anchorMinX = ax0; r.anchorMinY = ay0; r.anchorMaxX = ax1; r.anchorMaxY = ay1;
+		r.pivotX = px; r.pivotY = py; r.offsetX = ox; r.offsetY = oy; r.width = w; r.height = h;
+	}
+}
+
+TEST_CASE(GameUI, PanelsAppearInTheGameViewAndFollowItsShape)
+{
+	UIRenderer::GetInstance()->Clear();
+	A::RecordGameViewRect(s, 1920.0f, 1080.0f);
+	const std::vector<float> plain = CaptureGameViewSignature(s);
+	REQUIRE(plain.size() == kSignatureColumns * kSignatureRows * 3);
+	REQUIRE(SignatureCell(plain, 2, 1, 1) > 20.0f); // the sky has green, a red panel does not
+
+	// Red: top-left, 80 px in, 160x80 reference pixels = signature cells (1,1) and (2,1) in a 16:9 view.
+	// Green: stretched over the right half.
+	A::Select(s, 0);
+	SetPlacement(*MakeTestPanel(s, { 1.0f, 0.0f, 0.0f, 1.0f }), 0, 0, 0, 0, 0, 0, 80, 80, 160, 80);
+	A::Select(s, 0);
+	SetPlacement(*MakeTestPanel(s, { 0.0f, 1.0f, 0.0f, 1.0f }), 0.5f, 0, 1, 1, 0.5f, 0.5f, 0, 0, 0, 0);
+	const auto isColor = [](const std::vector<float>& sig, int col, int row, float r, float g, float b) {
+		return std::abs(SignatureCell(sig, col, row, 0) - r) < 6.0f && std::abs(SignatureCell(sig, col, row, 1) - g) < 6.0f &&
+			std::abs(SignatureCell(sig, col, row, 2) - b) < 6.0f;
+	};
+
+	const std::vector<float> wide = CaptureGameViewSignature(s); // Edit mode: the canvas draws, unlike immediate UI
+	CHECK(isColor(wide, 1, 1, 255, 0, 0));
+	CHECK(isColor(wide, 2, 1, 255, 0, 0));
+	CHECK(!isColor(wide, 3, 1, 255, 0, 0));
+	CHECK(!isColor(wide, 1, 2, 255, 0, 0));
+	CHECK(isColor(wide, 8, 4, 0, 255, 0));
+	CHECK(isColor(wide, 15, 8, 0, 255, 0));
+	CHECK(!isColor(wide, 7, 4, 0, 255, 0));
+
+	// 21:9 view of the same height: the stretched panel still covers the right half, the fixed one keeps its
+	// shape, so it covers less of the (stretched) image horizontally
+	A::RecordGameViewRect(s, 2520.0f, 1080.0f);
+	const std::vector<float> ultraWide = CaptureGameViewSignature(s);
+	CHECK(isColor(ultraWide, 1, 1, 255, 0, 0));
+	CHECK(SignatureCell(ultraWide, 2, 1, 1) > SignatureCell(plain, 2, 1, 1) * 0.4f); // mostly sky now
+	CHECK(isColor(ultraWide, 8, 4, 0, 255, 0));
+	CHECK(!isColor(ultraWide, 7, 4, 0, 255, 0));
+
+	// Turning the canvas off hides everything on it
+	A::RecordGameViewRect(s, 1920.0f, 1080.0f);
+	for (GameObject& o : A::Objects(s)) if (o.components.Has(kCanvasComponent)) o.isActive = false;
+	CHECK(LargestSignatureDifference(plain, CaptureGameViewSignature(s)) < 3.0f);
+	A::RecordGameViewRect(s, 0.0f, 0.0f);
+}
+
+TEST_CASE(GameUI, ImmediateUiDrawsOnTopOfTheCanvas)
+{
+	A::RecordGameViewRect(s, 1920.0f, 1080.0f);
+	A::Select(s, 0);
+	SetPlacement(*MakeTestPanel(s, { 1.0f, 0.0f, 0.0f, 1.0f }), 0, 0, 1, 1, 0.5f, 0.5f, 0, 0, 0, 0);
+	UIRenderer* ui = UIRenderer::GetInstance();
+	ui->Clear();
+	ui->DrawRect(80.0f, 80.0f, 160.0f, 80.0f, { 0.0f, 0.0f, 1.0f, 1.0f });
+
+	A::State(s) = EditorSceneState::Play;
+	const std::vector<float> play = CaptureGameViewSignature(s);
+	CHECK(SignatureCell(play, 1, 1, 2) > 250.0f && SignatureCell(play, 1, 1, 0) < 5.0f);
+	CHECK(SignatureCell(play, 6, 6, 0) > 250.0f && SignatureCell(play, 6, 6, 2) < 5.0f);
+	CHECK(ui->GetQuadCount() == 1); // drawing the canvas did not touch the immediate commands
+
+	// Edit mode shows the canvas but not the immediate UI
+	A::State(s) = EditorSceneState::Edit;
+	const std::vector<float> edit = CaptureGameViewSignature(s);
+	CHECK(SignatureCell(edit, 1, 1, 0) > 250.0f && SignatureCell(edit, 1, 1, 2) < 5.0f);
+	ui->Clear();
+	A::RecordGameViewRect(s, 0.0f, 0.0f);
+}
+
+TEST_CASE(GameUI, SceneAndPrefabKeepEveryField)
+{
+	const std::filesystem::path root = A::TempRoot() / "GameUIProject";
+	A::ProjectRoot(s) = root;
+	REQUIRE(PlaceTestTexture(root, "Assets/Textures/button.png"));
+	s.AssetDb().Refresh();
+
+	A::Select(s, 0);
+	const uint32_t imageId = s.CreateUIObject(UIObjectKind::Image);
+	GameObject* image = s.FindGameObjectById(imageId, false);
+	const uint32_t canvasId = static_cast<uint32_t>(image->parentId);
+	SetPlacement(*image->components.Get<UIRectComponent>(kUIRectComponent), 0.1f, 0.2f, 0.3f, 0.4f, 0.25f, 0.75f, 12.5f, -7.0f, 64.0f, 32.0f);
+	auto* data = image->components.Get<UIImageComponent>(kUIImageComponent);
+	data->color = { 0.2f, 0.4f, 0.6f, 0.8f };
+	strncpy_s(data->texture, "Assets/Textures/button.png", _TRUNCATE);
+
+	const auto checkImage = [&](const GameObject* obj, const char* texture) {
+		CHECK(obj != nullptr);
+		if (!obj) return;
+		const UIRectComponent* r = obj->components.Get<UIRectComponent>(kUIRectComponent);
+		const UIImageComponent* i = obj->components.Get<UIImageComponent>(kUIImageComponent);
+		CHECK(r != nullptr && i != nullptr);
+		if (!r || !i) return;
+		CHECK(r->anchorMinX == 0.1f && r->anchorMinY == 0.2f && r->anchorMaxX == 0.3f && r->anchorMaxY == 0.4f);
+		CHECK(r->pivotX == 0.25f && r->pivotY == 0.75f && r->offsetX == 12.5f && r->offsetY == -7.0f);
+		CHECK(r->width == 64.0f && r->height == 32.0f);
+		CHECK(i->color.x == 0.2f && i->color.y == 0.4f && i->color.z == 0.6f && i->color.w == 0.8f);
+		CHECK(std::string(i->texture) == texture);
+	};
+
+	const std::string saved = s.SerializeSceneToString();
+	s.NewScene();
+	REQUIRE(s.DeserializeSceneFromString(saved));
+	checkImage(s.FindGameObjectById(imageId, false), "Assets/Textures/button.png");
+	REQUIRE(s.FindGameObjectById(canvasId, false) != nullptr);
+	CHECK(s.FindGameObjectById(canvasId, false)->components.Has(kCanvasComponent));
+
+	// The texture is moved: the open scene follows, and the scene saved before the move finds it by GUID
+	REQUIRE(s.MoveAssetAndUpdateReferences("Assets/Textures/button.png", "Assets/UI/ok_button.png"));
+	checkImage(s.FindGameObjectById(imageId, false), "Assets/UI/ok_button.png");
+	REQUIRE(s.DeserializeSceneFromString(saved));
+	checkImage(s.FindGameObjectById(imageId, false), "Assets/UI/ok_button.png");
+
+	// A canvas saved as a prefab brings its elements back
+	REQUIRE(s.SavePrefab(canvasId, "Hud"));
+	const uint32_t instance = s.InstantiatePrefabNow("Hud", { 0.0f, 0.0f, 0.0f });
+	REQUIRE(instance != 0 && instance != canvasId);
+	const GameObject* hud = s.FindGameObjectById(instance, false);
+	REQUIRE(hud != nullptr);
+	CHECK(hud->components.Has(kCanvasComponent));
+	REQUIRE(hud->childrenIds.size() == 1);
+	checkImage(s.FindGameObjectById(hud->childrenIds[0], false), "Assets/UI/ok_button.png");
+}
 
 int EditorSuite::RunSelfTests(const std::string& filter)
 {

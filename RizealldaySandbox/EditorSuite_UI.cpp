@@ -855,10 +855,10 @@ void EditorSuite::DrawHierarchyCreationMenu()
 		ImGui::EndMenu();
 	}
 
-	if (ImGui::BeginMenu(TrId("UI (Canvas)"))) {
-		if (ImGui::MenuItem(TrId("Canvas"))) {
-			CreateGameObject("Canvas", GameObjectType::Canvas);
-		}
+	if (ImGui::BeginMenu(TrId("UI"))) {
+		if (ImGui::MenuItem(TrId("Canvas"))) CreateUIObject(UIObjectKind::Canvas);
+		if (ImGui::MenuItem(TrId("Panel"))) CreateUIObject(UIObjectKind::Panel);
+		if (ImGui::MenuItem(TrId("Image"))) CreateUIObject(UIObjectKind::Image);
 		ImGui::EndMenu();
 	}
 

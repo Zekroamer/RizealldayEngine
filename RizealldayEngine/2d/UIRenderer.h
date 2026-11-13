@@ -27,6 +27,7 @@ public:
 	void Initialize(DirectXCommon* dxCommon, DXCManager* dxc);
 	void Finalize();
 
+	/// Clears the immediate commands (scripts); the canvas layer is kept
 	void Clear();
 	bool HasCommands() const { return !vertices_.empty(); }
 	size_t GetQuadCount() const { return vertices_.size() / 6; }
@@ -38,8 +39,14 @@ public:
 	/// Width of the widest line of `text` at `size`
 	float MeasureText(const char* text, float size) const;
 
-	/// Draws all queued commands into the currently bound render target (sRGB color + D24 depth formats)
-	void Render(ID3D12GraphicsCommandList* cmdList);
+	/// Canvas layer (scene UI elements): drawn below the immediate commands. BeginCanvasLayer clears it and sends
+	/// every draw call to it until EndCanvasLayer.
+	void BeginCanvasLayer();
+	void EndCanvasLayer();
+	size_t GetCanvasQuadCount() const { return (inCanvasLayer_ ? vertices_.size() : canvasVertices_.size()) / 6; }
+
+	/// Draws the canvas layer, then (if `immediate`) the immediate commands into the currently bound render target
+	void Render(ID3D12GraphicsCommandList* cmdList, bool immediate = true);
 
 	/// Glyphs rasterized so far / atlas pages in use (tests, profiler)
 	size_t GetGlyphCount() const { return glyphs_.size(); }
@@ -100,6 +107,10 @@ private:
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> pso_;
 	std::vector<Vertex> vertices_;
 	std::vector<Batch> batches_;
+	// The canvas layer while not recording it (swapped with vertices_ / batches_ between Begin/EndCanvasLayer)
+	std::vector<Vertex> canvasVertices_;
+	std::vector<Batch> canvasBatches_;
+	bool inCanvasLayer_ = false;
 	// Measuring rasterizes too, so the glyph cache is mutable
 	mutable std::unordered_map<uint32_t, Glyph> glyphs_;
 	mutable std::vector<FontPage> pages_;

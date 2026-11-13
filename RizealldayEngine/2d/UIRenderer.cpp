@@ -386,8 +386,27 @@ void UIRenderer::UploadFontPages()
 
 void UIRenderer::Clear()
 {
+	if (inCanvasLayer_) EndCanvasLayer();
 	vertices_.clear();
 	batches_.clear();
+}
+
+void UIRenderer::BeginCanvasLayer()
+{
+	if (inCanvasLayer_) return;
+	vertices_.swap(canvasVertices_);
+	batches_.swap(canvasBatches_);
+	vertices_.clear();
+	batches_.clear();
+	inCanvasLayer_ = true;
+}
+
+void UIRenderer::EndCanvasLayer()
+{
+	if (!inCanvasLayer_) return;
+	vertices_.swap(canvasVertices_);
+	batches_.swap(canvasBatches_);
+	inCanvasLayer_ = false;
 }
 
 void UIRenderer::PushQuad(uint32_t texture, float x, float y, float w, float h, float u0, float v0, float u1, float v1, const Vector4& color)
@@ -480,19 +499,24 @@ void UIRenderer::DrawString(const char* text, float x, float y, float size, cons
 	}
 }
 
-void UIRenderer::Render(ID3D12GraphicsCommandList* cmdList)
+void UIRenderer::Render(ID3D12GraphicsCommandList* cmdList, bool immediate)
 {
-	if (vertices_.empty() || !pso_ || !rootSignature_ || !dxCommon_ || dxCommon_->IsDeviceLost() || !cmdList) {
+	EndCanvasLayer();
+	const size_t immediateCount = immediate ? vertices_.size() : 0;
+	const size_t total = canvasVertices_.size() + immediateCount;
+	if (total == 0 || !pso_ || !rootSignature_ || !dxCommon_ || dxCommon_->IsDeviceLost() || !cmdList) {
 		return;
 	}
 	// Glyphs first used this frame go to the GPU before anything samples them
 	UploadFontPages();
 
 	// Per-frame linear upload memory: rendering the same commands into several targets is safe
-	const size_t bytes = sizeof(Vertex) * vertices_.size();
+	const size_t bytes = sizeof(Vertex) * total;
 	DirectXCommon::UploadAllocation alloc = dxCommon_->AllocateUpload(bytes, 16);
 	if (!alloc.cpu) return;
-	std::memcpy(alloc.cpu, vertices_.data(), bytes);
+	auto* dst = static_cast<Vertex*>(alloc.cpu);
+	std::memcpy(dst, canvasVertices_.data(), sizeof(Vertex) * canvasVertices_.size());
+	if (immediateCount > 0) std::memcpy(dst + canvasVertices_.size(), vertices_.data(), sizeof(Vertex) * immediateCount);
 
 	D3D12_VERTEX_BUFFER_VIEW vbView{};
 	vbView.BufferLocation = alloc.gpu;
@@ -505,16 +529,20 @@ void UIRenderer::Render(ID3D12GraphicsCommandList* cmdList)
 	cmdList->SetPipelineState(pso_.Get());
 	cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	cmdList->IASetVertexBuffers(0, 1, &vbView);
-	for (const Batch& batch : batches_) {
-		if (batch.vertexCount == 0) continue;
-		uint32_t texture = batch.texture;
-		if (texture & kFontPageTag) {
-			const size_t page = texture & ~kFontPageTag;
-			texture = (page < pages_.size()) ? pages_[page].texture : 0;
-			if (texture == 0) continue;
+	const auto drawBatches = [&](const std::vector<Batch>& batches, uint32_t vertexBase) {
+		for (const Batch& batch : batches) {
+			if (batch.vertexCount == 0) continue;
+			uint32_t texture = batch.texture;
+			if (texture & kFontPageTag) {
+				const size_t page = texture & ~kFontPageTag;
+				texture = (page < pages_.size()) ? pages_[page].texture : 0;
+				if (texture == 0) continue;
+			}
+			cmdList->SetGraphicsRootDescriptorTable(0, textures->GetGPUHandle(texture));
+			cmdList->DrawInstanced(batch.vertexCount, 1, vertexBase + batch.firstVertex, 0);
+			Profiler::GetInstance()->CountDrawCall();
 		}
-		cmdList->SetGraphicsRootDescriptorTable(0, textures->GetGPUHandle(texture));
-		cmdList->DrawInstanced(batch.vertexCount, 1, batch.firstVertex, 0);
-		Profiler::GetInstance()->CountDrawCall();
-	}
+	};
+	drawBatches(canvasBatches_, 0);
+	if (immediateCount > 0) drawBatches(batches_, static_cast<uint32_t>(canvasVertices_.size()));
 }

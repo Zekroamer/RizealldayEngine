@@ -24,6 +24,7 @@
 #include <shellapi.h>
 #include "TransformUtil.h"
 #include "Localization.h"
+#include "UIComponents.h"
 
 // Editor UI language (Options > Language): Tr = translated text, TrId = translated label with the English ImGui ID
 using Localization::Tr;

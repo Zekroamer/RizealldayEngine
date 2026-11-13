@@ -573,10 +573,14 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList)
 		gameViewRT_.BeginRender(false);
 		postProcess_.Composite(cmdList);
 	}
-	// Game UI (HUD/menus from scripts) stays sharp on top of the post-processed view
-	if (sceneState_ != EditorSceneState::Edit || IsStandaloneMode()) {
-		UIRenderer::GetInstance()->Render(cmdList);
+	// Game UI stays sharp on top of the post-processed view: the scene's canvases (Edit and Play), then the
+	// immediate UI from scripts (Play only). Laid out for the size the Game view image is shown at.
+	if (gameViewRect_[2] > 0.0f && gameViewRect_[3] > 0.0f) {
+		DrawGameUI(gameViewRect_[2], gameViewRect_[3]);
+	} else {
+		DrawGameUI(static_cast<float>(gameViewRT_.GetWidth()), static_cast<float>(gameViewRT_.GetHeight()));
 	}
+	UIRenderer::GetInstance()->Render(cmdList, sceneState_ != EditorSceneState::Edit || IsStandaloneMode());
 	gameViewRT_.EndRender();
 	}
 	Profiler::GetInstance()->EndGpu(cmdList, gameViewScope);
@@ -656,6 +660,7 @@ void EditorSuite::RenderViewports(ID3D12GraphicsCommandList* cmdList)
 		dxCommon_->BindMainRenderTarget();
 		postProcess_.Composite(cmdList);
 	}
+	DrawGameUI(static_cast<float>(dxCommon_->GetClientWidth()), static_cast<float>(dxCommon_->GetClientHeight()));
 	UIRenderer::GetInstance()->Render(cmdList);
 #endif
 }
