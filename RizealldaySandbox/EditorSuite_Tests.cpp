@@ -22,6 +22,7 @@
 #include "audio/Audio.h"
 #include "AutoSave.h"
 #include "MapchipTileSet.h"
+#include "SceneMerge.h"
 #include "NodeGraph.h"
 #include "GraphEditorModel.h"
 #include "base/DXCManager.h"
@@ -11334,6 +11335,334 @@ TEST_CASE(EditorUX, TimelineTargetSurvivesRenameById)
 	CHECK(std::abs(actor.translation.x - 5.0f) < 1e-3f);
 	CHECK(std::abs(actor.translation.y - 2.0f) < 1e-3f);
 	CHECK(std::abs(actor.translation.z - (-1.0f)) < 1e-3f);
+}
+
+// ===========================================================================
+// Scene merge (pure module, seam 1)
+// ===========================================================================
+
+namespace {
+
+// Ground (10) and Enemy (20) at the root, a 2x3 Mapchip with a second layer, fog off
+const char* kMergeBase = R"({
+  "sceneName": "Merge",
+  "postProcess": {"fogEnabled": false, "fogDensity": 0.5},
+  "gameObjects": [
+    {"id": 10, "name": "Ground", "type": 0, "parentId": -1, "translation": [0, 0, 0], "materialColor": [1, 1, 1, 1]},
+    {"id": 20, "name": "Enemy", "type": 0, "parentId": -1, "translation": [1, 0, 0], "materialColor": [1, 1, 1, 1],
+     "components": {"Animator": {"controller": "a.animator.json", "speed": 1}}}
+  ],
+  "mapchip": {"rows": 2, "cols": 3, "tileSize": 1, "data": [[0, 0, 0], [0, 0, 0]], "moreLayers": [[[0, 0, 0], [0, 0, 0]]]}
+})";
+
+// The base text with one change applied, written the way the editor writes it
+template <typename F>
+std::string MergeSide(F change, const std::string& base = kMergeBase)
+{
+	SceneJson::Json j = *SceneJson::Parse(base);
+	change(j);
+	return SceneJson::DumpCompact(j);
+}
+
+SceneJson::Json& MergeObj(SceneJson::Json& scene, uint32_t id)
+{
+	for (auto& o : scene["gameObjects"]) {
+		if (o["id"] == id) return o;
+	}
+	static SceneJson::Json none;
+	return none;
+}
+
+const SceneJson::Json* MergedObj(const SceneJson::Json& scene, uint32_t id)
+{
+	for (const auto& o : scene["gameObjects"]) {
+		if (o["id"] == id) return &o;
+	}
+	return nullptr;
+}
+
+SceneJson::Json MergeObject(uint32_t id, const char* name, int parentId = -1)
+{
+	return SceneJson::Json{ { "id", id }, { "name", name }, { "type", 0 }, { "parentId", parentId }, { "translation", { 0, 0, 0 } } };
+}
+
+} // namespace
+
+TEST_CASE(SceneMerge, BothAddedObjects)
+{
+	const std::string ours = MergeSide([](auto& j) { j["gameObjects"].push_back(MergeObject(30, "Coin")); });
+	const std::string theirs = MergeSide([](auto& j) { j["gameObjects"].push_back(MergeObject(40, "Tree")); });
+	const SceneMerge::Result r = SceneMerge::Merge(kMergeBase, ours, theirs);
+	REQUIRE_MSG(r.ok, r.error);
+	CHECK(r.conflicts.empty());
+	CHECK(r.notes.empty());
+
+	// Loads in the editor with all four objects, still in id order
+	REQUIRE(s.DeserializeSceneFromString(r.mergedText));
+	REQUIRE(A::Objects(s).size() == 4u);
+	const uint32_t expected[] = { 10, 20, 30, 40 };
+	for (size_t i = 0; i < 4; ++i) CHECK(A::Objects(s)[i].id == expected[i]);
+	CHECK(s.FindGameObjectById(30, false)->name == "Coin");
+	CHECK(s.FindGameObjectById(40, false)->name == "Tree");
+
+	// Nothing changed on either side gives back the same text
+	const std::string same = MergeSide([](auto&) {});
+	CHECK(SceneMerge::Merge(kMergeBase, same, same).mergedText == same);
+}
+
+TEST_CASE(SceneMerge, DifferentFieldsOfOneObjectBothSurvive)
+{
+	const std::string ours = MergeSide([](auto& j) { MergeObj(j, 20)["translation"] = { 5, 0, 0 }; });
+	const std::string theirs = MergeSide([](auto& j) { MergeObj(j, 20)["materialColor"] = { 1, 0, 0, 1 }; });
+	const SceneMerge::Result r = SceneMerge::Merge(kMergeBase, ours, theirs);
+	REQUIRE_MSG(r.ok, r.error);
+	CHECK(r.conflicts.empty());
+
+	REQUIRE(s.DeserializeSceneFromString(r.mergedText));
+	const GameObject* enemy = s.FindGameObjectById(20, false);
+	REQUIRE(enemy != nullptr);
+	CHECK_NEAR(enemy->translation.x, 5.0f, 1e-6f);
+	CHECK_NEAR(enemy->materialColor.y, 0.0f, 1e-6f);
+	CHECK_NEAR(enemy->materialColor.x, 1.0f, 1e-6f);
+}
+
+TEST_CASE(SceneMerge, SameFieldChangedDifferentlyKeepsOursAndReportsBoth)
+{
+	const std::string ours = MergeSide([](auto& j) { MergeObj(j, 20)["translation"] = { 5, 0, 0 }; });
+	const std::string theirs = MergeSide([](auto& j) { MergeObj(j, 20)["translation"] = { 7, 0, 0 }; });
+	const SceneMerge::Result r = SceneMerge::Merge(kMergeBase, ours, theirs);
+	REQUIRE_MSG(r.ok, r.error);
+	REQUIRE(r.conflicts.size() == 1u);
+	CHECK(r.conflicts[0].objectId == 20u);
+	CHECK(r.conflicts[0].objectName == "Enemy");
+	CHECK(r.conflicts[0].field == "translation");
+	CHECK_MSG(r.conflicts[0].ours == "[5,0,0]", r.conflicts[0].ours);
+	CHECK_MSG(r.conflicts[0].theirs == "[7,0,0]", r.conflicts[0].theirs);
+	const SceneJson::Json merged = *SceneJson::Parse(r.mergedText);
+	CHECK(MergedObj(merged, 20)->at("translation") == SceneJson::Json({ 5, 0, 0 }));
+
+	// The same change on both sides is not a conflict
+	CHECK(SceneMerge::Merge(kMergeBase, ours, ours).conflicts.empty());
+
+	// Machine-readable report: values embedded as JSON, read back unchanged
+	const std::string report = SceneMerge::ReportToJson(r);
+	const SceneJson::Json rj = *SceneJson::Parse(report);
+	CHECK(rj["version"] == 1);
+	CHECK(rj["conflicts"][0]["objectId"] == 20);
+	CHECK(rj["conflicts"][0]["field"] == "translation");
+	CHECK(rj["conflicts"][0]["theirs"] == SceneJson::Json({ 7, 0, 0 }));
+	std::vector<SceneMerge::Conflict> conflicts;
+	std::vector<SceneMerge::Note> notes;
+	REQUIRE(SceneMerge::ReportFromJson(report, conflicts, notes));
+	REQUIRE(conflicts.size() == 1u);
+	CHECK(conflicts[0].objectName == "Enemy");
+	CHECK(conflicts[0].ours == "[5,0,0]");
+	CHECK(conflicts[0].theirs == "[7,0,0]");
+	std::string why;
+	CHECK(!SceneMerge::ReportFromJson("[1]", conflicts, notes, &why));
+	CHECK(!why.empty());
+}
+
+TEST_CASE(SceneMerge, DeletedOnOneSideChangedOnTheOtherIsKept)
+{
+	// Ours deletes Enemy (recoloured by theirs) and Ground (untouched by theirs)
+	const std::string ours = MergeSide([](auto& j) { j["gameObjects"] = SceneJson::Json::array(); });
+	const std::string theirs = MergeSide([](auto& j) { MergeObj(j, 20)["materialColor"] = { 0, 1, 0, 1 }; });
+	const SceneMerge::Result r = SceneMerge::Merge(kMergeBase, ours, theirs);
+	REQUIRE_MSG(r.ok, r.error);
+	CHECK(r.conflicts.empty());
+	REQUIRE(r.notes.size() == 1u);
+	CHECK(r.notes[0].kind == SceneMerge::NoteKind::KeptDeleted);
+	CHECK(r.notes[0].objectId == 20u);
+	CHECK(r.notes[0].objectName == "Enemy");
+
+	REQUIRE(s.DeserializeSceneFromString(r.mergedText));
+	REQUIRE(A::Objects(s).size() == 1u);
+	CHECK_NEAR(s.FindGameObjectById(20, false)->materialColor.y, 1.0f, 1e-6f);
+
+	// The other way round: theirs deletes, ours edits
+	const SceneMerge::Result back = SceneMerge::Merge(kMergeBase, theirs, ours);
+	REQUIRE(back.ok);
+	REQUIRE(back.notes.size() == 1u);
+	CHECK(back.notes[0].kind == SceneMerge::NoteKind::KeptDeleted);
+	CHECK(MergedObj(*SceneJson::Parse(back.mergedText), 10) == nullptr);
+	CHECK(MergedObj(*SceneJson::Parse(back.mergedText), 20) != nullptr);
+}
+
+TEST_CASE(SceneMerge, ChildUnderDeletedParentMovesToRoot)
+{
+	const std::string ours = MergeSide([](auto& j) { j["gameObjects"].erase(1); }); // deletes Enemy
+	const std::string theirs = MergeSide([](auto& j) { j["gameObjects"].push_back(MergeObject(50, "Gun", 20)); });
+	const SceneMerge::Result r = SceneMerge::Merge(kMergeBase, ours, theirs);
+	REQUIRE_MSG(r.ok, r.error);
+	REQUIRE(r.notes.size() == 1u);
+	CHECK(r.notes[0].kind == SceneMerge::NoteKind::MovedToRoot);
+	CHECK(r.notes[0].objectId == 50u);
+	CHECK(r.notes[0].objectName == "Gun");
+
+	REQUIRE(s.DeserializeSceneFromString(r.mergedText));
+	CHECK(s.FindGameObjectById(20, false) == nullptr);
+	const GameObject* gun = s.FindGameObjectById(50, false);
+	REQUIRE(gun != nullptr);
+	CHECK(gun->parentId == -1);
+	CHECK(gun->parentIndex < 0);
+}
+
+TEST_CASE(SceneMerge, MapchipMergesCellByCellInEveryLayer)
+{
+	const std::string ours = MergeSide([](auto& j) {
+		j["mapchip"]["data"][0][0] = 1;
+		j["mapchip"]["moreLayers"][0][1][2] = 2;
+	});
+	const std::string theirs = MergeSide([](auto& j) {
+		j["mapchip"]["data"][1][2] = 3;
+		j["mapchip"]["moreLayers"][0][0][1] = 4;
+	});
+	const SceneMerge::Result r = SceneMerge::Merge(kMergeBase, ours, theirs);
+	REQUIRE_MSG(r.ok, r.error);
+	CHECK(r.conflicts.empty());
+
+	REQUIRE(s.DeserializeSceneFromString(r.mergedText));
+	REQUIRE(A::MapLayers(s).size() == 2u);
+	CHECK(A::MapLayers(s)[0][0][0] == 1);
+	CHECK(A::MapLayers(s)[0][1][2] == 3);
+	CHECK(A::MapLayers(s)[1][1][2] == 2);
+	CHECK(A::MapLayers(s)[1][0][1] == 4);
+	CHECK(A::MapLayers(s)[0][0][1] == 0);
+
+	// The same cell painted differently is a conflict on that cell only
+	const std::string theirs2 = MergeSide([](auto& j) { j["mapchip"]["data"][0][0] = 3; j["mapchip"]["data"][0][1] = 4; });
+	const SceneMerge::Result c = SceneMerge::Merge(kMergeBase, ours, theirs2);
+	REQUIRE(c.ok);
+	REQUIRE(c.conflicts.size() == 1u);
+	CHECK(c.conflicts[0].objectId == 0u);
+	CHECK_MSG(c.conflicts[0].field == "mapchip/data/0/0", c.conflicts[0].field);
+	CHECK(c.conflicts[0].ours == "1");
+	CHECK(c.conflicts[0].theirs == "3");
+	CHECK((*SceneJson::Parse(c.mergedText))["mapchip"]["data"][0][1] == 4);
+}
+
+TEST_CASE(SceneMerge, SceneSettingsMergePerField)
+{
+	const std::string ours = MergeSide([](auto& j) { j["postProcess"]["fogEnabled"] = true; });
+	const std::string theirs = MergeSide([](auto& j) { j["postProcess"]["fogDensity"] = 2; j["sceneName"] = "Renamed"; });
+	const SceneMerge::Result r = SceneMerge::Merge(kMergeBase, ours, theirs);
+	REQUIRE_MSG(r.ok, r.error);
+	CHECK(r.conflicts.empty());
+	const SceneJson::Json merged = *SceneJson::Parse(r.mergedText);
+	CHECK(merged["postProcess"]["fogEnabled"] == true);
+	CHECK(merged["postProcess"]["fogDensity"] == 2);
+	CHECK(merged["sceneName"] == "Renamed");
+}
+
+TEST_CASE(SceneMerge, DataComponentsMergePerField)
+{
+	const std::string ours = MergeSide([](auto& j) { MergeObj(j, 20)["components"]["Animator"]["speed"] = 2; });
+	const std::string theirs = MergeSide([](auto& j) {
+		MergeObj(j, 20)["components"]["Animator"]["controller"] = "b.animator.json";
+		MergeObj(j, 20)["components"]["Trail"] = { { "width", 3 } };
+	});
+	const SceneMerge::Result r = SceneMerge::Merge(kMergeBase, ours, theirs);
+	REQUIRE_MSG(r.ok, r.error);
+	CHECK(r.conflicts.empty());
+	const SceneJson::Json merged = *SceneJson::Parse(r.mergedText);
+	const SceneJson::Json& c = MergedObj(merged, 20)->at("components");
+	CHECK(c["Animator"]["speed"] == 2);
+	CHECK(c["Animator"]["controller"] == "b.animator.json");
+	CHECK(c["Trail"]["width"] == 3);
+
+	// A conflict inside a component names the component field
+	const std::string theirs2 = MergeSide([](auto& j) { MergeObj(j, 20)["components"]["Animator"]["speed"] = 3; });
+	const SceneMerge::Result k = SceneMerge::Merge(kMergeBase, ours, theirs2);
+	REQUIRE(k.conflicts.size() == 1u);
+	CHECK_MSG(k.conflicts[0].field == "components/Animator/speed", k.conflicts[0].field);
+}
+
+TEST_CASE(SceneMerge, UnknownKeysAreCarriedOver)
+{
+	// Keys this editor does not know (from a newer editor of the same format) follow the same rules
+	const std::string ours = MergeSide([](auto& j) {
+		MergeObj(j, 20)["futureField"] = 3;
+		j["futureRoot"] = { { "a", 1 } };
+	});
+	const std::string theirs = MergeSide([](auto& j) {
+		MergeObj(j, 10)["siblingOrder"] = "m";
+		j["futureRoot"] = { { "b", 2 } };
+	});
+	const SceneMerge::Result r = SceneMerge::Merge(kMergeBase, ours, theirs);
+	REQUIRE_MSG(r.ok, r.error);
+	CHECK(r.conflicts.empty());
+	const SceneJson::Json merged = *SceneJson::Parse(r.mergedText);
+	CHECK(MergedObj(merged, 20)->at("futureField") == 3);
+	CHECK(MergedObj(merged, 10)->at("siblingOrder") == "m");
+	CHECK(merged["futureRoot"]["a"] == 1);
+	CHECK(merged["futureRoot"]["b"] == 2);
+}
+
+TEST_CASE(SceneMerge, SameIdAddedTwiceNeverDuplicates)
+{
+	// Before 2.12 ids were sequential, so both sides often add a different object with the same id
+	const std::string ours = MergeSide([](auto& j) { j["gameObjects"].push_back(MergeObject(30, "Coin")); });
+	const std::string theirs = MergeSide([](auto& j) {
+		j["gameObjects"].push_back(MergeObject(30, "Tree"));
+		j["gameObjects"].push_back(MergeObject(31, "Leaf", 30));
+	});
+	const SceneMerge::Result r = SceneMerge::Merge(kMergeBase, ours, theirs);
+	REQUIRE_MSG(r.ok, r.error);
+	CHECK(r.conflicts.empty());
+	REQUIRE(r.notes.size() == 1u);
+	CHECK(r.notes[0].kind == SceneMerge::NoteKind::IdChanged);
+	CHECK(r.notes[0].objectName == "Tree");
+	const uint32_t treeId = r.notes[0].objectId;
+	CHECK(treeId != 30u);
+
+	REQUIRE(s.DeserializeSceneFromString(r.mergedText));
+	REQUIRE(A::Objects(s).size() == 5u);
+	std::set<uint32_t> ids;
+	for (const auto& o : A::Objects(s)) ids.insert(o.id);
+	CHECK(ids.size() == 5u);
+	CHECK(s.FindGameObjectById(30, false)->name == "Coin");
+	REQUIRE(s.FindGameObjectById(treeId, false) != nullptr);
+	CHECK(s.FindGameObjectById(treeId, false)->name == "Tree");
+	CHECK(s.FindGameObjectById(31, false)->parentId == static_cast<int>(treeId)); // the leaf stays on the tree
+
+	// The very same object added on both sides is one object
+	CHECK(SceneMerge::Merge(kMergeBase, ours, ours).notes.empty());
+}
+
+TEST_CASE(SceneMerge, PrefabFilesMergeTheSameWay)
+{
+	const std::string base = R"({"prefabVersion": 1, "name": "Door", "objects": [{"id": 1, "name": "Door", "parentId": -1, "scale": [1, 1, 1], "tag": "A"}]})";
+	const SceneMerge::Result r = SceneMerge::Merge(base,
+		R"({"prefabVersion": 1, "name": "Door", "objects": [{"id": 1, "name": "Door", "parentId": -1, "scale": [2, 2, 2], "tag": "A"}]})",
+		R"({"prefabVersion": 1, "name": "Door", "objects": [{"id": 1, "name": "Door", "parentId": -1, "scale": [1, 1, 1], "tag": "B"}]})");
+	REQUIRE_MSG(r.ok, r.error);
+	CHECK(r.conflicts.empty());
+	const SceneJson::Json merged = *SceneJson::Parse(r.mergedText);
+	CHECK(merged["objects"][0]["scale"] == SceneJson::Json({ 2, 2, 2 }));
+	CHECK(merged["objects"][0]["tag"] == "B");
+}
+
+TEST_CASE(SceneMerge, MalformedOrNewerInputIsRefused)
+{
+	const std::string ok = MergeSide([](auto&) {});
+	auto refused = [&](const std::string& b, const std::string& o, const std::string& t) {
+		const SceneMerge::Result r = SceneMerge::Merge(b, o, t);
+		CHECK_MSG(!r.ok && !r.error.empty() && r.mergedText.empty(), r.error);
+	};
+	refused(kMergeBase, "{ broken", ok);
+	refused(kMergeBase, ok, "[1, 2, 3]");
+	refused("{\"gameObjects\": 5}", ok, ok);
+	refused(kMergeBase, ok, R"({"gameObjects": [{"name": "No id"}]})");
+	refused(kMergeBase, ok, R"({"gameObjects": [{"id": 3}, {"id": 3}]})");
+	refused(kMergeBase, ok, R"({"formatVersion": 2, "gameObjects": []})");
+	refused(kMergeBase, ok, R"({"prefabVersion": 99, "objects": []})");
+	refused(kMergeBase, ok, R"({"prefabVersion": 1, "objects": []})"); // a prefab is not a scene
+
+	// No common ancestor (git passes an empty base for add/add): both sides' objects are kept
+	const SceneMerge::Result fresh = SceneMerge::Merge("", R"({"gameObjects": [{"id": 1, "name": "A"}]})", R"({"gameObjects": [{"id": 2, "name": "B"}]})");
+	REQUIRE_MSG(fresh.ok, fresh.error);
+	CHECK((*SceneJson::Parse(fresh.mergedText))["gameObjects"].size() == 2u);
 }
 
 
