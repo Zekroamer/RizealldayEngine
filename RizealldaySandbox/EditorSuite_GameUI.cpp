@@ -4,6 +4,19 @@
 // Game UI saved in the scene: canvases and UI elements are scene objects with data components (UIComponents.h).
 // Layout is UILayout (pure); drawing goes through the UI renderer's canvas layer, below the immediate UI.
 
+namespace {
+	// The object itself or its nearest ancestor that has `component`; the walk ends at a Canvas
+	GameObject* SelfOrAncestorWith(EditorSuite& s, GameObject* obj, const char* component)
+	{
+		for (int depth = 0; obj && depth < 64; ++depth) { // a parent cycle in a broken file
+			if (obj->components.Has(component)) return obj;
+			if (obj->components.Has(kCanvasComponent) || obj->parentId < 0) return nullptr;
+			obj = s.FindGameObjectById(static_cast<uint32_t>(obj->parentId), false);
+		}
+		return nullptr;
+	}
+}
+
 void EditorSuite::RegisterGameUIComponents()
 {
 	RegisterDataComponent<CanvasComponent>(kCanvasComponent, "UI", {});
@@ -167,11 +180,10 @@ void EditorSuite::DrawGameUI(float viewWidth, float viewHeight)
 				const bool hovered = uiHoverId_ == obj.id || uiSelectedButtonId_ == obj.id;
 				const Vector4& color = (uiPressedId_ == obj.id && uiHoverId_ == obj.id) ? button->pressedColor : (hovered ? button->hoverColor : button->normalColor);
 				ui->DrawRect(x, y, w, h, color);
-				drawText(button->label, sizeof(button->label), button->labelSize, { 1.0f, 1.0f, 1.0f, 1.0f }, 1, r);
 			}
-			if (const UITextComponent* text = obj.components.Get<UITextComponent>(kUITextComponent)) {
-				drawText(text->text, sizeof(text->text), text->size, text->color, text->alignment, r);
-			}
+			EditorSuiteDetail::ForEachUIText(obj, [&](const char* text, size_t capacity, float size, const Vector4& color, int alignment) {
+				drawText(text, capacity, size, color, alignment, r);
+			});
 		});
 	}
 	ui->EndCanvasLayer();
@@ -181,7 +193,7 @@ GameObject* EditorSuite::FindUIElementByName(const char* name)
 {
 	if (!name || name[0] == '\0') return nullptr;
 	for (GameObject& obj : gameObjects_) {
-		if (obj.name == name && obj.components.Has(kUIRectComponent)) return &obj;
+		if (obj.name == name && obj.components.Has(kUIRectComponent) && SelfOrAncestorWith(*this, &obj, kCanvasComponent)) return &obj;
 	}
 	return nullptr;
 }
@@ -195,7 +207,9 @@ void EditorSuite::UpdateGameUIInput(const GameUIPointer& pointer)
 		return;
 	}
 	const GameObject* hit = pointer.inside ? HitTestGameUI(pointer.x, pointer.y, pointer.viewWidth, pointer.viewHeight) : nullptr;
-	uiHoverId_ = (hit && hit->components.Has(kUIButtonComponent)) ? hit->id : 0;
+	// A label or icon on a button is part of it; anything else on top (a panel) blocks the button
+	hit = hit ? SelfOrAncestorWith(*this, FindGameObjectById(hit->id, false), kUIButtonComponent) : nullptr;
+	uiHoverId_ = hit ? hit->id : 0;
 
 	std::string clicked;
 	if (pointer.down && !uiPointerWasDown_) uiPressedId_ = uiHoverId_;

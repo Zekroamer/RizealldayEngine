@@ -188,6 +188,13 @@ struct EditorSuiteTestAccess {
 	static bool MergeConflictsWindowOpen(const EditorSuite& s) { return s.showMergeConflictsWindow_; }
 	static bool ResolveMergeConflict(EditorSuite& s, size_t index, bool useTheirs) { return s.ResolveMergeConflict(index, useTheirs); }
 	static void ResolveAllMergeConflicts(EditorSuite& s, bool useTheirs) { s.ResolveAllMergeConflicts(useTheirs); }
+	static void UseRecordedPrefabIds(EditorSuite& s, const std::string& recorded, SceneJson::Json& prefab)
+	{
+		const std::string saved = s.openFileRecord_.text;
+		s.openFileRecord_.text = recorded;
+		s.UseRecordedPrefabIds(&prefab);
+		s.openFileRecord_.text = saved;
+	}
 	static PostProcessSettings& PostSettings(EditorSuite& s) { return s.postSettings_; }
 	static bool LogHas(const EditorSuite& s, const std::string& part)
 	{
@@ -11936,6 +11943,84 @@ TEST_CASE(SceneMerge, SameIdAddedTwiceNeverDuplicates)
 	CHECK(SceneMerge::Merge(kMergeBase, ours, ours).notes.empty());
 }
 
+TEST_CASE(SceneMerge, PrefabNodeAddedTwiceGetsAFreshKeyAndLinksFollow)
+{
+	// Prefab keys 0..2 (ids 1..3); both add a child with key 3 / id 4. Theirs also adds a hinge jointed to its child.
+	auto node = [](int key, const char* name, int parent) {
+		return SceneJson::Json{ { "id", key + 1 }, { "name", name }, { "parentId", parent }, { "prefabNodeKey", key } };
+	};
+	SceneJson::Json base = { { "prefabVersion", 1 }, { "name", "House" },
+		{ "objects", { node(0, "House", -1), node(1, "Wall", 1), node(2, "Roof", 1) } } };
+	SceneJson::Json ours = base, theirs = base;
+	ours["objects"].push_back(node(3, "Lamp", 1));
+	theirs["objects"].push_back(node(3, "Door", 1));
+	SceneJson::Json hinge = node(4, "Hinge", 4);
+	hinge["attachedParentId"] = 4;
+	hinge["components"] = { { "Joint", { { "connectedObjectId", 4 } } } };
+	theirs["objects"].push_back(hinge);
+	const SceneMerge::Result r = SceneMerge::Merge(base.dump(), ours.dump(), theirs.dump());
+	REQUIRE_MSG(r.ok, r.error);
+	const SceneJson::Json merged = *SceneJson::Parse(r.mergedText);
+	std::set<int> keys, ids;
+	const SceneJson::Json* door = nullptr;
+	const SceneJson::Json* hingeOut = nullptr;
+	for (const auto& o : merged["objects"]) {
+		keys.insert(o["prefabNodeKey"].get<int>());
+		ids.insert(o["id"].get<int>());
+		CHECK(o["id"].get<int>() == o["prefabNodeKey"].get<int>() + 1);
+		if (o["name"] == "Door") door = &o;
+		if (o["name"] == "Hinge") hingeOut = &o;
+	}
+	CHECK(keys.size() == 6u);
+	CHECK(ids.size() == 6u);
+	REQUIRE(door != nullptr);
+	REQUIRE(hingeOut != nullptr);
+	const int doorId = (*door)["id"].get<int>();
+	CHECK(doorId != 4);
+	CHECK((*hingeOut)["parentId"] == doorId);
+	CHECK((*hingeOut)["attachedParentId"] == doorId);
+	CHECK((*hingeOut)["components"]["Joint"]["connectedObjectId"] == doorId);
+}
+
+TEST_CASE(SceneMerge, PrefabModeNewNodeNeverReusesARecordedId)
+{
+	// An old-format prefab: its file ids are not key + 1 (the root has id 5)
+	const std::string recorded = R"({"prefabVersion": 1, "objects": [{"id": 5, "parentId": -1, "prefabNodeKey": 0}, {"id": 9, "parentId": 5, "prefabNodeKey": 1}]})";
+	SceneJson::Json prefab = *SceneJson::Parse(R"({"prefabVersion": 1, "objects": [
+		{"id": 1, "parentId": -1, "prefabNodeKey": 0},
+		{"id": 2, "parentId": 1, "prefabNodeKey": 1},
+		{"id": 5, "parentId": 2, "prefabNodeKey": 4, "components": {"Joint": {"connectedObjectId": 2}}}]})");
+	A::UseRecordedPrefabIds(s, recorded, prefab);
+	const SceneJson::Json& objects = prefab["objects"];
+	CHECK(objects[0]["id"] == 5);
+	CHECK(objects[1]["id"] == 9);
+	CHECK(objects[1]["parentId"] == 5);
+	const int added = objects[2]["id"].get<int>();
+	CHECK_MSG(added != 5 && added != 9, std::to_string(added));
+	CHECK(objects[2]["parentId"] == 9);
+	CHECK(objects[2]["components"]["Joint"]["connectedObjectId"] == 9);
+	const std::string text = prefab.dump();
+	const SceneMerge::Result r = SceneMerge::Merge(recorded, text, text);
+	CHECK_MSG(r.ok, r.error);
+}
+
+TEST_CASE(SceneMerge, NoBaseSameIdIsOneObject)
+{
+	// git add/add: no common ancestor, both sides wrote the same object with small differences
+	const SceneMerge::Result r = SceneMerge::Merge("",
+		R"({"gameObjects": [{"id": 1, "name": "A", "translation": [1, 0, 0]}, {"id": 2, "name": "B"}]})",
+		R"({"gameObjects": [{"id": 1, "name": "A", "translation": [2, 0, 0], "scale": [3, 3, 3]}, {"id": 2, "name": "B"}]})");
+	REQUIRE_MSG(r.ok, r.error);
+	CHECK(r.notes.empty());
+	REQUIRE(r.conflicts.size() == 1u);
+	CHECK(r.conflicts[0].objectId == 1u);
+	CHECK(r.conflicts[0].field == "translation");
+	const SceneJson::Json merged = *SceneJson::Parse(r.mergedText);
+	REQUIRE(merged["gameObjects"].size() == 2u);
+	CHECK(MergedObj(merged, 1)->at("translation") == SceneJson::Json({ 1, 0, 0 }));
+	CHECK(MergedObj(merged, 1)->at("scale") == SceneJson::Json({ 3, 3, 3 }));
+}
+
 TEST_CASE(SceneMerge, PrefabFilesMergeTheSameWay)
 {
 	const std::string base = R"({"prefabVersion": 1, "name": "Door", "objects": [{"id": 1, "name": "Door", "parentId": -1, "scale": [1, 1, 1], "tag": "A"}]})";
@@ -12191,6 +12276,125 @@ TEST_CASE(MergeConflicts, DecideInEditor)
 	CHECK(A::MergeConflicts(s).notes.empty());
 	s.NewScene();
 	fs::remove_all(dir, ec);
+}
+
+TEST_CASE(MergeDriver, InstallWaitsWhileGitIsBusy)
+{
+	namespace fs = std::filesystem;
+	std::string output;
+	if (EngineUpdate::RunHiddenProcess(L"git --version", {}, &output) == -1) {
+		A::Log(s, "[Tests] MergeDriver.InstallWaitsWhileGitIsBusy skipped: git is not on PATH.", 1);
+		return;
+	}
+	const fs::path root = A::TempRoot() / "MergeDriverBusyRepo";
+	std::error_code ec;
+	fs::remove_all(root, ec);
+	fs::create_directories(root / "ProjectSettings", ec);
+	fs::create_directories(root / "Assets" / "Scenes", ec);
+	std::ofstream(root / "ProjectSettings" / "project.json") << R"({"projectName": "Busy", "startupScene": "Assets/Scenes/Main.scene.json"})";
+	std::ofstream(root / "Assets" / "Scenes" / "Main.scene.json") << R"({"sceneName": "Main", "gameObjects": []})";
+	REQUIRE(EngineUpdate::RunHiddenProcess(L"git init -q", root, &output) == 0);
+	auto driver = [&] {
+		std::string value;
+		EngineUpdate::RunHiddenProcess(L"git config --local --get merge.rizescene.driver", root, &value);
+		return value;
+	};
+
+	const fs::path savedRoot = A::ProjectRoot(s);
+	const fs::path savedDirectory = A::CurrentDirectory(s);
+	A::MergeDriverInstallInTests(s) = true;
+	std::ofstream(root / ".git" / "index.lock") << "";
+	REQUIRE(s.OpenProject(root.string()));
+	CHECK_MSG(driver().empty(), driver()); // git is working: no config written
+	CHECK(!fs::exists(root / ".gitattributes"));
+
+	// git is done: the next poll installs it
+	fs::remove(root / ".git" / "index.lock", ec);
+	A::ExternalWatchInTests(s) = true;
+	A::PollOpenFile(s, 1.0f);
+	A::ExternalWatchInTests(s) = false;
+	CHECK(!driver().empty());
+	CHECK(fs::exists(root / ".gitattributes"));
+
+	A::MergeDriverInstallInTests(s) = false;
+	A::ProjectRoot(s) = savedRoot;
+	A::CurrentDirectory(s) = savedDirectory;
+	A::SyncScripts(s);
+	s.NewScene();
+	fs::remove_all(root, ec);
+}
+
+TEST_CASE(MergeDriver, LaterMergeAddsToTheReport)
+{
+	namespace fs = std::filesystem;
+	const fs::path dir = A::TempRoot() / "MergeDriverAppend";
+	std::error_code ec;
+	fs::remove_all(dir, ec);
+	fs::create_directories(dir, ec);
+	const fs::path scene = dir / "Level.scene.json";
+	const fs::path report = dir / "Level.scene.json.merge.json";
+	std::ofstream(dir / "base.json", std::ios::binary) << kMergeBase;
+	std::ofstream(scene, std::ios::binary) << MergeSide([](auto& j) {
+		MergeObj(j, 20)["translation"] = { 5, 0, 0 };
+		MergeObj(j, 20)["components"]["Animator"]["speed"] = 2;
+	});
+	std::ofstream(dir / "theirs1.json", std::ios::binary) << MergeSide([](auto& j) {
+		MergeObj(j, 20)["translation"] = { 7, 0, 0 };
+		MergeObj(j, 20)["components"]["Animator"]["speed"] = 3;
+	});
+	std::ofstream(dir / "theirs2.json", std::ios::binary) << MergeSide([](auto& j) { MergeObj(j, 20)["translation"] = { 8, 0, 0 }; });
+	std::string message;
+	REQUIRE_MSG(MergeDriver::MergeFiles(dir / "base.json", scene, dir / "theirs1.json", report, &message) == 0, message);
+	REQUIRE_MSG(MergeDriver::MergeFiles(dir / "base.json", scene, dir / "theirs2.json", report, &message) == 0, message);
+
+	// The first merge's undecided speed stays; the translation entry is the newer one
+	std::vector<SceneMerge::Conflict> conflicts;
+	std::vector<SceneMerge::Note> notes;
+	REQUIRE(SceneMerge::ReportFromJson(ReadFileText(report), conflicts, notes));
+	REQUIRE(conflicts.size() == 2u);
+	CHECK(std::count_if(conflicts.begin(), conflicts.end(), [](const auto& c) { return c.field == "components/Animator/speed" && c.theirs == "3"; }) == 1);
+	CHECK(std::count_if(conflicts.begin(), conflicts.end(), [](const auto& c) { return c.field == "translation" && c.theirs == "[8,0,0]"; }) == 1);
+	fs::remove_all(dir, ec);
+}
+
+TEST_CASE(MergeConflicts, ReportFollowsSceneRenameAndMove)
+{
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "MergeReportRename";
+	std::error_code ec;
+	fs::remove_all(root, ec);
+	fs::create_directories(root / "Assets" / "Scenes", ec);
+	const fs::path scene = root / "Assets" / "Scenes" / "Level.scene.json";
+	std::ofstream(root / "base.json", std::ios::binary) << kMergeBase;
+	std::ofstream(scene, std::ios::binary) << MergeSide([](auto& j) { MergeObj(j, 20)["translation"] = { 5, 0, 0 }; });
+	std::ofstream(root / "theirs.json", std::ios::binary) << MergeSide([](auto& j) { MergeObj(j, 20)["translation"] = { 7, 0, 0 }; });
+	std::string message;
+	REQUIRE_MSG(MergeDriver::MergeFiles(root / "base.json", scene, root / "theirs.json", scene.string() + MergeDriver::kReportSuffix, &message) == 0, message);
+	const fs::path savedRoot = A::ProjectRoot(s);
+	A::ProjectRoot(s) = root;
+	REQUIRE(s.LoadScene(scene.string()));
+	REQUIRE(A::MergeConflicts(s).conflicts.size() == 1u);
+
+	// Hierarchy > Rename Scene
+	REQUIRE(s.RenameCurrentScene("Renamed"));
+	const fs::path renamedReport = root / "Assets" / "Scenes" / "Renamed.scene.json.merge.json";
+	CHECK(fs::exists(renamedReport));
+	CHECK(!fs::exists(scene.string() + MergeDriver::kReportSuffix));
+	CHECK(fs::path(A::MergeConflicts(s).reportPath) == fs::path(A::ScenePath(s) + MergeDriver::kReportSuffix));
+
+	// Project panel move
+	REQUIRE(s.MoveAssetAndUpdateReferences("Assets/Scenes/Renamed.scene.json", "Assets/Scenes/Final.scene.json"));
+	const fs::path finalReport = root / "Assets" / "Scenes" / "Final.scene.json.merge.json";
+	CHECK(fs::exists(finalReport));
+	CHECK(!fs::exists(renamedReport));
+
+	// Deciding still updates the report where it now is
+	A::ResolveAllMergeConflicts(s, true);
+	CHECK(!fs::exists(finalReport));
+
+	A::ProjectRoot(s) = savedRoot;
+	s.NewScene();
+	fs::remove_all(root, ec);
 }
 
 TEST_CASE(MergeConflicts, GitMergeShowsConflictInEditor)
@@ -13147,16 +13351,33 @@ TEST_CASE(GameUI, ButtonClickReachesScriptsOnlyInPlay)
 	frame(600.0f, 600.0f, false, true);
 	CHECK(clicks.size() == 2);
 
+	// A Text child laid over the button (the usual layout) passes the click on to its button
+	A::Select(s, buttonId);
+	const uint32_t labelId = s.CreateUIObject(UIObjectKind::Text);
+	REQUIRE(s.FindGameObjectById(labelId, false)->parentId == static_cast<int>(buttonId));
+	SetPlacement(*s.FindGameObjectById(labelId, false)->components.Get<UIRectComponent>(kUIRectComponent), 0, 0, 1, 1, 0.5f, 0.5f, 0, 0, 0, 0);
+	CHECK(s.HitTestGameUI(150.0f, 150.0f, 1280.0f, 720.0f) == s.FindGameObjectById(labelId, false));
+	click(150.0f, 150.0f, 150.0f, 150.0f);
+	REQUIRE(clicks.size() == 3);
+	CHECK(clicks[2] == "Start");
+
 	// A panel drawn over the button takes the click; a hidden button gets none
 	A::Select(s, 0);
 	SetPlacement(*MakeTestPanel(s, { 0.0f, 0.0f, 0.0f, 1.0f }), 0, 0, 0, 0, 0, 0, 100, 100, 50, 50);
 	click(120.0f, 120.0f, 120.0f, 120.0f);
 	click(250.0f, 150.0f, 250.0f, 150.0f);
-	REQUIRE(clicks.size() == 3);
+	REQUIRE(clicks.size() == 4);
 	s.FindGameObjectById(buttonId, false)->isActive = false;
 	click(250.0f, 150.0f, 250.0f, 150.0f);
-	CHECK(clicks.size() == 3);
+	CHECK(clicks.size() == 4);
 	A::State(s) = EditorSceneState::Edit;
+
+	// A UI Rect outside any Canvas is not a UI element for scripts
+	GameObject& loose = s.CreateGameObject("Loose", GameObjectType::Empty);
+	loose.components.Add(kUIRectComponent, ComponentRegistry::Get().Find(kUIRectComponent)->create());
+	loose.components.Add(kUITextComponent, ComponentRegistry::Get().Find(kUITextComponent)->create());
+	CHECK(!api.uiSetText(api.hostContext, "Loose", "x"));
+	CHECK(api.uiSetText(api.hostContext, "Start", "Go")); // a button under the canvas still is
 }
 
 TEST_CASE(GameUI, ScriptApiChangesWhatIsDrawn)

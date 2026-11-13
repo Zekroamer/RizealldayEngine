@@ -1055,7 +1055,9 @@ bool EditorSuite::RenameCurrentScene(const std::string& newName)
 			}
 		}
 	}
+	const std::string oldScenePath = currentScenePath_;
 	currentScenePath_ = newPath.string();
+	if (oldScenePath != currentScenePath_) FollowMovedSceneReport(oldScenePath); // a move inside Assets already did it
 	if (!openFileRecord_.path.empty()) openFileRecord_.path = currentScenePath_;
 	strncpy_s(openScenePathBuf_, currentScenePath_.c_str(), sizeof(openScenePathBuf_) - 1);
 	currentSceneName_ = name;

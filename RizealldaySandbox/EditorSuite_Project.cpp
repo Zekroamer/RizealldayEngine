@@ -98,17 +98,14 @@ bool EditorSuite::DeferWhileGitBusy()
 void EditorSuite::RunProjectFileMigrations()
 {
 	projectMigrationsPending_ = false;
+	if (DeferWhileGitBusy()) return; // nothing (not even git config) while git works on the repository
 	// Projects made before 2.12 do not ignore the temporary files a crash during a save can leave behind
-	if (const std::filesystem::path gitignore = currentProjectRoot_ / ".gitignore"; !ProjectIsReadOnly() && std::filesystem::exists(gitignore) && !DeferWhileGitBusy()) {
+	if (const std::filesystem::path gitignore = currentProjectRoot_ / ".gitignore"; !ProjectIsReadOnly() && std::filesystem::exists(gitignore)) {
 		std::ifstream in(gitignore, std::ios::binary);
-		std::stringstream text;
-		text << in.rdbuf();
+		std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 		in.close();
-		std::string content = text.str();
-		if (content.find("*.tmp") == std::string::npos) {
-			if (!content.empty() && content.back() != '\n') content += '\n';
-			content += "*.tmp\n";
-			if (WriteProjectFile(gitignore, content)) LogMessage("[Project] Added *.tmp to .gitignore (files a crash during a save can leave behind).", 0);
+		if (MergeDriver::AppendMissingLines(content, { "*.tmp" }) && WriteProjectFile(gitignore, content)) {
+			LogMessage("[Project] Added *.tmp to .gitignore (files a crash during a save can leave behind).", 0);
 		}
 	}
 	InstallMergeDriver();
@@ -117,6 +114,7 @@ void EditorSuite::RunProjectFileMigrations()
 void EditorSuite::InstallMergeDriver()
 {
 	if (currentProjectRoot_.empty() || isRunningTests_ && !mergeDriverInstallInTests_) return;
+	if (DeferWhileGitBusy()) return;
 	const std::filesystem::path root = currentProjectRoot_;
 	std::string output;
 	const int inside = EngineUpdate::RunHiddenProcess(L"git rev-parse --is-inside-work-tree", root, &output);
@@ -130,7 +128,7 @@ void EditorSuite::InstallMergeDriver()
 	std::vector<std::string> changed;
 	// Shared files: a read-only project must not write them
 	auto ensureLines = [&](const char* name, const std::vector<std::string>& lines) {
-		if (ProjectIsReadOnly() || DeferWhileGitBusy()) return;
+		if (ProjectIsReadOnly()) return;
 		const std::filesystem::path file = root / name;
 		std::ifstream in(file, std::ios::binary);
 		std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());

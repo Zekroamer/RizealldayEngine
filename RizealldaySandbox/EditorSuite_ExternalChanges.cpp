@@ -101,10 +101,7 @@ bool EditorSuite::ApplyOpenFileChange()
 		LogMessage(std::format("[Scene] {} changed on disk but could not be read; the open scene stays.", path), 2);
 		return false;
 	}
-	selectedObjectIndex_ = selected.empty() ? -1 : FindGameObjectIndexById(selected.front());
-	for (size_t i = 1; i < selected.size(); ++i) {
-		if (FindGameObjectIndexById(selected[i]) >= 0) extraSelection_.push_back(selected[i]);
-	}
+	SelectIds(selected);
 	LogMessage(std::format("[Scene] {} changed on disk (a git pull?): reloaded.", path), 0);
 	return true;
 }
@@ -124,14 +121,8 @@ bool EditorSuite::MergeOpenSceneWith(const std::string& theirs)
 	if (!DeserializeSceneFromString(result.mergedText)) return false;
 	currentScenePath_ = path;
 	currentSceneName_ = name;
-	selectedObjectIndex_ = selected.empty() ? -1 : FindGameObjectIndexById(selected.front());
-	for (size_t i = 1; i < selected.size(); ++i) {
-		if (FindGameObjectIndexById(selected[i]) >= 0) extraSelection_.push_back(selected[i]);
-	}
-	isSceneDirty_ = true;
-	undoMergeAllowed_ = false;
-	PushUndoSnapshot(); // the merge is one undo step
-	undoMergeAllowed_ = false;
+	SelectIds(selected);
+	FinishMergeEdit(); // the merge is one undo step
 	openFileRecord_.text = theirs; // the open scene now holds the pulled file plus the unsaved edits
 	LogMessage(std::format("[Scene] {} changed on disk (a git pull?): merged it with your unsaved edits ({} conflict(s)). Save to keep both.",
 		path, result.conflicts.size()), 1);
@@ -141,13 +132,15 @@ bool EditorSuite::MergeOpenSceneWith(const std::string& theirs)
 
 void EditorSuite::AddMergeResult(const SceneMerge::Result& result)
 {
-	mergeConflicts_.notes.insert(mergeConflicts_.notes.end(), result.notes.begin(), result.notes.end());
 	for (const SceneMerge::Note& note : result.notes) LogMessage(std::format("[Merge] {} ({}): {}", note.objectName, note.objectId, note.message), 1);
 	if (!result.notes.empty()) showMergeConflictsWindow_ = true;
-	if (result.conflicts.empty()) return;
-	mergeConflicts_.conflicts.insert(mergeConflicts_.conflicts.end(), result.conflicts.begin(), result.conflicts.end());
-	mergeConflicts_.reportPath = currentScenePath_ + MergeDriver::kReportSuffix;
-	WriteMergeReport();
+	if (result.conflicts.empty()) {
+		mergeConflicts_.notes.insert(mergeConflicts_.notes.end(), result.notes.begin(), result.notes.end());
+		return;
+	}
+	// Added to the report on disk, which may also hold undecided entries of a merge driver run
+	const std::string reportPath = currentScenePath_ + MergeDriver::kReportSuffix;
+	if (!MergeDriver::WriteReport(reportPath, result)) LogMessage(std::format("[Merge] Could not write the merge report {}.", reportPath), 2);
 	LoadMergeReport(); // opens the window, and in Prefab Mode maps the file ids to the stage
 }
 
@@ -164,22 +157,34 @@ void EditorSuite::UseRecordedPrefabIds(void* prefabJson) const
 		int key = -1;
 		if (o.is_object() && SceneJson::Read(o, "id", id) && SceneJson::Read(o, "prefabNodeKey", key)) idByKey[key] = id;
 	}
-	std::unordered_map<uint32_t, uint32_t> newId; // instance id -> file id
+	std::unordered_set<uint32_t> recordedIds;
+	uint32_t nextId = 1;
+	for (const auto& entry : idByKey) {
+		recordedIds.insert(entry.second);
+		nextId = (std::max)(nextId, entry.second + 1);
+	}
+	for (const Json& o : *objects) {
+		uint32_t id = 0;
+		if (SceneJson::Read(o, "id", id)) nextId = (std::max)(nextId, id + 1);
+	}
+	std::unordered_map<uint32_t, uint32_t> newId; // key + 1 -> file id
 	for (const Json& o : *objects) {
 		uint32_t id = 0;
 		int key = -1;
 		SceneJson::Read(o, "id", id);
 		SceneJson::Read(o, "prefabNodeKey", key);
 		if (const auto it = idByKey.find(key); it != idByKey.end()) newId[id] = it->second;
+		else if (recordedIds.contains(id)) newId[id] = nextId++; // a new node never takes an id the file already uses
 	}
-	// shortcut: Joint connectedObjectId keeps the instance id here (InstantiatePrefabNow remaps only known ids); remap it too if joints inside prefabs get merged
 	for (Json& o : *objects) {
-		for (const char* field : { "id", "parentId", "attachedParentId" }) {
-			const auto at = o.find(field);
-			if (at == o.end() || !at->is_number_integer()) continue;
+		Json* joint = (o.contains("components") && o["components"].is_object() && o["components"].contains("Joint")) ? &o["components"]["Joint"] : nullptr;
+		for (auto [holder, field] : { std::pair{ &o, "id" }, { &o, "parentId" }, { &o, "attachedParentId" }, { joint, "connectedObjectId" } }) {
+			if (!holder || !holder->is_object()) continue;
+			const auto at = holder->find(field);
+			if (at == holder->end() || !at->is_number_integer()) continue;
 			const int64_t value = at->get<int64_t>();
 			if (value <= 0) continue;
-			if (const auto it = newId.find(static_cast<uint32_t>(value)); it != newId.end()) o[field] = it->second;
+			if (const auto it = newId.find(static_cast<uint32_t>(value)); it != newId.end()) (*holder)[field] = it->second;
 		}
 	}
 }
@@ -225,8 +230,10 @@ bool EditorSuite::AssetFileChangedOnDisk(const OpenFileRecord& record, const std
 	return opened && disk != record.text;
 }
 
-std::string EditorSuite::KeepConflictCopy(const std::filesystem::path& file, const std::string& ours)
+bool EditorSuite::KeepPulledVersion(const OpenFileRecord& record, const std::filesystem::path& file, const std::string& ours,
+	const char* logTag, const std::string& assetPath, const std::function<void()>& reload)
 {
+	if (!AssetFileChangedOnDisk(record, file)) return false;
 	// Library/ is ignored by git and the asset database, so the copy never travels or gets a .meta
 	const std::filesystem::path dir = currentProjectRoot_ / "Library" / "Conflicts";
 	std::error_code ec;
@@ -234,7 +241,10 @@ std::string EditorSuite::KeepConflictCopy(const std::filesystem::path& file, con
 	std::filesystem::path copy = dir / file.filename();
 	for (int n = 2; std::filesystem::exists(copy, ec); ++n) copy = dir / (std::to_string(n) + " " + file.filename().string());
 	std::ofstream(copy, std::ios::binary) << ours;
-	return copy.string();
+	reload();
+	LogMessage(std::format("[{}] {} changed on disk (a git pull?): loaded that version instead of overwriting it. Your edit is kept in {}",
+		logTag, assetPath, copy.string()), 1);
+	return true;
 }
 
 void EditorSuite::ReloadTimeline(const std::string& assetPath)

@@ -59,13 +59,7 @@ bool EditorSuite::SaveTimeline(const std::string& assetPath, const Timeline& tim
 	std::error_code ec;
 	std::filesystem::create_directories(file.parent_path(), ec);
 	const std::string text = timeline.ToJson();
-	if (AssetFileChangedOnDisk(timelineRecords_[assetPath], file)) {
-		const std::string kept = KeepConflictCopy(file, text);
-		ReloadTimeline(assetPath);
-		LogMessage(std::format("[Timeline] {} changed on disk (a git pull?): loaded that version instead of overwriting it. Your edit is kept in {}",
-			assetPath, kept), 1);
-		return false;
-	}
+	if (KeepPulledVersion(timelineRecords_[assetPath], file, text, "Timeline", assetPath, [&] { ReloadTimeline(assetPath); })) return false;
 	if (!WriteProjectFile(file, text)) {
 		LogMessage(std::format("[Timeline] Could not write {}", assetPath), 2);
 		return false;

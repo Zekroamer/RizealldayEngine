@@ -637,6 +637,7 @@ public:
 	/// Shift+click range selection between the current primary selection and toIndex (inclusive).
 	void SelectObjectRange(int toIndex);
 	std::vector<uint32_t> SelectedIds() const; // primary first
+	void SelectIds(const std::vector<uint32_t>& ids); // the reverse of SelectedIds; ids that no longer exist are skipped
 	bool IsSelected(uint32_t id) const;
 	/// The gizmo moved the primary by delta (local units): the other selected objects follow, except children of selected objects
 	void MoveExtraSelection(const Vector3& delta);
@@ -712,8 +713,10 @@ public:
 	void RecordAssetFile(OpenFileRecord& record, const std::filesystem::path& file, const std::string* writtenText = nullptr);
 	/// True when `file` is the recorded one and its text on disk differs from what was last read or written
 	bool AssetFileChangedOnDisk(const OpenFileRecord& record, const std::filesystem::path& file) const;
-	/// Writes `ours` to <project>/Library/Conflicts and returns that path
-	std::string KeepConflictCopy(const std::filesystem::path& file, const std::string& ours);
+	/// Save guard: when the file changed on disk, writes `ours` to <project>/Library/Conflicts, calls `reload` (the pulled
+	/// version), logs it under `logTag` and returns true; the caller must then not write the file
+	bool KeepPulledVersion(const OpenFileRecord& record, const std::filesystem::path& file, const std::string& ours,
+		const char* logTag, const std::string& assetPath, const std::function<void()>& reload);
 	void ApplyAssetFileChanges();
 	void ReloadTimeline(const std::string& assetPath);
 	// Git activity guard: while <project>/.git/index.lock exists no .meta, project-file migration or reload happens
@@ -1439,6 +1442,10 @@ private:
 	void DrawMergeConflictsWindow();
 	bool ApplyMergeValue(const SceneMerge::Conflict& conflict, bool useTheirs);
 	void WriteMergeReport(); ///< remaining entries back to the file; deleted when no conflict is left
+	/// The open scene file moved from `oldScenePath` to currentScenePath_: its report follows it
+	void FollowMovedSceneReport(const std::string& oldScenePath);
+	/// After a merge decision or a merge into the open scene: hierarchy, scripts, dirty flag and one undo step
+	void FinishMergeEdit();
 	/// Where new object ids start after a scene is opened: random and clear of the scene's ids (see the .cpp)
 	static uint32_t PickObjectIdBase(const std::unordered_set<uint32_t>& used);
 	bool randomObjectIdsInTests_ = false; // self-tests keep sequential ids unless a test asks

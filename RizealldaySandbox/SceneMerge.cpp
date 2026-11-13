@@ -169,18 +169,43 @@ Result Merge(const std::string& base, const std::string& ours, const std::string
 	std::map<int64_t, uint32_t> remap;
 	for (const uint32_t id : t.order) {
 		const Json* mine = Find(o, id);
-		if (mine && !Find(b, id) && *mine != *Find(t, id)) remap[id] = ++maxId;
+		// Without a base (git add/add) the same id on both sides is the same object, merged field by field
+		if (mine && !b.empty && !Find(b, id) && *mine != *Find(t, id)) remap[id] = 0;
 	}
 	if (!remap.empty()) {
+		// Prefab file ids are prefabNodeKey + 1: a renumbered prefab node also gets a fresh key
+		int64_t maxKey = -1;
+		for (const Side* s : { &b, &o, &t }) {
+			for (const auto& entry : s->byId) {
+				const Json* k = Get(entry.second, "prefabNodeKey");
+				if (k && k->is_number_integer()) maxKey = (std::max)(maxKey, k->get<int64_t>());
+			}
+		}
 		for (Json& obj : t.root[ListKey(t.root)]) {
-			if (auto it = remap.find(*IdOf(obj)); it != remap.end()) {
-				obj["id"] = it->second;
-				r.notes.push_back({ NoteKind::IdChanged, it->second, NameOf(&obj),
-					std::format("'{}' was added on both sides with id {}: theirs now has id {}.", NameOf(&obj), it->first, it->second) });
+			const auto it = remap.find(*IdOf(obj));
+			if (it == remap.end()) continue;
+			if (o.prefab && obj.contains("prefabNodeKey")) {
+				maxKey = (std::max)(maxKey + 1, static_cast<int64_t>(maxId));
+				obj["prefabNodeKey"] = maxKey;
+				maxId = static_cast<uint32_t>(maxKey + 1);
+			} else {
+				++maxId;
 			}
-			if (Json* p = obj.contains("parentId") ? &obj["parentId"] : nullptr; p && p->is_number_integer()) {
-				if (auto it = remap.find(p->get<int64_t>()); it != remap.end()) *p = it->second;
-			}
+			it->second = maxId;
+			obj["id"] = maxId;
+			r.notes.push_back({ NoteKind::IdChanged, maxId, NameOf(&obj),
+				std::format("'{}' was added on both sides with id {}: theirs now has id {}.", NameOf(&obj), it->first, maxId) });
+		}
+		auto relink = [&](Json& holder, const char* key) {
+			Json* p = holder.contains(key) ? &holder[key] : nullptr;
+			if (!p || !p->is_number_integer()) return;
+			if (const auto it = remap.find(p->get<int64_t>()); it != remap.end()) *p = it->second;
+		};
+		for (Json& obj : t.root[ListKey(t.root)]) {
+			relink(obj, "parentId");
+			relink(obj, "attachedParentId");
+			Json* c = obj.contains("components") ? &obj["components"] : nullptr;
+			if (c && c->is_object() && c->contains("Joint") && (*c)["Joint"].is_object()) relink((*c)["Joint"], "connectedObjectId");
 		}
 		Index("Theirs", t, r.error);
 	}

@@ -115,6 +115,28 @@ void EditorSuite::WriteMergeReport()
 	out << SceneMerge::ReportToJson(remaining);
 }
 
+void EditorSuite::FollowMovedSceneReport(const std::string& oldScenePath)
+{
+	if (oldScenePath.empty()) return; // an untitled scene has no report
+	const std::string oldReport = oldScenePath + MergeDriver::kReportSuffix;
+	const std::string newReport = currentScenePath_ + MergeDriver::kReportSuffix;
+	std::error_code ec;
+	if (std::filesystem::exists(oldReport, ec) && !std::filesystem::exists(newReport, ec)) std::filesystem::rename(oldReport, newReport, ec);
+	if (!mergeConflicts_.reportPath.empty()) mergeConflicts_.reportPath = newReport;
+}
+
+void EditorSuite::FinishMergeEdit()
+{
+	RebuildHierarchyLinks();
+	UpdateWorldMatrices();
+	EnsureEditModeScriptInstances();
+	RefreshAllScriptObjectViews();
+	isSceneDirty_ = true;
+	undoMergeAllowed_ = false;
+	PushUndoSnapshot(); // one undo step
+	undoMergeAllowed_ = false;
+}
+
 bool EditorSuite::ApplyMergeValue(const SceneMerge::Conflict& conflict, bool useTheirs)
 {
 	const std::string& text = useTheirs ? conflict.theirs : conflict.ours;
@@ -167,14 +189,7 @@ bool EditorSuite::ResolveMergeConflict(size_t index, bool useTheirs)
 		LogMessage(std::format("[Merge] '{}' of {} could not be applied (the object or field is gone); the open value stays.",
 			conflict.field, conflict.objectId ? conflict.objectName : std::string("the scene")), 1);
 	}
-	RebuildHierarchyLinks();
-	UpdateWorldMatrices();
-	EnsureEditModeScriptInstances();
-	RefreshAllScriptObjectViews();
-	isSceneDirty_ = true;
-	undoMergeAllowed_ = false;
-	PushUndoSnapshot();
-	undoMergeAllowed_ = false;
+	FinishMergeEdit();
 	mergeConflicts_.conflicts.erase(mergeConflicts_.conflicts.begin() + index);
 	WriteMergeReport();
 	return true;
@@ -190,14 +205,7 @@ void EditorSuite::ResolveAllMergeConflicts(bool useTheirs)
 				conflict.field, conflict.objectId ? conflict.objectName : std::string("the scene")), 1);
 		}
 	}
-	RebuildHierarchyLinks();
-	UpdateWorldMatrices();
-	EnsureEditModeScriptInstances();
-	RefreshAllScriptObjectViews();
-	isSceneDirty_ = true;
-	undoMergeAllowed_ = false;
-	PushUndoSnapshot(); // all of them are one undo step
-	undoMergeAllowed_ = false;
+	FinishMergeEdit(); // all of them are one undo step
 	mergeConflicts_.conflicts.clear();
 	WriteMergeReport();
 }

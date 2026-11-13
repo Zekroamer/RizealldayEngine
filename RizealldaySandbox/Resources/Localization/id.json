@@ -1251,5 +1251,5 @@
 	"Kept (deleted on one side)": "Dipertahankan (dihapus di satu sisi)",
 	"Moved to the root": "Dipindah ke root",
 	"New id": "ID baru",
-	"%d merge conflict(s) undecided (Window > Merge Conflicts)": "%d konflik merge belum diputuskan (Window > Merge Conflicts)"
+	"merge conflict(s) undecided (Window > Merge Conflicts)": "konflik merge belum diputuskan (Window > Merge Conflicts)"
 }

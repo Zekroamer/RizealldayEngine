@@ -1,5 +1,6 @@
 ﻿#include "MergeDriver.h"
 #include "SceneMerge.h"
+#include "EditorSuiteInternal.h" // EditorSuiteDetail::WriteFileAtomic
 #include <windows.h>
 #include <shellapi.h>
 #include <format>
@@ -20,25 +21,7 @@ namespace {
 	}
 
 	// Through a temporary file, so a failed write never leaves half a scene behind
-	bool WriteAll(const fs::path& file, const std::string& text)
-	{
-		const fs::path tmp = file.string() + ".tmp";
-		{
-			std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-			if (!out) return false;
-			out.write(text.data(), static_cast<std::streamsize>(text.size()));
-			out.close();
-			if (!out) {
-				std::error_code ec;
-				fs::remove(tmp, ec);
-				return false;
-			}
-		}
-		std::error_code ec;
-		fs::rename(tmp, file, ec);
-		if (ec) fs::remove(tmp, ec);
-		return !ec;
-	}
+	bool WriteAll(const fs::path& file, const std::string& text) { return EditorSuiteDetail::WriteFileAtomic(file, text); }
 
 	// git shows the driver's stderr; a GUI-subsystem exe still gets the inherited handle
 	void PrintToGit(const std::string& line)
@@ -98,13 +81,26 @@ int MergeFiles(const fs::path& base, const fs::path& ours, const fs::path& their
 		if (message) *message = "merged cleanly.";
 		return 0;
 	}
-	const bool reportWritten = WriteAll(reportFile, SceneMerge::ReportToJson(result));
+	const bool reportWritten = WriteReport(reportFile, result);
 	if (message) {
 		*message = std::format("merged; {} conflict(s) kept your value, {} note(s). {} Decide them in the editor: Window > Merge Conflicts.",
 			result.conflicts.size(), result.notes.size(),
 			reportWritten ? "Report: " + reportFile.string() + "." : "The report could not be written (" + reportFile.string() + ").");
 	}
 	return 0;
+}
+
+bool WriteReport(const fs::path& reportFile, const SceneMerge::Result& result)
+{
+	SceneMerge::Result all;
+	if (const std::optional<std::string> old = ReadAll(reportFile)) SceneMerge::ReportFromJson(*old, all.conflicts, all.notes); // unreadable: replaced
+	std::erase_if(all.conflicts, [&](const SceneMerge::Conflict& c) {
+		return std::any_of(result.conflicts.begin(), result.conflicts.end(),
+			[&](const SceneMerge::Conflict& n) { return n.objectId == c.objectId && n.field == c.field; });
+	});
+	all.conflicts.insert(all.conflicts.end(), result.conflicts.begin(), result.conflicts.end());
+	all.notes.insert(all.notes.end(), result.notes.begin(), result.notes.end());
+	return WriteAll(reportFile, SceneMerge::ReportToJson(all));
 }
 
 std::string DriverCommand(const fs::path& exe)

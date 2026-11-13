@@ -42,6 +42,19 @@ std::vector<std::string> ModelCompanionFiles(const std::filesystem::path& model)
 /// or a locked file never leaves a half-written file. False (old file untouched) when any step fails.
 bool WriteFileAtomic(const std::filesystem::path& file, std::string_view text);
 
+/// Game view and UI Editor: draw(text, capacity, referenceSize, color, alignment) for each text a UI element shows,
+/// a button's label (white, centred) first, then its UI Text
+template <typename DrawFn>
+void ForEachUIText(const GameObject& obj, DrawFn&& draw)
+{
+	if (const UIButtonComponent* button = obj.components.Get<UIButtonComponent>(kUIButtonComponent)) {
+		draw(button->label, sizeof(button->label), button->labelSize, Vector4{ 1.0f, 1.0f, 1.0f, 1.0f }, 1);
+	}
+	if (const UITextComponent* text = obj.components.Get<UITextComponent>(kUITextComponent)) {
+		draw(text->text, sizeof(text->text), text->size, text->color, text->alignment);
+	}
+}
+
 /// "Assets/Scenes/Level1.scene.json" -> "Level1" (stem() alone would give "Level1.scene")
 inline std::string SceneNameFromPath(const std::filesystem::path& path)
 {

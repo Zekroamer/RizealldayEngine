@@ -338,13 +338,7 @@ bool EditorSuite::SaveMapchipTileSet()
 	std::error_code ec;
 	std::filesystem::create_directories(file.parent_path(), ec);
 	const std::string text = mapTileSet_.ToJson();
-	if (AssetFileChangedOnDisk(tileSetRecord_, file)) {
-		const std::string kept = KeepConflictCopy(file, text);
-		UseMapchipTileSet(mapTileSetPath_);
-		LogMessage(std::format("[Mapchip] {} changed on disk (a git pull?): loaded that version instead of overwriting it. Your edit is kept in {}",
-			mapTileSetPath_, kept), 1);
-		return false;
-	}
+	if (KeepPulledVersion(tileSetRecord_, file, text, "Mapchip", mapTileSetPath_, [&] { UseMapchipTileSet(mapTileSetPath_); })) return false;
 	if (!WriteProjectFile(file, text)) {
 		LogMessage(std::format("[Mapchip] Cannot write tile set {}", file.string()), 2);
 		return false;

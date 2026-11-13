@@ -199,18 +199,15 @@ void EditorSuite::DrawUIEditorWindow()
 			dl->AddRectFilled(r0, r1, toU32(bar->backgroundColor));
 			dl->AddRectFilled(r0, ImVec2(r.x + r.width * std::clamp(bar->value, 0.0f, 1.0f), r1.y), toU32(bar->fillColor));
 		}
-		const auto drawText = [&](const char* s, float refSize, const Vector4& color, int alignment) {
+		if (const UIButtonComponent* button = obj->components.Get<UIButtonComponent>(kUIButtonComponent)) dl->AddRectFilled(r0, r1, toU32(button->normalColor));
+		EditorSuiteDetail::ForEachUIText(*obj, [&](const char* s, size_t capacity, float refSize, const Vector4& color, int alignment) {
 			const float size = refSize * scale;
-			const ImVec2 extent = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0.0f, s);
+			const char* end = s + strnlen_s(s, capacity);
+			const ImVec2 extent = ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0.0f, s, end);
 			const ImVec2 at(r.x + (r.width - extent.x) * 0.5f * static_cast<float>(std::clamp(alignment, 0, 2)), r.y + (r.height - extent.y) * 0.5f);
 			const ImVec4 clip(r0.x, r0.y, r1.x, r1.y);
-			dl->AddText(ImGui::GetFont(), size, at, toU32(color), s, nullptr, 0.0f, &clip);
-		};
-		if (const UIButtonComponent* button = obj->components.Get<UIButtonComponent>(kUIButtonComponent)) {
-			dl->AddRectFilled(r0, r1, toU32(button->normalColor));
-			drawText(button->label, button->labelSize, { 1.0f, 1.0f, 1.0f, 1.0f }, 1);
-		}
-		if (const UITextComponent* text = obj->components.Get<UITextComponent>(kUITextComponent)) drawText(text->text, text->size, text->color, text->alignment);
+			dl->AddText(ImGui::GetFont(), size, at, toU32(color), s, end, 0.0f, &clip);
+		});
 		dl->AddRect(r0, r1, IM_COL32(255, 255, 255, 60));
 	}
 	dl->PopClipRect();

@@ -305,7 +305,8 @@ void EditorSuite::DrawMainMenuBar()
 		if (!mergeConflicts_.conflicts.empty()) {
 			// Pushing a half-decided merge ships values nobody chose: keep it in sight until every conflict is decided
 			ImGui::Separator();
-			ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), Tr("%d merge conflict(s) undecided (Window > Merge Conflicts)"), static_cast<int>(mergeConflicts_.conflicts.size()));
+			ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "%d %s", static_cast<int>(mergeConflicts_.conflicts.size()),
+				Tr("merge conflict(s) undecided (Window > Merge Conflicts)")); // a translation is never a format string
 			if (ImGui::IsItemClicked()) showMergeConflictsWindow_ = true;
 		}
 		if (ProjectIsReadOnly()) {

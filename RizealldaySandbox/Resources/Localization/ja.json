@@ -1251,5 +1251,5 @@
 	"Kept (deleted on one side)": "保持（片方で削除）",
 	"Moved to the root": "ルートに移動",
 	"New id": "新しい ID",
-	"%d merge conflict(s) undecided (Window > Merge Conflicts)": "未決定のマージ競合 %d 件（Window > Merge Conflicts）"
+	"merge conflict(s) undecided (Window > Merge Conflicts)": "件のマージ競合が未決定（Window > Merge Conflicts）"
 }

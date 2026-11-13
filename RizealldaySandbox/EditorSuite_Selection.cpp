@@ -62,6 +62,15 @@ std::vector<uint32_t> EditorSuite::SelectedIds() const
 	return ids;
 }
 
+void EditorSuite::SelectIds(const std::vector<uint32_t>& ids)
+{
+	selectedObjectIndex_ = ids.empty() ? -1 : FindGameObjectIndexById(ids.front());
+	extraSelection_.clear();
+	for (size_t i = 1; i < ids.size(); ++i) {
+		if (FindGameObjectIndexById(ids[i]) >= 0) extraSelection_.push_back(ids[i]);
+	}
+}
+
 bool EditorSuite::IsSelected(uint32_t id) const
 {
 	const std::vector<uint32_t> ids = SelectedIds();
