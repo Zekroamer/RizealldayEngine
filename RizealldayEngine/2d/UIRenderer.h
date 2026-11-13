@@ -35,7 +35,8 @@ public:
 	void DrawRect(float x, float y, float w, float h, const Vector4& color);
 	void DrawImage(uint32_t textureHandle, float x, float y, float w, float h, const Vector4& color);
 	/// UTF-8 text (Japanese included); '\n' starts a new line. `size` is the line height in canvas pixels.
-	void DrawString(const char* text, float x, float y, float size, const Vector4& color, Align align = Align::Left);
+	/// `widthScale` multiplies glyph widths (the canvas layer undoes the canvas stretch with it so text keeps its shape).
+	void DrawString(const char* text, float x, float y, float size, const Vector4& color, Align align = Align::Left, float widthScale = 1.0f);
 	/// Width of the widest line of `text` at `size`
 	float MeasureText(const char* text, float size) const;
 

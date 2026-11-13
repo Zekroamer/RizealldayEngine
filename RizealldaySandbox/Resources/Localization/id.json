@@ -1,5 +1,13 @@
 ﻿{
 	"_language": "Bahasa Indonesia",
+	"UI Text": "Teks UI",
+	"UI Progress Bar": "Bilah Progres UI",
+	"Progress Bar": "Bilah Progres",
+	"Text": "Teks",
+	"Alignment": "Perataan",
+	"Fill Color": "Warna Isi",
+	"Background Color": "Warna Latar",
+	"0 Left, 1 Centre, 2 Right": "0 Kiri, 1 Tengah, 2 Kanan",
 	"Panel": "Panel",
 	"Image": "Gambar",
 	"UI Rect": "Persegi UI",

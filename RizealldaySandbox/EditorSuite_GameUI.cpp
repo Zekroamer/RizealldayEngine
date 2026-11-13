@@ -21,6 +21,18 @@ void EditorSuite::RegisterGameUIComponents()
 	RegisterDataComponent<UIImageComponent>(kUIImageComponent, "UI", {
 		RIZE_FIELD(UIImageComponent, texture, ComponentFieldType::Asset, 0.0f, 0.0f),
 		RIZE_FIELD(UIImageComponent, color, ComponentFieldType::Color, 0.0f, 0.0f) });
+	ComponentInfo& text = RegisterDataComponent<UITextComponent>(kUITextComponent, "UI", {
+		RIZE_FIELD(UITextComponent, text, ComponentFieldType::Text, 0.0f, 0.0f),
+		RIZE_FIELD(UITextComponent, size, ComponentFieldType::Float, 1.0f, 512.0f),
+		RIZE_FIELD(UITextComponent, color, ComponentFieldType::Color, 0.0f, 0.0f),
+		RIZE_FIELD(UITextComponent, alignment, ComponentFieldType::Int, 0.0f, 2.0f) });
+	for (ComponentField& field : text.fields) {
+		if (std::string_view(field.name) == "alignment") field.tooltip = "0 Left, 1 Centre, 2 Right";
+	}
+	RegisterDataComponent<UIProgressBarComponent>(kUIProgressBarComponent, "UI", {
+		RIZE_FIELD(UIProgressBarComponent, value, ComponentFieldType::Float, 0.0f, 1.0f),
+		RIZE_FIELD(UIProgressBarComponent, fillColor, ComponentFieldType::Color, 0.0f, 0.0f),
+		RIZE_FIELD(UIProgressBarComponent, backgroundColor, ComponentFieldType::Color, 0.0f, 0.0f) });
 }
 
 uint32_t EditorSuite::CreateUIObject(UIObjectKind kind)
@@ -40,10 +52,23 @@ uint32_t EditorSuite::CreateUIObject(UIObjectKind kind)
 		if (parentId == -1) parentId = static_cast<int>(CreateUIObject(UIObjectKind::Canvas));
 	}
 
-	static const char* const kNames[] = { "Canvas", "Panel", "Image" };
+	static const char* const kNames[] = { "Canvas", "Panel", "Image", "Text", "Progress Bar" };
 	GameObject& obj = CreateGameObject(kNames[static_cast<int>(kind)], kind == UIObjectKind::Canvas ? GameObjectType::Canvas : GameObjectType::Empty);
 	if (kind == UIObjectKind::Canvas) {
 		addData(obj, kCanvasComponent);
+	} else if (kind == UIObjectKind::Text) {
+		addData(obj, kUIRectComponent);
+		addData(obj, kUITextComponent);
+		auto* rect = obj.components.Get<UIRectComponent>(kUIRectComponent);
+		rect->width = 300.0f;
+		rect->height = 60.0f;
+		strncpy_s(obj.components.Get<UITextComponent>(kUITextComponent)->text, "New Text", _TRUNCATE);
+	} else if (kind == UIObjectKind::ProgressBar) {
+		addData(obj, kUIRectComponent);
+		addData(obj, kUIProgressBarComponent);
+		auto* rect = obj.components.Get<UIRectComponent>(kUIRectComponent);
+		rect->width = 300.0f;
+		rect->height = 30.0f;
 	} else {
 		addData(obj, kUIRectComponent);
 		addData(obj, kUIImageComponent);
@@ -79,13 +104,28 @@ void EditorSuite::DrawGameUI(float viewWidth, float viewHeight)
 				const UIRectComponent* placement = child->components.Get<UIRectComponent>(kUIRectComponent);
 				if (!placement) continue; // not a UI element: neither it nor its children are drawn
 				const UILayout::Rect r = UILayout::Place(parentRect, *placement, scale);
+				const float x = r.x * toCanvasX, y = r.y * toCanvasY, w = r.width * toCanvasX, h = r.height * toCanvasY;
 				if (const UIImageComponent* image = child->components.Get<UIImageComponent>(kUIImageComponent)) {
-					const float x = r.x * toCanvasX, y = r.y * toCanvasY, w = r.width * toCanvasX, h = r.height * toCanvasY;
 					if (image->texture[0] != '\0') {
 						ui->DrawImage(TextureManager::GetInstance()->LoadTexture(ResolveAssetPath(image->texture)), x, y, w, h, image->color);
 					} else {
 						ui->DrawRect(x, y, w, h, image->color);
 					}
+				}
+				if (const UIProgressBarComponent* bar = child->components.Get<UIProgressBarComponent>(kUIProgressBarComponent)) {
+					const float fill = std::clamp(bar->value, 0.0f, 1.0f);
+					ui->DrawRect(x, y, w, h, bar->backgroundColor);
+					if (fill > 0.0f) ui->DrawRect(x, y, w * fill, h, bar->fillColor);
+				}
+				if (const UITextComponent* text = child->components.Get<UITextComponent>(kUITextComponent)) {
+					// Centred vertically; the glyphs keep their shape on any aspect ratio (widthScale)
+					const float lineHeight = text->size * scale;
+					const int lines = 1 + static_cast<int>(std::count(text->text, text->text + strnlen_s(text->text, sizeof(text->text)), '\n'));
+					const float top = r.y + (r.height - lineHeight * static_cast<float>(lines)) * 0.5f;
+					const int alignment = std::clamp(text->alignment, 0, 2);
+					const float anchorX = x + w * 0.5f * static_cast<float>(alignment);
+					ui->DrawString(text->text, anchorX, top * toCanvasY, lineHeight * toCanvasY, text->color,
+						static_cast<UIRenderer::Align>(alignment), toCanvasX / toCanvasY);
 				}
 				self(self, *child, r, depth + 1);
 			}

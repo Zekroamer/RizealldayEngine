@@ -1,5 +1,13 @@
 ﻿{
 	"_language": "日本語",
+	"UI Text": "UI テキスト",
+	"UI Progress Bar": "UI プログレスバー",
+	"Progress Bar": "プログレスバー",
+	"Text": "テキスト",
+	"Alignment": "揃え",
+	"Fill Color": "塗りの色",
+	"Background Color": "背景色",
+	"0 Left, 1 Centre, 2 Right": "0 左揃え、1 中央揃え、2 右揃え",
 	"Panel": "パネル",
 	"Image": "画像",
 	"UI Rect": "UI 矩形",

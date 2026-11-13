@@ -880,6 +880,8 @@ void EditorSuite::DrawHierarchyCreationMenu()
 		if (ImGui::MenuItem(TrId("Canvas"))) CreateUIObject(UIObjectKind::Canvas);
 		if (ImGui::MenuItem(TrId("Panel"))) CreateUIObject(UIObjectKind::Panel);
 		if (ImGui::MenuItem(TrId("Image"))) CreateUIObject(UIObjectKind::Image);
+		if (ImGui::MenuItem(TrId("Text"))) CreateUIObject(UIObjectKind::Text);
+		if (ImGui::MenuItem(TrId("Progress Bar"))) CreateUIObject(UIObjectKind::ProgressBar);
 		ImGui::EndMenu();
 	}
 

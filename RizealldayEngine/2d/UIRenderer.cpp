@@ -469,10 +469,11 @@ float UIRenderer::MeasureText(const char* text, float size) const
 	return widest;
 }
 
-void UIRenderer::DrawString(const char* text, float x, float y, float size, const Vector4& color, Align align)
+void UIRenderer::DrawString(const char* text, float x, float y, float size, const Vector4& color, Align align, float widthScale)
 {
 	if (!text || pages_.empty() || size <= 0.0f) return;
 	const float scale = size / fontLineHeight_;
+	const float scaleX = scale * widthScale;
 	float lineY = y;
 	const char* lineStart = text;
 	for (const char* p = text;; ++p) {
@@ -480,7 +481,7 @@ void UIRenderer::DrawString(const char* text, float x, float y, float size, cons
 
 		float penX = x;
 		if (align != Align::Left) {
-			const float lineW = MeasureLine(lineStart, p, scale);
+			const float lineW = MeasureLine(lineStart, p, scaleX);
 			penX -= (align == Align::Center) ? lineW * 0.5f : lineW;
 		}
 		for (const char* q = lineStart; q < p;) {
@@ -488,9 +489,9 @@ void UIRenderer::DrawString(const char* text, float x, float y, float size, cons
 			if (c == '\r') continue;
 			const Glyph& g = GetGlyph(c);
 			if (c != ' ' && c != 0x3000) { // ASCII and ideographic spaces draw nothing
-				PushQuad(kFontPageTag | g.page, penX, lineY, g.width * scale, size, g.u0, g.v0, g.u1, g.v1, color);
+				PushQuad(kFontPageTag | g.page, penX, lineY, g.width * scaleX, size, g.u0, g.v0, g.u1, g.v1, color);
 			}
-			penX += g.advance * scale;
+			penX += g.advance * scaleX;
 		}
 
 		if (*p == '\0') break;

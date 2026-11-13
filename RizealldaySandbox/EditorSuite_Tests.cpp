@@ -12475,6 +12475,128 @@ TEST_CASE(GameUI, SceneAndPrefabKeepEveryField)
 	checkImage(s.FindGameObjectById(hud->childrenIds[0], false), "Assets/UI/ok_button.png");
 }
 
+namespace {
+	/// A black panel over the whole view, so UI drawn on top reads as bright cells
+	void MakeBlackBackdrop(EditorSuite& s)
+	{
+		A::Select(s, 0);
+		SetPlacement(*MakeTestPanel(s, { 0.0f, 0.0f, 0.0f, 1.0f }), 0, 0, 1, 1, 0.5f, 0.5f, 0, 0, 0, 0);
+		A::Select(s, 0); // the next element goes under the canvas, not the panel
+	}
+}
+
+TEST_CASE(GameUI, TextDrawsInsideItsRectangleWithItsAlignment)
+{
+	UIRenderer::GetInstance()->Clear();
+	A::RecordGameViewRect(s, 1920.0f, 1080.0f);
+	MakeBlackBackdrop(s);
+	const uint32_t id = s.CreateUIObject(UIObjectKind::Text);
+	GameObject* obj = s.FindGameObjectById(id, false);
+	REQUIRE(obj != nullptr);
+	UITextComponent* text = obj->components.Get<UITextComponent>(kUITextComponent);
+	REQUIRE(text != nullptr);
+	// Full width, reference rows 80..160 = signature row 1 in a 16:9 view
+	SetPlacement(*obj->components.Get<UIRectComponent>(kUIRectComponent), 0, 0, 1, 0, 0.5f, 0, 0, 80, 0, 80);
+	strncpy_s(text->text, "MMM", _TRUNCATE);
+	text->size = 80.0f;
+	text->color = { 1.0f, 1.0f, 1.0f, 1.0f };
+	const auto bright = [](const std::vector<float>& sig, int col, int row) { return SignatureCell(sig, col, row, 0) > 30.0f; };
+
+	text->alignment = 0;
+	const std::vector<float> left = CaptureGameViewSignature(s);
+	CHECK(bright(left, 0, 1) && bright(left, 1, 1));
+	CHECK(!bright(left, 8, 1) && !bright(left, 15, 1));
+	CHECK(!bright(left, 0, 0) && !bright(left, 0, 2)); // inside its rectangle vertically
+
+	text->alignment = 1;
+	const std::vector<float> centre = CaptureGameViewSignature(s);
+	CHECK(bright(centre, 7, 1) && bright(centre, 8, 1));
+	CHECK(!bright(centre, 0, 1) && !bright(centre, 15, 1));
+
+	text->alignment = 2;
+	const std::vector<float> right = CaptureGameViewSignature(s);
+	CHECK(bright(right, 15, 1));
+	CHECK(!bright(right, 0, 1) && !bright(right, 8, 1));
+
+	// Japanese draws with a real glyph
+	strncpy_s(text->text, "体力", _TRUNCATE);
+	text->alignment = 1;
+	const std::vector<float> japanese = CaptureGameViewSignature(s);
+	CHECK(bright(japanese, 7, 1) || bright(japanese, 8, 1));
+	CHECK(UIRenderer::GetInstance()->HasGlyph(0x4F53)); // 体
+	A::RecordGameViewRect(s, 0.0f, 0.0f);
+}
+
+TEST_CASE(GameUI, ProgressBarFillFollowsItsValue)
+{
+	UIRenderer::GetInstance()->Clear();
+	A::RecordGameViewRect(s, 1920.0f, 1080.0f);
+	MakeBlackBackdrop(s);
+	const uint32_t id = s.CreateUIObject(UIObjectKind::ProgressBar);
+	GameObject* obj = s.FindGameObjectById(id, false);
+	REQUIRE(obj != nullptr);
+	UIProgressBarComponent* bar = obj->components.Get<UIProgressBarComponent>(kUIProgressBarComponent);
+	REQUIRE(bar != nullptr);
+	// Full width, reference rows 320..400 = signature row 4
+	SetPlacement(*obj->components.Get<UIRectComponent>(kUIRectComponent), 0, 0, 1, 0, 0.5f, 0, 0, 320, 0, 80);
+	bar->fillColor = { 1.0f, 0.0f, 0.0f, 1.0f };
+	bar->backgroundColor = { 0.0f, 0.0f, 1.0f, 1.0f };
+	const auto red = [](const std::vector<float>& sig, int col) { return SignatureCell(sig, col, 4, 0) > 250.0f && SignatureCell(sig, col, 4, 2) < 5.0f; };
+	const auto blue = [](const std::vector<float>& sig, int col) { return SignatureCell(sig, col, 4, 2) > 250.0f && SignatureCell(sig, col, 4, 0) < 5.0f; };
+
+	bar->value = 0.25f; // 4 of 16 cells
+	const std::vector<float> quarter = CaptureGameViewSignature(s);
+	CHECK(red(quarter, 0) && red(quarter, 3));
+	CHECK(blue(quarter, 4) && blue(quarter, 15));
+	CHECK(SignatureCell(quarter, 0, 3, 0) < 5.0f && SignatureCell(quarter, 0, 5, 2) < 5.0f); // only its own row
+
+	bar->value = 0.75f;
+	const std::vector<float> most = CaptureGameViewSignature(s);
+	CHECK(red(most, 11) && blue(most, 12));
+
+	bar->value = 2.0f; // clamped
+	CHECK(red(CaptureGameViewSignature(s), 15));
+	bar->value = -1.0f;
+	CHECK(blue(CaptureGameViewSignature(s), 0));
+	A::RecordGameViewRect(s, 0.0f, 0.0f);
+}
+
+TEST_CASE(GameUI, SceneKeepsTextAndProgressBar)
+{
+	A::Select(s, 0);
+	const uint32_t textId = s.CreateUIObject(UIObjectKind::Text);
+	A::Select(s, 0);
+	const uint32_t barId = s.CreateUIObject(UIObjectKind::ProgressBar);
+	UITextComponent* text = s.FindGameObjectById(textId, false)->components.Get<UITextComponent>(kUITextComponent);
+	UIProgressBarComponent* bar = s.FindGameObjectById(barId, false)->components.Get<UIProgressBarComponent>(kUIProgressBarComponent);
+	REQUIRE(text != nullptr && bar != nullptr);
+	CHECK(s.FindGameObjectById(textId, false)->components.Has(kUIRectComponent));
+	CHECK(!s.FindGameObjectById(textId, false)->components.Has(kUIImageComponent));
+	strncpy_s(text->text, "体力 HP\nScore", _TRUNCATE);
+	text->size = 48.5f;
+	text->color = { 0.1f, 0.2f, 0.3f, 0.4f };
+	text->alignment = 2;
+	bar->value = 0.375f;
+	bar->fillColor = { 0.5f, 0.25f, 0.125f, 1.0f };
+	bar->backgroundColor = { 0.0f, 0.5f, 1.0f, 0.5f };
+
+	const std::string saved = s.SerializeSceneToString();
+	s.NewScene();
+	REQUIRE(s.DeserializeSceneFromString(saved));
+	const GameObject* textObj = s.FindGameObjectById(textId, false);
+	const GameObject* barObj = s.FindGameObjectById(barId, false);
+	REQUIRE(textObj != nullptr && barObj != nullptr);
+	const UITextComponent* t = textObj->components.Get<UITextComponent>(kUITextComponent);
+	const UIProgressBarComponent* b = barObj->components.Get<UIProgressBarComponent>(kUIProgressBarComponent);
+	REQUIRE(t != nullptr && b != nullptr);
+	CHECK(std::string(t->text) == "体力 HP\nScore");
+	CHECK(t->size == 48.5f && t->alignment == 2);
+	CHECK(t->color.x == 0.1f && t->color.y == 0.2f && t->color.z == 0.3f && t->color.w == 0.4f);
+	CHECK(b->value == 0.375f);
+	CHECK(b->fillColor.x == 0.5f && b->fillColor.y == 0.25f && b->fillColor.z == 0.125f && b->fillColor.w == 1.0f);
+	CHECK(b->backgroundColor.x == 0.0f && b->backgroundColor.y == 0.5f && b->backgroundColor.z == 1.0f && b->backgroundColor.w == 0.5f);
+}
+
 int EditorSuite::RunSelfTests(const std::string& filter)
 {
 	namespace fs = std::filesystem;
