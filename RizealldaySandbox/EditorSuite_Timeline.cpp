@@ -40,8 +40,10 @@ std::shared_ptr<Timeline> EditorSuite::GetTimeline(const std::string& assetPath)
 	if (in) {
 		std::stringstream text;
 		text << in.rdbuf();
+		const std::string read = text.str();
+		RecordAssetFile(timelineRecords_[assetPath], currentProjectRoot_ / std::filesystem::path(assetPath), &read);
 		auto timeline = std::make_shared<Timeline>();
-		if (Timeline::FromJson(text.str(), *timeline)) {
+		if (Timeline::FromJson(read, *timeline)) {
 			loaded = timeline;
 		} else {
 			LogMessage(std::format("[Timeline] Could not read {}", assetPath), 2);
@@ -56,10 +58,19 @@ bool EditorSuite::SaveTimeline(const std::string& assetPath, const Timeline& tim
 	const std::filesystem::path file = currentProjectRoot_ / std::filesystem::path(assetPath);
 	std::error_code ec;
 	std::filesystem::create_directories(file.parent_path(), ec);
-	if (!WriteProjectFile(file, timeline.ToJson())) {
+	const std::string text = timeline.ToJson();
+	if (AssetFileChangedOnDisk(timelineRecords_[assetPath], file)) {
+		const std::string kept = KeepConflictCopy(file, text);
+		ReloadTimeline(assetPath);
+		LogMessage(std::format("[Timeline] {} changed on disk (a git pull?): loaded that version instead of overwriting it. Your edit is kept in {}",
+			assetPath, kept), 1);
+		return false;
+	}
+	if (!WriteProjectFile(file, text)) {
 		LogMessage(std::format("[Timeline] Could not write {}", assetPath), 2);
 		return false;
 	}
+	RecordAssetFile(timelineRecords_[assetPath], file, &text);
 	auto& cached = timelines_[assetPath];
 	if (!cached) cached = std::make_shared<Timeline>();
 	if (cached.get() != &timeline) *cached = timeline;

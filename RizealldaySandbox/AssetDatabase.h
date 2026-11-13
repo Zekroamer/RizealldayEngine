@@ -51,6 +51,8 @@ public:
 	/// GUIDs of every registered asset, in no particular order
 	std::vector<std::string> AllGuids() const;
 	static bool IsMetaFile(const std::filesystem::path& path);
+	/// True while git works in the project (<project>/.git/index.lock exists): writing files then can make git abort
+	static bool GitIsBusy(const std::filesystem::path& projectRoot);
 	static bool IsValidGuid(const std::string& guid);
 
 private:

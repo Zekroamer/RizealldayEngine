@@ -670,6 +670,23 @@ public:
 	/// Prefab Mode: maps the instance ids in `prefab` (a prefab file being written) to the recorded file's ids by prefabNodeKey
 	void UseRecordedPrefabIds(void* prefabJson) const; // SceneJson::Json*
 	void ReloadPrefabModeInstance();
+	// Tile sets and Timelines save every finished edit, so a pulled file simply reloads; a save that finds the file changed
+	// since it was read loads the pulled version and keeps the edit in Library/Conflicts instead of overwriting it
+	OpenFileRecord tileSetRecord_;
+	std::unordered_map<std::string, OpenFileRecord> timelineRecords_; // by asset path
+	void RecordAssetFile(OpenFileRecord& record, const std::filesystem::path& file, const std::string* writtenText = nullptr);
+	/// True when `file` is the recorded one and its text on disk differs from what was last read or written
+	bool AssetFileChangedOnDisk(const OpenFileRecord& record, const std::filesystem::path& file) const;
+	/// Writes `ours` to <project>/Library/Conflicts and returns that path
+	std::string KeepConflictCopy(const std::filesystem::path& file, const std::string& ours);
+	void ApplyAssetFileChanges();
+	void ReloadTimeline(const std::string& assetPath);
+	// Git activity guard: while <project>/.git/index.lock exists no .meta, project-file migration or reload happens
+	bool gitWasBusy_ = false;
+	bool projectMigrationsPending_ = false;
+	/// True (and the migration is retried once git is done) while git works in the project
+	bool DeferWhileGitBusy();
+	void RunProjectFileMigrations();
 	void AddMergeResult(const SceneMerge::Result& result); ///< conflicts into the report + Merge Conflicts window
 	PrefabModeState prefabMode_;
 	bool HasPrefab(const std::string& prefabName);

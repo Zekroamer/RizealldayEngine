@@ -32,7 +32,21 @@ void EditorSuite::PollOpenFileChanges(float deltaTime)
 	externalWatchTimer_ += deltaTime;
 	if (externalWatchTimer_ < 0.25f) return;
 	externalWatchTimer_ = 0.0f;
+	// git writes several files during a pull: nothing is read (or .meta written) until it is done
+	if (AssetDatabase::GitIsBusy(currentProjectRoot_)) {
+		gitWasBusy_ = true;
+		return;
+	}
+	if (gitWasBusy_) {
+		gitWasBusy_ = false;
+		AssetDb().Refresh(); // .meta files for the assets the pull brought
+	}
+	if (projectMigrationsPending_) {
+		RunProjectFileMigrations();
+		EnsureProjectScriptsProps();
+	}
 	ApplyOpenFileChange();
+	ApplyAssetFileChanges();
 }
 
 bool EditorSuite::ApplyOpenFileChange()
@@ -193,4 +207,69 @@ void EditorSuite::ReloadPrefabModeInstance()
 	if (selectedObjectIndex_ < 0) selectedObjectIndex_ = FindGameObjectIndexById(prefabMode_.rootId);
 	ResetUndoHistory();
 	isSceneDirty_ = false;
+}
+
+void EditorSuite::RecordAssetFile(OpenFileRecord& record, const std::filesystem::path& file, const std::string* writtenText)
+{
+	record.path = file.string();
+	record.text = writtenText ? *writtenText : ReadWholeFile(record.path);
+	std::error_code ec;
+	record.time = std::filesystem::last_write_time(file, ec);
+}
+
+bool EditorSuite::AssetFileChangedOnDisk(const OpenFileRecord& record, const std::filesystem::path& file) const
+{
+	if (record.path.empty() || record.path != file.string()) return false; // never read from here (a new or moved file)
+	bool opened = false;
+	const std::string disk = ReadWholeFile(record.path, &opened);
+	return opened && disk != record.text;
+}
+
+std::string EditorSuite::KeepConflictCopy(const std::filesystem::path& file, const std::string& ours)
+{
+	// Library/ is ignored by git and the asset database, so the copy never travels or gets a .meta
+	const std::filesystem::path dir = currentProjectRoot_ / "Library" / "Conflicts";
+	std::error_code ec;
+	std::filesystem::create_directories(dir, ec);
+	std::filesystem::path copy = dir / file.filename();
+	for (int n = 2; std::filesystem::exists(copy, ec); ++n) copy = dir / (std::to_string(n) + " " + file.filename().string());
+	std::ofstream(copy, std::ios::binary) << ours;
+	return copy.string();
+}
+
+void EditorSuite::ReloadTimeline(const std::string& assetPath)
+{
+	const std::filesystem::path file = currentProjectRoot_ / std::filesystem::path(assetPath);
+	const std::string text = ReadWholeFile(file.string());
+	RecordAssetFile(timelineRecords_[assetPath], file, &text);
+	Timeline loaded;
+	if (!Timeline::FromJson(text, loaded)) {
+		LogMessage(std::format("[Timeline] Could not read {}", assetPath), 2);
+		return;
+	}
+	auto& cached = timelines_[assetPath];
+	if (cached) *cached = loaded; // the same object: an open Timeline window keeps editing what is shown
+	else cached = std::make_shared<Timeline>(loaded);
+}
+
+void EditorSuite::ApplyAssetFileChanges()
+{
+	// Both save every finished edit, so what the editor holds is what was last written: a changed file just reloads
+	auto changed = [](OpenFileRecord& record) {
+		std::error_code ec;
+		const std::filesystem::file_time_type time = std::filesystem::last_write_time(record.path, ec);
+		if (record.path.empty() || ec || time == record.time) return false;
+		record.time = time;
+		bool opened = false;
+		return ReadWholeFile(record.path, &opened) != record.text && opened;
+	};
+	if (!mapTileSetPath_.empty() && changed(tileSetRecord_)) {
+		UseMapchipTileSet(mapTileSetPath_);
+		LogMessage(std::format("[Mapchip] {} changed on disk (a git pull?): reloaded.", mapTileSetPath_), 0);
+	}
+	for (auto& [assetPath, record] : timelineRecords_) {
+		if (!timelines_.contains(assetPath) || !changed(record)) continue;
+		ReloadTimeline(assetPath);
+		LogMessage(std::format("[Timeline] {} changed on disk (a git pull?): reloaded.", assetPath), 0);
+	}
 }

@@ -12474,6 +12474,124 @@ TEST_CASE(PullWhileOpen, PrefabModeReloadsAndSaveMerges)
 	s.NewScene();
 }
 
+namespace {
+// What a git pull does to an asset: new text and a newer time
+void WriteAsPull(const std::filesystem::path& file, const std::string& text)
+{
+	std::ofstream(file, std::ios::binary | std::ios::trunc) << text;
+	std::filesystem::last_write_time(file, std::filesystem::last_write_time(file) + std::chrono::seconds(2));
+}
+}
+
+TEST_CASE(PullWhileOpen, TileSetAndTimelineFollowThePull)
+{
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "PullWhileOpenAssets";
+	std::error_code ec;
+	fs::remove_all(root, ec);
+	fs::create_directories(root / "Assets", ec);
+	const fs::path savedRoot = A::ProjectRoot(s);
+	A::ProjectRoot(s) = root;
+	s.NewScene();
+
+	const fs::path setFile = root / "Assets" / "Levels" / "Game.tileset.json";
+	REQUIRE(A::CreateTileSet(s, "Assets/Levels/Game.tileset.json"));
+	MapchipTileSet pulledSet = A::TileSet(s);
+	REQUIRE(pulledSet.Add("Lava") != nullptr);
+	WriteAsPull(setFile, pulledSet.ToJson());
+
+	const std::string asset = "Assets/Timelines/Intro.timeline.json";
+	Timeline timeline;
+	timeline.duration = 2.0f;
+	REQUIRE(A::SaveTimelineAsset(s, asset, timeline));
+	const std::shared_ptr<Timeline> shown = s.GetTimeline(asset);
+	REQUIRE(shown != nullptr);
+	CHECK(shown->duration == 2.0f);
+	Timeline pulledTimeline = timeline;
+	pulledTimeline.duration = 5.0f;
+	pulledTimeline.events = { { 1.0f, "pulled" } };
+	WriteAsPull(root / asset, pulledTimeline.ToJson());
+
+	A::ExternalWatchInTests(s) = true;
+	A::PollOpenFile(s, 1.0f);
+	A::ExternalWatchInTests(s) = false;
+	const auto& kinds = A::TileSet(s).kinds;
+	CHECK(std::any_of(kinds.begin(), kinds.end(), [](const MapchipTileKind& k) { return k.name == "Lava"; }));
+	CHECK(s.GetTimeline(asset) == shown); // the same object: an open Timeline window keeps working on it
+	CHECK(shown->duration == 5.0f);
+	CHECK(shown->events.size() == 1u);
+	CHECK(A::LogHas(s, "Game.tileset.json changed on disk"));
+	CHECK(A::LogHas(s, "Intro.timeline.json changed on disk"));
+
+	// An edit saved before a poll saw the pull never overwrites the pulled file: that one is loaded, the edit is kept in Library/Conflicts
+	A::TileSet(s).Find(1)->name = "My Wall";
+	MapchipTileSet theirSet = pulledSet;
+	theirSet.Find(1)->name = "Their Wall";
+	WriteAsPull(setFile, theirSet.ToJson());
+	CHECK(!A::SaveTileSet(s));
+	CHECK(ReadFileText(setFile) == theirSet.ToJson());
+	CHECK(A::TileSet(s).Find(1)->name == "Their Wall");
+	CHECK(ReadFileText(root / "Library" / "Conflicts" / "Game.tileset.json").find("My Wall") != std::string::npos);
+
+	shown->duration = 9.0f;
+	Timeline theirTimeline = pulledTimeline;
+	theirTimeline.duration = 7.0f;
+	WriteAsPull(root / asset, theirTimeline.ToJson());
+	CHECK(!A::SaveTimelineAsset(s, asset, *shown));
+	CHECK(shown->duration == 7.0f);
+	Timeline kept;
+	REQUIRE(Timeline::FromJson(ReadFileText(root / "Library" / "Conflicts" / "Intro.timeline.json"), kept));
+	CHECK(kept.duration == 9.0f);
+
+	// Saving again after that writes normally
+	shown->duration = 8.0f;
+	CHECK(A::SaveTimelineAsset(s, asset, *shown));
+
+	A::ProjectRoot(s) = savedRoot;
+	s.NewScene();
+	fs::remove_all(root, ec);
+}
+
+TEST_CASE(PullWhileOpen, GitAtWorkPostponesMetaAndReloads)
+{
+	namespace fs = std::filesystem;
+	const fs::path root = A::TempRoot() / "PullWhileOpenGit";
+	std::error_code ec;
+	fs::remove_all(root, ec);
+	fs::create_directories(root / ".git", ec);
+	const fs::path savedRoot = A::ProjectRoot(s);
+	A::ProjectRoot(s) = root;
+	const fs::path scene = root / "Assets" / "Scenes" / "Level.scene.json";
+	const auto [crate, barrel] = OpenPullScene(s, scene);
+	(void)barrel;
+
+	// git is in the middle of a pull: it writes the files, the editor keeps out of the way
+	const fs::path lock = root / ".git" / "index.lock";
+	std::ofstream(lock) << "";
+	const fs::path texture = root / "Assets" / "Textures" / "New.png";
+	fs::create_directories(texture.parent_path(), ec);
+	std::ofstream(texture, std::ios::binary) << "png";
+	ReplaceOnDisk(scene, [&](auto& j) { AddPulledObject(j, crate); });
+
+	A::ExternalWatchInTests(s) = true;
+	A::PollOpenFile(s, 1.0f);
+	s.AssetDb().Refresh();
+	CHECK(s.AssetDb().GuidForPath("Assets/Textures/New.png").empty());
+	CHECK(!fs::exists(texture.string() + ".meta"));
+	CHECK(s.FindGameObjectByName("Pulled", false) == nullptr);
+
+	// git is done: the next poll catches up
+	fs::remove(lock, ec);
+	A::PollOpenFile(s, 1.0f);
+	A::ExternalWatchInTests(s) = false;
+	CHECK(fs::exists(texture.string() + ".meta"));
+	CHECK(s.FindGameObjectByName("Pulled", false) != nullptr);
+
+	A::ProjectRoot(s) = savedRoot;
+	s.NewScene();
+	fs::remove_all(root, ec);
+}
+
 
 // ===========================================================================
 // Runner
