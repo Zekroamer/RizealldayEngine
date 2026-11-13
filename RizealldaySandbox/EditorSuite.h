@@ -1344,6 +1344,10 @@ private:
 	/// project, written through a temporary file so a crash or a full disk never leaves half a file for git
 	bool WriteProjectFile(const std::filesystem::path& file, std::string_view data);
 	std::filesystem::path readOnlyRefusedFile_;
+	/// On project open in a git working tree: .gitattributes + .gitignore lines and the local git config of the scene merge driver
+	void InstallMergeDriver();
+	bool mergeDriverInstallInTests_ = false; // self-tests must never touch the git config of the repository they run in
+	bool gitMissingLogged_ = false;
 	/// Where new object ids start after a scene is opened: random and clear of the scene's ids (see the .cpp)
 	static uint32_t PickObjectIdBase(const std::unordered_set<uint32_t>& used);
 	bool randomObjectIdsInTests_ = false; // self-tests keep sequential ids unless a test asks

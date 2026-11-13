@@ -1,10 +1,16 @@
 ﻿#include "EditorApp.h"
 #include "EngineUpdate.h"
+#include "MergeDriver.h"
 #include <Windows.h>
 #include <filesystem>
 #include <memory>
 
 int WINAPI WinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPSTR, _In_ int) {
+	// git runs `<exe> --merge-driver %O %A %B %P` during a merge: no window, no GPU, paths relative to the repository root
+	if (MergeDriver::IsMergeDriverLaunch()) {
+		return MergeDriver::RunMergeDriverMode();
+	}
+
 	// Help > Install Engine Update... starts the new exe in this mode; it never opens a window
 	if (EngineUpdate::IsApplyUpdateLaunch()) {
 		return EngineUpdate::RunApplyUpdateMode();

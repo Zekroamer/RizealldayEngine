@@ -123,6 +123,9 @@
     <ClCompile Include="EditorSuite_Shaders.cpp">
       <Filter>editor</Filter>
     </ClCompile>
+    <ClCompile Include="MergeDriver.cpp">
+      <Filter>editor</Filter>
+    </ClCompile>
     <ClCompile Include="SceneMerge.cpp">
       <Filter>editor</Filter>
     </ClCompile>
@@ -183,6 +186,9 @@
       <Filter>editor</Filter>
     </ClInclude>
     <ClInclude Include="EngineUpdate.h">
+      <Filter>editor</Filter>
+    </ClInclude>
+    <ClInclude Include="MergeDriver.h">
       <Filter>editor</Filter>
     </ClInclude>
     <ClInclude Include="SceneMerge.h">
