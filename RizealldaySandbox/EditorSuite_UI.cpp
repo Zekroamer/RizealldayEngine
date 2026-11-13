@@ -76,6 +76,7 @@ void EditorSuite::DrawEditorUI(float deltaTime)
 	DrawAutoSaveRestoreModal();
 	if (showInputActionsWindow_) DrawInputActionsWindow();
 	if (showMergeConflictsWindow_) DrawMergeConflictsWindow();
+	if (showUIEditorWindow_) DrawUIEditorWindow();
 #endif
 }
 
@@ -240,6 +241,9 @@ void EditorSuite::DrawMainMenuBar()
 			}
 			if (ImGui::MenuItem(TrId("Timeline"), nullptr, showTimelineWindow_)) {
 				showTimelineWindow_ = !showTimelineWindow_;
+			}
+			if (ImGui::MenuItem(TrId("UI Editor"), nullptr, showUIEditorWindow_)) {
+				showUIEditorWindow_ = !showUIEditorWindow_;
 			}
 			if (ImGui::MenuItem(TrId("Tile Set Editor"), nullptr, showTileSetWindow_)) {
 				showTileSetWindow_ = !showTileSetWindow_;

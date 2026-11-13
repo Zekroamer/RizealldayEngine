@@ -7,7 +7,7 @@
 void EditorSuite::RegisterGameUIComponents()
 {
 	RegisterDataComponent<CanvasComponent>(kCanvasComponent, "UI", {});
-	RegisterDataComponent<UIRectComponent>(kUIRectComponent, "UI", {
+	ComponentInfo& rect = RegisterDataComponent<UIRectComponent>(kUIRectComponent, "UI", {
 		RIZE_FIELD(UIRectComponent, anchorMinX, ComponentFieldType::Float, 0.0f, 1.0f),
 		RIZE_FIELD(UIRectComponent, anchorMinY, ComponentFieldType::Float, 0.0f, 1.0f),
 		RIZE_FIELD(UIRectComponent, anchorMaxX, ComponentFieldType::Float, 0.0f, 1.0f),
@@ -18,6 +18,7 @@ void EditorSuite::RegisterGameUIComponents()
 		RIZE_FIELD(UIRectComponent, offsetY, ComponentFieldType::Float, 0.0f, 0.0f),
 		RIZE_FIELD(UIRectComponent, width, ComponentFieldType::Float, 0.0f, 0.0f),
 		RIZE_FIELD(UIRectComponent, height, ComponentFieldType::Float, 0.0f, 0.0f) });
+	rect.drawExtra = [](EditorSuite& s, GameObject& o, ComponentData&) { DrawUIRectAnchorPresets(s, o); }; // EditorSuite_UIEditor.cpp
 	RegisterDataComponent<UIImageComponent>(kUIImageComponent, "UI", {
 		RIZE_FIELD(UIImageComponent, texture, ComponentFieldType::Asset, 0.0f, 0.0f),
 		RIZE_FIELD(UIImageComponent, color, ComponentFieldType::Color, 0.0f, 0.0f) });

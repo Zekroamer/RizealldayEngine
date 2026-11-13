@@ -144,6 +144,12 @@
     <ClCompile Include="UILayout.cpp">
       <Filter>editor</Filter>
     </ClCompile>
+    <ClCompile Include="UIEditing.cpp">
+      <Filter>editor</Filter>
+    </ClCompile>
+    <ClCompile Include="EditorSuite_UIEditor.cpp">
+      <Filter>editor</Filter>
+    </ClCompile>
     <ClCompile Include="EditorSuite_Import.cpp">
       <Filter>editor</Filter>
     </ClCompile>
@@ -207,6 +213,9 @@
       <Filter>editor</Filter>
     </ClInclude>
     <ClInclude Include="UILayout.h">
+      <Filter>editor</Filter>
+    </ClInclude>
+    <ClInclude Include="UIEditing.h">
       <Filter>editor</Filter>
     </ClInclude>
     <ClInclude Include="UIComponents.h">

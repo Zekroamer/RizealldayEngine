@@ -15,6 +15,7 @@
 #include "Timeline.h"
 #include "Terrain.h"
 #include "MapchipTileSet.h"
+#include "UILayout.h"
 #include "3d/Camera.h"
 #include "3d/ShadowMap.h"
 #include "3d/Skybox.h"
@@ -395,6 +396,25 @@ public:
 	uint32_t CreateUIObject(UIObjectKind kind);
 	/// Fills the UI renderer's canvas layer with the scene's canvases for a view of this size (pixels)
 	void DrawGameUI(float viewWidth, float viewHeight);
+	// UI Editor (EditorSuite_UIEditor.cpp). canvasRect = where the canvas is shown, in the caller's pixels.
+	/// The canvas the UI Editor shows: the selection's canvas, else the one shown last, else the scene's first. 0 = none.
+	uint32_t UIEditorCanvasId();
+	/// The element's rectangle (and its parent's); false when it is not a UI element under a canvas
+	bool UIElementRect(uint32_t id, const UILayout::Rect& canvasRect, UILayout::Rect& rect, UILayout::Rect* parentRect = nullptr);
+	/// The canvas's elements in drawing order (later = on top) with their rectangles
+	std::vector<std::pair<uint32_t, UILayout::Rect>> UIEditorElementRects(uint32_t canvasId, const UILayout::Rect& canvasRect);
+	/// Drag and resize (UIEditing::Edge flags) by a pixel delta. No undo step: call PushUndoSnapshot when the drag ends.
+	bool MoveUIElement(uint32_t id, float dx, float dy, const UILayout::Rect& canvasRect);
+	bool ResizeUIElement(uint32_t id, int edges, float dx, float dy, const UILayout::Rect& canvasRect);
+	/// Inspector preset grid (UIEditing::ApplyAnchorPreset) on the UI Editor's aspect; one undo step
+	bool ApplyUIAnchorPreset(uint32_t id, int column, int row);
+	static void DrawUIRectAnchorPresets(EditorSuite& suite, GameObject& obj);
+	int uiEditorAspect_ = 0; // UIEditing::Aspect
+	uint32_t uiEditorCanvasId_ = 0;
+	bool showUIEditorWindow_ = false;
+	uint32_t uiEditorDragId_ = 0;
+	int uiEditorDragEdges_ = -1; // -1 = no drag, 0 = move, else UIEditing::Edge flags
+	void DrawUIEditorWindow();
 	/// During Play: advances every Timeline component and applies its tracks and events
 	void UpdateTimelines(float deltaTime);
 	std::shared_ptr<Timeline> GetTimeline(const std::string& assetPath);

@@ -472,6 +472,7 @@ void EditorSuite::Initialize(
 				}
 				if (const std::string window = argValue("--window "); window == "animator") showAnimatorWindow_ = true;
 				else if (window == "timeline") showTimelineWindow_ = true;
+				else if (window == "ui") showUIEditorWindow_ = true;
 				else if (window == "effect") showEffectEditor_ = true;
 				else if (window == "material") {
 					showMaterialGraph_ = true;

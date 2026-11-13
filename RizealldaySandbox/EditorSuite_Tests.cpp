@@ -5,6 +5,7 @@
 #ifdef USE_IMGUI
 
 #include "EditorSuiteInternal.h"
+#include "UIEditing.h"
 #include "PhysicsComponents.h"
 #include "render/LightClusters.h"
 #include "render/GpuParticles.h"
@@ -12760,6 +12761,8 @@ TEST_CASE(GameUI, ImmediateUiDrawsOnTopOfTheCanvas)
 TEST_CASE(GameUI, SceneAndPrefabKeepEveryField)
 {
 	const std::filesystem::path root = A::TempRoot() / "GameUIProject";
+	std::error_code ec;
+	std::filesystem::remove_all(root, ec); // leftovers of an earlier run break the asset moves below
 	A::ProjectRoot(s) = root;
 	REQUIRE(PlaceTestTexture(root, "Assets/Textures/button.png"));
 	s.AssetDb().Refresh();
@@ -12931,6 +12934,135 @@ TEST_CASE(GameUI, SceneKeepsTextAndProgressBar)
 	CHECK(b->value == 0.375f);
 	CHECK(b->fillColor.x == 0.5f && b->fillColor.y == 0.25f && b->fillColor.z == 0.125f && b->fillColor.w == 1.0f);
 	CHECK(b->backgroundColor.x == 0.0f && b->backgroundColor.y == 0.5f && b->backgroundColor.z == 1.0f && b->backgroundColor.w == 0.5f);
+}
+
+// ---------------------------------------------------------------------------
+// UI Editor window: the editing functions behind it (no clicks)
+// ---------------------------------------------------------------------------
+
+TEST_CASE(GameUI, EditorAspectSetsTheCanvasSize)
+{
+	const auto check = [&](UIEditing::Aspect aspect, float w, float h) {
+		const UILayout::Rect r = UIEditing::CanvasRect(aspect);
+		CHECK_MSG(r.x == 0.0f && r.y == 0.0f && std::abs(r.width - w) < 0.01f && std::abs(r.height - h) < 0.01f,
+			std::format("got {}x{}, expected {}x{}", r.width, r.height, w, h));
+	};
+	check(UIEditing::Aspect::Wide16x9, 1280.0f, 720.0f);
+	check(UIEditing::Aspect::Wide16x10, 1152.0f, 720.0f);
+	check(UIEditing::Aspect::Standard4x3, 960.0f, 720.0f);
+
+	// A right-anchored element follows the canvas edge when the aspect changes
+	const uint32_t id = s.CreateUIObject(UIObjectKind::Image);
+	SetPlacement(*s.FindGameObjectById(id, false)->components.Get<UIRectComponent>(kUIRectComponent), 1, 0, 1, 0, 1, 0, -20, 20, 100, 50);
+	UILayout::Rect r;
+	REQUIRE(s.UIElementRect(id, UIEditing::CanvasRect(UIEditing::Aspect::Standard4x3), r));
+	CHECK_NEAR(r.x, 840.0f, 0.01f);
+	REQUIRE(s.UIElementRect(id, UIEditing::CanvasRect(UIEditing::Aspect::Wide16x10), r));
+	CHECK_NEAR(r.x, 1032.0f, 0.01f);
+}
+
+TEST_CASE(GameUI, EditorMovesAndResizesWithUndo)
+{
+	A::Select(s, 0);
+	const uint32_t panel = s.CreateUIObject(UIObjectKind::Panel); // centred, 400x300
+	const uint32_t canvasId = static_cast<uint32_t>(s.FindGameObjectById(panel, false)->parentId);
+	CHECK(s.UIEditorCanvasId() == canvasId);
+	UILayout::Rect unused;
+	CHECK(!s.UIElementRect(canvasId, { 0, 0, 1280, 720 }, unused)); // the canvas is not an element
+	s.ResetUndoHistory();
+	const auto placement = [&]() { return *s.FindGameObjectById(panel, false)->components.Get<UIRectComponent>(kUIRectComponent); };
+	const auto checkRect = [&](float x, float y, float w, float h) {
+		UILayout::Rect r;
+		REQUIRE(s.UIElementRect(panel, { 100, 50, 1920, 1080 }, r));
+		CHECK_MSG(std::abs(r.x - x) < 0.01f && std::abs(r.y - y) < 0.01f && std::abs(r.width - w) < 0.01f && std::abs(r.height - h) < 0.01f,
+			std::format("got ({}, {}, {}, {}), expected ({}, {}, {}, {})", r.x, r.y, r.width, r.height, x, y, w, h));
+	};
+	// Shown at 1920x1080 from (100, 50): scale 1.5, so the panel is 600x450 around (1060, 590)
+	const UILayout::Rect view{ 100, 50, 1920, 1080 };
+	checkRect(760, 365, 600, 450);
+
+	// Drag by (30, -15) screen pixels = (20, -10) reference pixels
+	REQUIRE(s.MoveUIElement(panel, 30.0f, -15.0f, view));
+	checkRect(790, 350, 600, 450);
+	CHECK(placement().offsetX == 20.0f && placement().offsetY == -10.0f);
+	s.PushUndoSnapshot(); // the window does this when the drag ends
+	CHECK(A::UndoCount(s) == 1);
+
+	// Bottom-right handle by (60, 30): the top-left corner stays
+	A::MergeAllowed(s) = false;
+	REQUIRE(s.ResizeUIElement(panel, UIEditing::kRight | UIEditing::kBottom, 60.0f, 30.0f, view));
+	checkRect(790, 350, 660, 480);
+	CHECK(placement().width == 440.0f && placement().height == 320.0f);
+	s.PushUndoSnapshot();
+
+	// Left handle past the right edge: the width stops at 0, the right edge stays
+	A::MergeAllowed(s) = false;
+	REQUIRE(s.ResizeUIElement(panel, UIEditing::kLeft, 1000.0f, 0.0f, view));
+	checkRect(1450, 350, 0, 480);
+	s.PushUndoSnapshot();
+	CHECK(A::UndoCount(s) == 3);
+
+	s.Undo();
+	checkRect(790, 350, 660, 480);
+	s.Undo();
+	checkRect(790, 350, 600, 450);
+	s.Undo();
+	checkRect(760, 365, 600, 450);
+	CHECK(placement().offsetX == 0.0f && placement().offsetY == 0.0f);
+	s.Redo();
+	checkRect(790, 350, 600, 450);
+}
+
+TEST_CASE(GameUI, AnchorPresetKeepsTheVisibleRectangle)
+{
+	A::Select(s, 0);
+	const uint32_t canvasId = s.CreateUIObject(UIObjectKind::Canvas);
+	A::Select(s, canvasId);
+	const uint32_t image = s.CreateUIObject(UIObjectKind::Image); // centred, 100x100 = (590, 310) on 1280x720
+	s.uiEditorAspect_ = static_cast<int>(UIEditing::Aspect::Wide16x9);
+	s.ResetUndoHistory();
+	const auto r = [&]() { return *s.FindGameObjectById(image, false)->components.Get<UIRectComponent>(kUIRectComponent); };
+	const auto checkScreen = [&]() {
+		UILayout::Rect rect;
+		REQUIRE(s.UIElementRect(image, UIEditing::CanvasRect(UIEditing::Aspect::Wide16x9), rect));
+		CHECK_MSG(std::abs(rect.x - 590) < 0.01f && std::abs(rect.y - 310) < 0.01f && std::abs(rect.width - 100) < 0.01f && std::abs(rect.height - 100) < 0.01f,
+			std::format("moved to ({}, {}, {}, {})", rect.x, rect.y, rect.width, rect.height));
+	};
+
+	// Top-right corner: the pivot (centre, 640/360) is 640 left of and 360 below the corner
+	REQUIRE(s.ApplyUIAnchorPreset(image, 2, 0));
+	checkScreen();
+	CHECK(r().anchorMinX == 1.0f && r().anchorMaxX == 1.0f && r().anchorMinY == 0.0f && r().anchorMaxY == 0.0f);
+	CHECK_NEAR(r().offsetX, -640.0f, 0.01f);
+	CHECK_NEAR(r().offsetY, 360.0f, 0.01f);
+	CHECK_NEAR(r().width, 100.0f, 0.01f);
+
+	// Stretched both ways: the size becomes an inset of the whole canvas
+	A::MergeAllowed(s) = false;
+	REQUIRE(s.ApplyUIAnchorPreset(image, UIEditing::kStretch, UIEditing::kStretch));
+	checkScreen();
+	CHECK(r().anchorMinX == 0.0f && r().anchorMaxX == 1.0f && r().anchorMinY == 0.0f && r().anchorMaxY == 1.0f);
+	CHECK_NEAR(r().width, -1180.0f, 0.01f);
+	CHECK_NEAR(r().height, -620.0f, 0.01f);
+	CHECK_NEAR(r().offsetX, 0.0f, 0.01f);
+	CHECK_NEAR(r().offsetY, 0.0f, 0.01f);
+
+	// Stretched along the bottom: full-width anchors, bottom edge
+	A::MergeAllowed(s) = false;
+	REQUIRE(s.ApplyUIAnchorPreset(image, UIEditing::kStretch, 2));
+	checkScreen();
+	CHECK_NEAR(r().offsetY, -360.0f, 0.01f);
+	CHECK_NEAR(r().height, 100.0f, 0.01f);
+
+	// Each preset is one undo step
+	CHECK(A::UndoCount(s) == 3);
+	s.Undo();
+	s.Undo();
+	CHECK(r().anchorMinX == 1.0f && r().anchorMaxY == 0.0f);
+	CHECK_NEAR(r().offsetX, -640.0f, 0.01f);
+	s.Undo();
+	CHECK(r().anchorMinX == 0.5f && r().offsetX == 0.0f && r().offsetY == 0.0f);
+	checkScreen();
 }
 
 int EditorSuite::RunSelfTests(const std::string& filter)
