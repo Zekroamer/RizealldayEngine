@@ -113,6 +113,7 @@ void EditorSuite::RunProjectFileMigrations()
 
 void EditorSuite::InstallMergeDriver()
 {
+	mergeDriverChecked_ = false;
 	if (currentProjectRoot_.empty() || isRunningTests_ && !mergeDriverInstallInTests_) return;
 	if (DeferWhileGitBusy()) return;
 	const std::filesystem::path root = currentProjectRoot_;
@@ -121,9 +122,12 @@ void EditorSuite::InstallMergeDriver()
 	if (inside == -1) {
 		if (!gitMissingLogged_) LogMessage("[Git] Git is not installed (not on PATH): the scene merge driver is not set up.", 1);
 		gitMissingLogged_ = true;
+		mergeDriverChecked_ = true;
 		return;
 	}
-	if (inside != 0 || output.find("true") == std::string::npos) return; // not a git working tree: leave it alone
+	// Not a git working tree: left alone; the poll calls this again when a repository is created later
+	if (inside != 0 || output.find("true") == std::string::npos) return;
+	mergeDriverChecked_ = true;
 
 	std::vector<std::string> changed;
 	// Shared files: a read-only project must not write them

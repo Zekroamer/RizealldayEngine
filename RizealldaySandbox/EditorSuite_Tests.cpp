@@ -12198,6 +12198,50 @@ TEST_CASE(MergeDriver, ProjectOpenInstallsDriver)
 	fs::remove_all(root, ec);
 }
 
+TEST_CASE(MergeDriver, GitInitWhileOpenInstallsDriver)
+{
+	// A team member opens the project first and creates the repository later (Visual Studio "Create Git Repository")
+	namespace fs = std::filesystem;
+	std::string output;
+	if (EngineUpdate::RunHiddenProcess(L"git --version", {}, &output) == -1) {
+		A::Log(s, "[Tests] MergeDriver.GitInitWhileOpenInstallsDriver skipped: git is not on PATH.", 1);
+		return;
+	}
+	const fs::path root = A::TempRoot() / "MergeDriverLateGit";
+	std::error_code ec;
+	fs::remove_all(root, ec);
+	fs::create_directories(root / "ProjectSettings", ec);
+	fs::create_directories(root / "Assets" / "Scenes", ec);
+	std::ofstream(root / "ProjectSettings" / "project.json") << R"({"projectName": "Late", "startupScene": "Assets/Scenes/Main.scene.json"})";
+	std::ofstream(root / "Assets" / "Scenes" / "Main.scene.json") << R"({"sceneName": "Main", "gameObjects": []})";
+	std::ofstream(root / ".gitattributes", std::ios::binary) << "* text=auto\n";
+
+	const fs::path savedRoot = A::ProjectRoot(s);
+	const fs::path savedDirectory = A::CurrentDirectory(s);
+	A::MergeDriverInstallInTests(s) = true;
+	A::ExternalWatchInTests(s) = true;
+	REQUIRE(s.OpenProject(root.string()));
+	A::PollOpenFile(s, 1.0f);
+	CHECK(ReadFileText(root / ".gitattributes") == "* text=auto\n"); // no repository yet: left alone
+
+	REQUIRE(EngineUpdate::RunHiddenProcess(L"git init -q", root, &output) == 0);
+	A::PollOpenFile(s, 1.0f);
+	std::string attr;
+	EngineUpdate::RunHiddenProcess(L"git check-attr merge -- Assets/Scenes/Main.scene.json", root, &attr);
+	CHECK_MSG(attr.find("rizescene") != std::string::npos, attr);
+	std::string driver;
+	EngineUpdate::RunHiddenProcess(L"git config --local --get merge.rizescene.driver", root, &driver);
+	CHECK_MSG(driver.find("--merge-driver") != std::string::npos, driver);
+
+	A::ExternalWatchInTests(s) = false;
+	A::MergeDriverInstallInTests(s) = false;
+	A::ProjectRoot(s) = savedRoot;
+	A::CurrentDirectory(s) = savedDirectory;
+	A::SyncScripts(s);
+	s.NewScene();
+	fs::remove_all(root, ec);
+}
+
 // ===========================================================================
 // Merge Conflicts window (editor functions behind it)
 // ===========================================================================

@@ -45,6 +45,11 @@ void EditorSuite::PollOpenFileChanges(float deltaTime)
 		RunProjectFileMigrations();
 		EnsureProjectScriptsProps();
 	}
+	// The repository was created after the project was opened (Visual Studio "Create Git Repository")
+	std::error_code gitEc;
+	if (!mergeDriverChecked_ && !currentProjectRoot_.empty() && std::filesystem::exists(currentProjectRoot_ / ".git", gitEc)) {
+		InstallMergeDriver();
+	}
 	ApplyOpenFileChange();
 	ApplyAssetFileChanges();
 }

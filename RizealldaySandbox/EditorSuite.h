@@ -1425,6 +1425,7 @@ private:
 	void InstallMergeDriver();
 	bool mergeDriverInstallInTests_ = false; // self-tests must never touch the git config of the repository they run in
 	bool gitMissingLogged_ = false;
+	bool mergeDriverChecked_ = false; ///< false while the project is not in a git working tree yet (git init after opening it)
 	// Merge Conflicts window (EditorSuite_MergeConflicts.cpp): the report the merge driver left next to the open file
 	struct MergeConflictState {
 		std::string reportPath; ///< empty = no report for the open scene / prefab
