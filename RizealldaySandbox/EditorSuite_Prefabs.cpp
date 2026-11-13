@@ -1,9 +1,12 @@
 ﻿#include "EditorSuiteInternal.h"
 #include "SceneJson.h"
 #include "PrefabOverrides.h"
+#include "SiblingOrder.h"
 
 // Prefab file: { "prefabVersion": 1, "name": "...", "objects": [ root, descendants... ] }
 // Each entry is a WriteGameObjectJson object; ids/parentIds are remapped to fresh ids on instantiate.
+// Saved in id order with id = prefabNodeKey + 1 (stable across saves, root = 1) and a "siblingOrder" per node;
+// LoadPrefab puts them back into root-first Hierarchy order, which everything else reads.
 // A variant adds "basePrefab": its nodes found in the base (by prefabNodeKey) keep only "variantOverrides", the rest are added nodes.
 // A nested prefab is a subtree whose nodes have "nestedPrefab" + "nestedNode" (its key in that prefab) and "nestedOverrides".
 // Loading resolves both from the current files (LoadPrefab), so the cache holds complete objects and nothing else needs to know.
@@ -55,6 +58,8 @@ namespace {
 namespace {
 	template <typename ResolveFn>
 	const SceneJson::Json* LoadPrefab(EditorSuite::PrefabCache& cache, ResolveFn&& resolvePath, const std::string& name, std::string& outError, int depth = 0);
+
+	void RemapJointJson(SceneJson::Json& node, const std::unordered_map<uint32_t, uint32_t>& ids);
 
 	int NodeKeyOf(const SceneJson::Json& node, int fallback)
 	{
@@ -194,20 +199,52 @@ bool EditorSuite::SavePrefab(uint32_t rootId, const std::string& prefabName, con
 	for (size_t i = 1; i < order.size(); ++i) {
 		if (keys[i] < 0 || std::count(keys.begin(), keys.end(), keys[i]) > 1) keys[i] = nextKey++;
 	}
+	// File ids follow the node keys, so saving the same prefab again (from any instance) writes the same ids
+	std::unordered_map<uint32_t, uint32_t> fileIds;
+	for (size_t i = 0; i < order.size(); ++i) fileIds[gameObjects_[order[i]].id] = static_cast<uint32_t>(keys[i]) + 1u;
+	// Sibling order: the values the file had for these nodes where they are still in order (only a moved node changes)
+	std::unordered_map<int, double> savedSiblingKeys;
+	{
+		std::ifstream existingFile(ResolvePrefabFile(name), std::ios::binary);
+		std::stringstream text;
+		text << existingFile.rdbuf();
+		const std::optional<Json> existing = existingFile ? SceneJson::Parse(text.str()) : std::nullopt;
+		if (const Json* nodes = existing ? PrefabObjects(*existing) : nullptr) {
+			for (size_t i = 0; i < nodes->size(); ++i) {
+				const Json* key = SceneJson::Find((*nodes)[i], "siblingOrder");
+				if (key && key->is_number()) savedSiblingKeys[NodeKeyOf((*nodes)[i], static_cast<int>(i))] = key->get<double>();
+			}
+		}
+	}
+	std::vector<std::optional<double>> currentSiblingKeys;
+	for (size_t i = 1; i < order.size(); ++i) {
+		const auto it = savedSiblingKeys.find(keys[i]);
+		currentSiblingKeys.push_back(it != savedSiblingKeys.end() ? std::optional<double>(it->second) : std::nullopt);
+	}
+	const std::vector<double> siblingKeys = SiblingOrder::AssignKeys(currentSiblingKeys);
+
 	Json prefab = Json::object();
 	prefab["prefabVersion"] = 1;
 	prefab["name"] = name;
 	if (!base.empty()) prefab["basePrefab"] = base;
-	Json objects = Json::array();
+	std::vector<std::pair<uint32_t, Json>> written;
 	for (size_t i = 0; i < order.size(); ++i) {
 		Json o;
 		WriteGameObjectJson(gameObjects_[order[i]], &o);
+		o["id"] = fileIds[gameObjects_[order[i]].id];
+		for (const char* link : { "parentId", "attachedParentId" }) {
+			int value = -1;
+			if (!SceneJson::Read(o, link, value) || value < 0) continue;
+			if (const auto mapped = fileIds.find(static_cast<uint32_t>(value)); mapped != fileIds.end()) o[link] = static_cast<int>(mapped->second);
+		}
+		RemapJointJson(o, fileIds);
 		o.erase("prefab"); // the instance it came from is not part of the prefab
 		o.erase("prefabNode");
 		o.erase("prefabOverrides");
 		o.erase("prefabGuid");
 		o.erase("nestedPrefab");
 		o.erase("nestedNode");
+		o.erase("prefabNodeKey"); // always last, so a node saved from a plain object and from an instance look the same
 		o["prefabNodeKey"] = keys[i];
 		if (i == 0) {
 			o["parentId"] = -1; // the prefab root is always a scene root when instantiated
@@ -228,8 +265,13 @@ bool EditorSuite::SavePrefab(uint32_t rootId, const std::string& prefabName, con
 			}
 			o["nestedOverrides"] = differences;
 		}
-		objects.push_back(std::move(o));
+		if (i > 0) o = SceneJson::WithKeyAfter(o, "parentId", "siblingOrder", siblingKeys[i - 1]);
+		written.emplace_back(o["id"].get<uint32_t>(), std::move(o));
 	}
+	// Id order (= node key order, root first), like scene files
+	std::stable_sort(written.begin(), written.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+	Json objects = Json::array();
+	for (auto& entry : written) objects.push_back(std::move(entry.second));
 	if (baseObjects) {
 		std::unordered_set<int> present(keys.begin(), keys.end());
 		Json removed = Json::array();
@@ -317,9 +359,19 @@ namespace {
 			const Json* innerObjects = inner ? SceneJson::Find(*inner, "objects") : nullptr;
 			if (!innerObjects || !innerObjects->is_array()) return false;
 			std::unordered_map<uint32_t, uint32_t> innerIds; // inner id -> id in this prefab
+			std::vector<uint32_t> nodeIds(innerObjects->size());
+			std::vector<int> nodeKeys(innerObjects->size());
+			for (size_t k = 0; k < innerObjects->size(); ++k) {
+				const auto outer = byInnerKey.find(NodeKeyOf((*innerObjects)[k], static_cast<int>(k)));
+				nodeIds[k] = outer != byInnerKey.end() ? IdOf(*outer->second) : nextId++; // else: added to the inner prefab since this one was saved
+				nodeKeys[k] = outer != byInnerKey.end() ? NodeKeyOf(*outer->second, -1) : nextKey++;
+				innerIds[IdOf((*innerObjects)[k])] = nodeIds[k];
+			}
 			const size_t first = out.size();
 			for (size_t k = 0; k < innerObjects->size(); ++k) {
 				Json node = (*innerObjects)[k];
+				// Before the overrides: an overridden joint target is already an id of this prefab
+				RemapJointJson(node, innerIds);
 				const int innerKey = NodeKeyOf(node, static_cast<int>(k));
 				const auto outer = byInnerKey.find(innerKey);
 				if (outer != byInnerKey.end()) {
@@ -336,18 +388,13 @@ namespace {
 							if (const Json* value = SceneJson::Find(saved, placement)) node[placement] = *value;
 						}
 					}
-					node["id"] = IdOf(saved);
-					node["prefabNodeKey"] = NodeKeyOf(saved, -1);
-				} else {
-					node["id"] = nextId++; // added to the inner prefab since this one was saved
-					node["prefabNodeKey"] = nextKey++;
 				}
-				innerIds[IdOf((*innerObjects)[k])] = IdOf(node);
+				node["id"] = nodeIds[k];
+				node["prefabNodeKey"] = nodeKeys[k];
 				node["nestedPrefab"] = prefab;
 				node["nestedNode"] = innerKey;
 				out.push_back(std::move(node));
 			}
-			for (size_t k = first; k < out.size(); ++k) RemapJointJson(out[k], innerIds);
 			for (size_t k = first + 1; k < out.size(); ++k) {
 				for (const char* link : { "parentId", "attachedParentId" }) {
 					int value = -1;
@@ -436,6 +483,46 @@ namespace {
 		return true;
 	}
 
+	// Files list nodes in id order; the rest of this file wants the root first, parents before children and
+	// siblings in sibling order (older files are already like that: no "siblingOrder" keeps their order)
+	void PutPrefabNodesInHierarchyOrder(Json& objects)
+	{
+		const size_t count = objects.size();
+		size_t root = 0;
+		for (size_t i = 0; i < count; ++i) {
+			if (objects[i].is_object() && NodeKeyOf(objects[i], -1) == 0) { root = i; break; }
+		}
+		const auto siblingKey = [&](size_t i) {
+			const Json* key = SceneJson::Find(objects[i], "siblingOrder");
+			return (key && key->is_number()) ? key->get<double>() : HUGE_VAL;
+		};
+		std::unordered_map<uint32_t, std::vector<size_t>> children;
+		for (size_t i = 0; i < count; ++i) {
+			int parent = -1;
+			if (i != root && objects[i].is_object() && SceneJson::Read(objects[i], "parentId", parent) && parent >= 0) children[static_cast<uint32_t>(parent)].push_back(i);
+		}
+		for (auto& [parent, list] : children) {
+			std::stable_sort(list.begin(), list.end(), [&](size_t a, size_t b) { return siblingKey(a) < siblingKey(b); });
+		}
+		std::vector<bool> done(count, false);
+		std::vector<size_t> visit;
+		std::vector<size_t> stack{ root };
+		while (!stack.empty() && count > 0) {
+			const size_t i = stack.back();
+			stack.pop_back();
+			if (done[i]) continue;
+			done[i] = true;
+			visit.push_back(i);
+			if (const auto it = children.find(IdOf(objects[i])); it != children.end()) stack.insert(stack.end(), it->second.rbegin(), it->second.rend());
+		}
+		for (size_t i = 0; i < count; ++i) {
+			if (!done[i]) visit.push_back(i); // not under the root (a broken file): kept, after the tree
+		}
+		Json sorted = Json::array();
+		for (size_t i : visit) sorted.push_back(std::move(objects[i]));
+		objects = std::move(sorted);
+	}
+
 	template <typename ResolveFn>
 	const SceneJson::Json* LoadPrefab(EditorSuite::PrefabCache& cache, ResolveFn&& resolvePath, const std::string& name, std::string& outError, int depth)
 	{
@@ -466,6 +553,7 @@ namespace {
 		}
 		const auto load = [&](const std::string& other) { return LoadPrefab(cache, resolvePath, other, outError, depth + 1); };
 		Json& objects = (*parsed)["objects"];
+		PutPrefabNodesInHierarchyOrder(objects);
 		bool resolved = ResolveNested(objects, load);
 		std::string base;
 		if (resolved && SceneJson::Read(*parsed, "basePrefab", base) && !base.empty()) {

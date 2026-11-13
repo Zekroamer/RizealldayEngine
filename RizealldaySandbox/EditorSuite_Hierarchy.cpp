@@ -171,6 +171,33 @@ bool EditorSuite::ReparentGameObject(uint32_t childId, int newParentId, bool kee
 	return true;
 }
 
+bool EditorSuite::MoveGameObjectAmongSiblings(uint32_t id, int direction)
+{
+	const int index = FindGameObjectIndexById(id);
+	if (index < 0 || direction == 0) return false;
+	direction = direction < 0 ? -1 : 1;
+	// The Hierarchy lists siblings in object-list order: the neighbour is the nearest object with the same parent
+	const int parent = gameObjects_[index].parentId;
+	int other = -1;
+	for (int i = index + direction; i >= 0 && i < static_cast<int>(gameObjects_.size()); i += direction) {
+		if (gameObjects_[i].parentId == parent) {
+			other = i;
+			break;
+		}
+	}
+	if (other < 0) return false; // already first / last
+	const uint32_t selectedId = (selectedObjectIndex_ >= 0 && selectedObjectIndex_ < static_cast<int>(gameObjects_.size()))
+		? gameObjects_[selectedObjectIndex_].id : 0;
+	auto at = [&](int i) { return gameObjects_.begin() + i; };
+	if (direction < 0) std::rotate(at(other), at(index), at(index + 1));
+	else std::rotate(at(index), at(index + 1), at(other + 1));
+	RebuildHierarchyLinks();
+	selectedObjectIndex_ = selectedId ? FindGameObjectIndexById(selectedId) : -1;
+	isSceneDirty_ = true;
+	PushUndoSnapshot();
+	return true;
+}
+
 void EditorSuite::GetWorldTRS(const GameObject& obj, Vector3& t, Quaternion& q, Vector3& s) const
 {
 	if (obj.parentId == -1) {
