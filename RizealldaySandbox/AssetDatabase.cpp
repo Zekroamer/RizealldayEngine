@@ -58,8 +58,12 @@ namespace {
 		return hex;
 	}
 
-	/// A save in progress (EditorSuiteDetail::WriteFileAtomic) or one a crash left behind: never an asset
-	bool IsTemporaryFile(const fs::path& path) { return path.extension() == ".tmp"; }
+	/// A save in progress (EditorSuiteDetail::WriteFileAtomic), one a crash left behind, or a local
+	/// merge report (gitignored *.merge.json): never an asset, so it never gets a .meta to commit
+	bool IsTemporaryFile(const fs::path& path)
+	{
+		return path.extension() == ".tmp" || path.filename().native().ends_with(L".merge.json");
+	}
 
 	bool WriteMeta(const fs::path& metaPath, const std::string& guid)
 	{

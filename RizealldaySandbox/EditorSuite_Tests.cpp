@@ -1757,6 +1757,13 @@ TEST_CASE(AssetDatabase, NewGuidsAreTheSameOnEveryPc)
 	pcE.SetRoot(root);
 	CHECK(!fs::exists(root / "Assets" / "Scenes" / "Title.scene.json.tmp.meta"));
 	CHECK(pcE.GuidForPath("Assets/Scenes/Title.scene.json.tmp").empty());
+
+	// A merge report is local and gitignored: no .meta that could be committed or orphaned
+	std::ofstream(root / "Assets" / "Scenes" / "Title.scene.json.merge.json") << "{}";
+	AssetDatabase pcF;
+	pcF.SetRoot(root);
+	CHECK(!fs::exists(root / "Assets" / "Scenes" / "Title.scene.json.merge.json.meta"));
+	CHECK(pcF.GuidForPath("Assets/Scenes/Title.scene.json.merge.json").empty());
 	fs::remove_all(root, ec);
 }
 
