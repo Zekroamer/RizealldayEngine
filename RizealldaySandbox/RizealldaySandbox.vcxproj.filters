@@ -123,6 +123,9 @@
     <ClCompile Include="EditorSuite_Shaders.cpp">
       <Filter>editor</Filter>
     </ClCompile>
+    <ClCompile Include="SceneMerge.cpp">
+      <Filter>editor</Filter>
+    </ClCompile>
     <ClCompile Include="NavGrid.cpp">
       <Filter>editor</Filter>
     </ClCompile>
@@ -174,6 +177,9 @@
       <Filter>editor</Filter>
     </ClInclude>
     <ClInclude Include="EngineUpdate.h">
+      <Filter>editor</Filter>
+    </ClInclude>
+    <ClInclude Include="SceneMerge.h">
       <Filter>editor</Filter>
     </ClInclude>
     <ClInclude Include="NavGrid.h">
