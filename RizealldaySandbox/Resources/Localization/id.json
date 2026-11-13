@@ -194,6 +194,8 @@
 	"Duplicate": "Duplikat",
 	"Delete GameObject": "Hapus GameObject",
 	"Unparent": "Lepas dari Induk",
+	"Move Up": "Pindah ke Atas",
+	"Move Down": "Pindah ke Bawah",
 	"Rename Scene": "Ganti Nama Scene",
 	"Save as Prefab": "Simpan sebagai Prefab",
 	"Saves this object and its children to Assets/Prefabs/<name>.prefab.json": "Simpan object ini beserta anaknya ke Assets/Prefabs/<name>.prefab.json",

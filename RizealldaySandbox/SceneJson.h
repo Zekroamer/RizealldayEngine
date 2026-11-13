@@ -171,6 +171,20 @@ inline std::optional<Json> Parse(std::string_view text, std::string* error = nul
 	return std::nullopt;
 }
 
+/// Copy of the object `o` with `key` = `value` placed right after `afterKey` (at the end when it is missing);
+/// ordered_json has no insert-at-position
+inline Json WithKeyAfter(const Json& o, const char* afterKey, const char* key, const Json& value)
+{
+	Json out = Json::object();
+	for (auto it = o.begin(); it != o.end(); ++it) {
+		if (it.key() == key) continue;
+		out[it.key()] = it.value();
+		if (it.key() == afterKey) out[key] = value;
+	}
+	if (!out.contains(key)) out[key] = value;
+	return out;
+}
+
 /// dump(2) puts every array element on its own line. Collapse arrays that contain only numbers
 /// onto one line ("translation": [0, 1.5, -8]) so scene files stay compact and readable.
 inline std::string DumpCompact(const Json& j)

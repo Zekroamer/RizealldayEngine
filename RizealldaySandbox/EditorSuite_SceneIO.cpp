@@ -1,5 +1,7 @@
 ﻿#include "EditorSuiteInternal.h"
 #include "SceneJson.h"
+#include "SceneMerge.h"
+#include "SiblingOrder.h"
 #include <chrono>
 #include <random>
 #include <set>
@@ -114,6 +116,7 @@ std::string EditorSuite::SerializeSceneToString() const
 	using SceneJson::Arr;
 
 	Json root = Json::object();
+	root["formatVersion"] = SceneMerge::kKnownFormatVersion; // objects in id order, each with its sibling order
 	root["sceneName"] = currentSceneName_;
 
 	// Scene-level settings are written by WriteSceneSettingsJson (shared with the undo system)
@@ -122,16 +125,39 @@ std::string EditorSuite::SerializeSceneToString() const
 	root["skybox"] = std::move(settings["skybox"]);
 	root["postProcess"] = std::move(settings["postProcess"]);
 
+	// Id order, so two people's additions land in different places and git (GitHub web) merges them line by line.
+	// The Hierarchy order is the sibling order instead, which changes only for an object that moved.
+	const std::unordered_map<uint32_t, double> siblingKeys = ComputeSiblingKeys();
+	std::vector<const GameObject*> byId;
+	byId.reserve(gameObjects_.size());
+	for (const auto& obj : gameObjects_) byId.push_back(&obj);
+	std::stable_sort(byId.begin(), byId.end(), [](const GameObject* a, const GameObject* b) { return a->id < b->id; });
 	Json objects = Json::array();
-	for (const auto& obj : gameObjects_) {
+	for (const GameObject* obj : byId) {
 		Json o = Json::object();
-		WriteGameObjectJson(obj, &o);
-		objects.push_back(std::move(o));
+		WriteGameObjectJson(*obj, &o);
+		objects.push_back(SceneJson::WithKeyAfter(o, "parentId", "siblingOrder", siblingKeys.at(obj->id)));
 	}
 	root["gameObjects"] = std::move(objects);
 	root["mapchip"] = std::move(settings["mapchip"]);
 
 	return SceneJson::DumpCompact(root);
+}
+
+std::unordered_map<uint32_t, double> EditorSuite::ComputeSiblingKeys() const
+{
+	// One key space for the whole object list: sorting by it restores the list, so siblings keep their order too
+	std::vector<std::optional<double>> current;
+	current.reserve(gameObjects_.size());
+	for (const auto& obj : gameObjects_) {
+		const auto it = siblingKeys_.find(obj.id);
+		current.push_back(it != siblingKeys_.end() ? std::optional<double>(it->second) : std::nullopt);
+	}
+	const std::vector<double> keys = SiblingOrder::AssignKeys(current);
+	std::unordered_map<uint32_t, double> result;
+	result.reserve(keys.size());
+	for (size_t i = 0; i < keys.size(); ++i) result[gameObjects_[i].id] = keys[i];
+	return result;
 }
 
 // `outJson` is a SceneJson::Json* (kept opaque so EditorSuite.h does not include nlohmann/json)
@@ -450,6 +476,7 @@ bool EditorSuite::DeserializeSceneFromString(const std::string& content)
 		}
 	}
 	gameObjects_.clear();
+	siblingKeys_.clear();
 	pendingSpawns_.clear();
 	ResetPrefabPools();
 	ResetScriptRuntimeState();
@@ -484,6 +511,7 @@ bool EditorSuite::DeserializeSceneFromString(const std::string& content)
 		if (!isRunningTests_ || randomObjectIdsInTests_) nextObjectId_ = PickObjectIdBase(usedIds);
 
 		// Pass 2: build the objects
+		std::vector<double> fileKeys; // sibling order per built object; missing (files before id order) = after the others, in file order
 		for (size_t objIndex = 0; objIndex < objectsJson->size(); ++objIndex) {
 			const Json& j = (*objectsJson)[objIndex];
 			if (!j.is_object()) continue;
@@ -497,10 +525,25 @@ bool EditorSuite::DeserializeSceneFromString(const std::string& content)
 			}
 
 			ReadGameObjectJson(&j, obj);
+			const Json* key = SceneJson::Find(j, "siblingOrder");
+			fileKeys.push_back((key && key->is_number() && std::isfinite(key->get<double>())) ? key->get<double>() : HUGE_VAL);
 
 			gameObjects_.push_back(std::move(obj));
 		}
+
+		// The file lists objects in id order: the sibling order gives the Hierarchy order back
+		std::vector<size_t> order(gameObjects_.size());
+		for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+		std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return fileKeys[a] < fileKeys[b]; });
+		std::vector<GameObject> sorted;
+		sorted.reserve(order.size());
+		for (size_t i : order) {
+			if (fileKeys[i] != HUGE_VAL) siblingKeys_[gameObjects_[i].id] = fileKeys[i];
+			sorted.push_back(std::move(gameObjects_[i]));
+		}
+		gameObjects_ = std::move(sorted);
 	}
+	lastLoadWasOldFormat_ = !root.contains("formatVersion");
 
 	// Sync parentIndex and childrenIds for loaded objects
 	RebuildHierarchyLinks();
@@ -952,12 +995,21 @@ bool EditorSuite::SaveScene(const std::string& filePath)
 			return false;
 		}
 	}
+	siblingKeys_ = ComputeSiblingKeys(); // the next save starts from what this one wrote
+	const std::string previousName = currentSceneName_;
+	currentSceneName_ = SceneNameFromPath(p); // written into the file: the first save must equal the next one
 	const std::string text = SerializeSceneToString();
 	if (!WriteProjectFile(p, text)) {
+		currentSceneName_ = previousName;
 		LogMessage(std::format("[Scene] Could not write {} (read-only, disk full or used by another program). The scene is not saved.", targetPath), 2);
 		return false;
 	}
 	RecordOpenFile(targetPath, &text);
+	if (sceneFileOldFormat_) {
+		sceneFileOldFormat_ = false;
+		LogMessage(std::format("[Scene] {} was rewritten once in the git-friendly layout (objects in id order, a sibling order per object). "
+			"Commit this change on its own; later saves only change what you edit.", targetPath), 1);
+	}
 
 	isSceneDirty_ = false;
 	DiscardAutoSave(currentScenePath_); // an untitled scene saved for the first time leaves its copy behind otherwise
@@ -1026,6 +1078,7 @@ bool EditorSuite::LoadScene(const std::string& filePath)
 	file.close();
 
 	if (!DeserializeSceneFromString(buffer.str())) return false;
+	sceneFileOldFormat_ = lastLoadWasOldFormat_;
 	CollectTerrainGarbage(); // the new scene may use some of them: those stay
 
 	currentScenePath_ = filePath;
@@ -1073,6 +1126,8 @@ void EditorSuite::NewScene()
 	gameObjects_.clear();
 	mergeConflicts_ = {};
 	openFileRecord_ = {};
+	siblingKeys_.clear();
+	sceneFileOldFormat_ = false;
 	currentSceneName_ = "SampleScene";
 	currentScenePath_ = (GetScenesDirectory() / "SampleScene.scene.json").string();
 	isSceneDirty_ = false;

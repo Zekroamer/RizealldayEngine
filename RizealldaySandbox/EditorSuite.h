@@ -360,6 +360,8 @@ public:
 	void UpdateWorldMatrices();
 	bool IsDescendantOf(uint32_t candidateId, uint32_t ancestorId) const;
 	bool ReparentGameObject(uint32_t childId, int newParentId, bool keepWorldTransform = true);
+	/// Moves an object one place up (-1) or down (+1) among its siblings; in the file only its sibling order changes
+	bool MoveGameObjectAmongSiblings(uint32_t id, int direction);
 	void GetWorldTRS(const GameObject& obj, Vector3& t, Quaternion& q, Vector3& s) const;
 
 	void DeleteSelectedGameObject();
@@ -804,6 +806,8 @@ public:
 	// Scene Management & Serialization (.scene.json)
 	std::string SerializeSceneToString() const;
 	bool DeserializeSceneFromString(const std::string& json);
+	/// Sibling order of every object for the current Hierarchy order: the keys last loaded/saved where still in order (SiblingOrder.h)
+	std::unordered_map<uint32_t, double> ComputeSiblingKeys() const;
 
 	// Per-object / scene-settings JSON (shared by scene files and the undo system).
 	// The void* parameters are SceneJson::Json* so this header does not depend on nlohmann/json.
@@ -1386,6 +1390,9 @@ private:
 	/// Where new object ids start after a scene is opened: random and clear of the scene's ids (see the .cpp)
 	static uint32_t PickObjectIdBase(const std::unordered_set<uint32_t>& used);
 	bool randomObjectIdsInTests_ = false; // self-tests keep sequential ids unless a test asks
+	std::unordered_map<uint32_t, double> siblingKeys_; // sibling order of each object as the scene file was last loaded/saved
+	bool lastLoadWasOldFormat_ = false; // set by DeserializeSceneFromString: no "formatVersion" (objects in Hierarchy order)
+	bool sceneFileOldFormat_ = false;   // the open scene file is in the old order: its first save rewrites it once and says so
 	// Engine update from a release zip (EditorSuite_Update.cpp)
 	bool showEngineUpdateModal_ = false;
 	bool showAboutModal_ = false;

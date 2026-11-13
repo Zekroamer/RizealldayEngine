@@ -275,6 +275,7 @@ if exist "$(ProjectDir)Resources" xcopy "$(ProjectDir)Resources" "$(OutDir)Resou
     <ClInclude Include="Timeline.h" />
     <ClInclude Include="AutoSave.h" />
     <ClInclude Include="SceneMerge.h" />
+    <ClInclude Include="SiblingOrder.h" />
     <ClInclude Include="MergeDriver.h" />
     <ClInclude Include="MapchipTileSet.h" />
     <ClInclude Include="Terrain.h" />
