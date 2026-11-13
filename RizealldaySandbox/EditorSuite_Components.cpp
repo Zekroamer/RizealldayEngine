@@ -65,6 +65,7 @@ void EditorSuite::RegisterBuiltinComponents()
 	RegisterEffectComponents();
 	RegisterTimelineComponent();
 	RegisterTerrainComponent();
+	RegisterGameUIComponents();
 }
 
 // ---------------------------------------------------------------------------

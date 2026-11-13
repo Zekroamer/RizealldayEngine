@@ -195,6 +195,8 @@ if exist "$(ProjectDir)Resources" xcopy "$(ProjectDir)Resources" "$(OutDir)Resou
     <ClCompile Include="EditorSuite_Physics.cpp" />
     <ClCompile Include="EditorSuite_Materials.cpp" />
     <ClCompile Include="EditorSuite_Vfx.cpp" />
+    <ClCompile Include="EditorSuite_GameUI.cpp" />
+    <ClCompile Include="UILayout.cpp" />
     <ClCompile Include="EditorSuite_Effects.cpp" />
     <ClCompile Include="NodeGraph.cpp" />
     <ClCompile Include="GraphNodes.cpp" />
@@ -262,6 +264,8 @@ if exist "$(ProjectDir)Resources" xcopy "$(ProjectDir)Resources" "$(OutDir)Resou
     <ClInclude Include="PhysicsComponents.h" />
     <ClInclude Include="PbrMaterial.h" />
     <ClInclude Include="VfxComponents.h" />
+    <ClInclude Include="UIComponents.h" />
+    <ClInclude Include="UILayout.h" />
     <ClInclude Include="PostLooks.h" />
     <ClInclude Include="EffectTiming.h" />
     <ClInclude Include="NodeGraph.h" />
