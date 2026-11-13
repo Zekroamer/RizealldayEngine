@@ -178,6 +178,11 @@ struct EditorSuiteTestAccess {
 	static const std::string& EngineWarning(EditorSuite& s) { return s.projectEngineWarning_; }
 	static std::string& EngineWarningRef(EditorSuite& s) { return s.projectEngineWarning_; }
 	static bool& RandomIdsInTests(EditorSuite& s) { return s.randomObjectIdsInTests_; }
+	static EditorSuite::MergeConflictState& MergeConflicts(EditorSuite& s) { return s.mergeConflicts_; }
+	static bool MergeConflictsWindowOpen(const EditorSuite& s) { return s.showMergeConflictsWindow_; }
+	static bool ResolveMergeConflict(EditorSuite& s, size_t index, bool useTheirs) { return s.ResolveMergeConflict(index, useTheirs); }
+	static void ResolveAllMergeConflicts(EditorSuite& s, bool useTheirs) { s.ResolveAllMergeConflicts(useTheirs); }
+	static PostProcessSettings& PostSettings(EditorSuite& s) { return s.postSettings_; }
 	static bool LogHas(const EditorSuite& s, const std::string& part)
 	{
 		for (const auto& entry : s.consoleLogs_) if (entry.message.find(part) != std::string::npos) return true;
@@ -11801,6 +11806,162 @@ TEST_CASE(MergeDriver, ProjectOpenInstallsDriver)
 	A::SyncScripts(s);
 	s.NewScene();
 	fs::remove_all(root, ec);
+}
+
+// ===========================================================================
+// Merge Conflicts window (editor functions behind it)
+// ===========================================================================
+
+namespace {
+size_t MergeConflictIndex(EditorSuite& s, const std::string& field)
+{
+	const auto& conflicts = A::MergeConflicts(s).conflicts;
+	for (size_t i = 0; i < conflicts.size(); ++i) {
+		if (conflicts[i].field == field) return i;
+	}
+	return SIZE_MAX;
+}
+}
+
+TEST_CASE(MergeConflicts, DecideInEditor)
+{
+	namespace fs = std::filesystem;
+	const fs::path dir = A::TempRoot() / "MergeConflictsWindow";
+	std::error_code ec;
+	fs::remove_all(dir, ec);
+	fs::create_directories(dir, ec);
+	const fs::path scene = dir / "Level.scene.json";
+	const fs::path report = dir / "Level.scene.json.merge.json";
+	std::ofstream(dir / "base.json", std::ios::binary) << kMergeBase;
+	std::ofstream(scene, std::ios::binary) << MergeSide([](auto& j) {
+		MergeObj(j, 20)["translation"] = { 5, 0, 0 };
+		MergeObj(j, 20)["components"]["Animator"]["speed"] = 2;
+		j["postProcess"]["fogDensity"] = 0.7;
+		MergeObj(j, 10)["name"] = "Floor"; // edited here, deleted there: kept with a note
+	});
+	std::ofstream(dir / "theirs.json", std::ios::binary) << MergeSide([](auto& j) {
+		MergeObj(j, 20)["translation"] = { 7, 0, 0 };
+		MergeObj(j, 20)["components"]["Animator"]["speed"] = 3;
+		j["postProcess"]["fogDensity"] = 0.9;
+		j["gameObjects"].erase(0);
+	});
+	std::string message;
+	REQUIRE_MSG(MergeDriver::MergeFiles(dir / "base.json", scene, dir / "theirs.json", report, &message) == 0, message);
+	REQUIRE(fs::exists(report));
+
+	// Opening the scene loads the report and opens the window; the menu-bar notice shows while conflicts remain
+	REQUIRE(s.LoadScene(scene.string()));
+	auto& state = A::MergeConflicts(s);
+	REQUIRE(state.conflicts.size() == 3u);
+	CHECK(state.notes.size() == 1u);
+	CHECK(A::MergeConflictsWindowOpen(s));
+	auto enemy = [&] { return s.FindGameObjectById(20, false); };
+	auto speed = [&] { return enemy()->components.Get<AnimatorComponent>("Animator")->speed; };
+	REQUIRE(enemy() != nullptr);
+	CHECK(enemy()->translation.x == 5.0f);
+
+	// Use theirs on one field: applied at once, the report keeps the other two
+	REQUIRE(A::ResolveMergeConflict(s, MergeConflictIndex(s, "translation"), true));
+	CHECK(std::abs(enemy()->translation.x - 7.0f) < 1e-4f);
+	CHECK(state.conflicts.size() == 2u);
+	std::vector<SceneMerge::Conflict> left;
+	std::vector<SceneMerge::Note> notes;
+	REQUIRE(SceneMerge::ReportFromJson(ReadFileText(report), left, notes));
+	CHECK(left.size() == 2u);
+	CHECK(notes.size() == 1u);
+
+	// Undo restores my value
+	s.Undo();
+	CHECK(std::abs(enemy()->translation.x - 5.0f) < 1e-4f);
+
+	// Use mine on a data component field, then theirs for the rest (a scene setting)
+	REQUIRE(A::ResolveMergeConflict(s, MergeConflictIndex(s, "components/Animator/speed"), false));
+	CHECK(std::abs(speed() - 2.0f) < 1e-4f);
+	CHECK(state.conflicts.size() == 1u);
+	A::ResolveAllMergeConflicts(s, true);
+	CHECK(std::abs(A::PostSettings(s).fogDensity - 0.9f) < 1e-4f);
+	CHECK(std::abs(speed() - 2.0f) < 1e-4f);
+	CHECK(state.conflicts.empty()); // notice gone
+	CHECK(!fs::exists(report));
+	CHECK(state.notes.size() == 1u); // notes stay listed until another scene is opened
+	s.Undo();
+	CHECK(std::abs(A::PostSettings(s).fogDensity - 0.7f) < 1e-4f);
+
+	// Opening again: nothing left to decide
+	REQUIRE(s.LoadScene(scene.string()));
+	CHECK(A::MergeConflicts(s).conflicts.empty());
+	CHECK(A::MergeConflicts(s).notes.empty());
+	s.NewScene();
+	fs::remove_all(dir, ec);
+}
+
+TEST_CASE(MergeConflicts, GitMergeShowsConflictInEditor)
+{
+	// End to end: driver installed by OpenProject, a real `git merge` runs it, the scene opens with the conflict
+	namespace fs = std::filesystem;
+	std::string output;
+	if (EngineUpdate::RunHiddenProcess(L"git --version", {}, &output) == -1) {
+		A::Log(s, "[Tests] MergeConflicts.GitMergeShowsConflictInEditor skipped: git is not on PATH.", 1);
+		return;
+	}
+	const fs::path root = A::TempRoot() / "MergeConflictsGit";
+	std::error_code ec;
+	auto removeRepo = [&] { // git keeps its objects read-only, which remove_all cannot delete
+		for (auto it = fs::recursive_directory_iterator(root, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+			fs::permissions(it->path(), fs::perms::owner_write, fs::perm_options::add, ec);
+		}
+		fs::remove_all(root, ec);
+	};
+	removeRepo();
+	fs::create_directories(root / "ProjectSettings", ec);
+	fs::create_directories(root / "Assets" / "Scenes", ec);
+	const fs::path scene = root / "Assets" / "Scenes" / "Main.scene.json";
+	std::ofstream(root / "ProjectSettings" / "project.json") << R"({"projectName": "Team", "startupScene": "Assets/Scenes/Main.scene.json"})";
+	std::ofstream(scene, std::ios::binary) << MergeSide([](auto&) {});
+	auto git = [&](const wchar_t* args) {
+		std::string out;
+		const int code = EngineUpdate::RunHiddenProcess(std::wstring(L"git ") + args, root, &out);
+		if (code != 0) A::Log(s, "[Tests] git failed: " + out, 2);
+		return code;
+	};
+	REQUIRE(git(L"init -q") == 0);
+	REQUIRE(git(L"config --local user.name Tester") == 0);
+	REQUIRE(git(L"config --local user.email tester@example.invalid") == 0);
+	REQUIRE(git(L"config --local core.autocrlf false") == 0);
+
+	const fs::path savedRoot = A::ProjectRoot(s);
+	const fs::path savedDirectory = A::CurrentDirectory(s);
+	A::MergeDriverInstallInTests(s) = true;
+	REQUIRE(s.OpenProject(root.string()));
+	A::MergeDriverInstallInTests(s) = false;
+	s.NewScene(); // the editor holds nothing of the scene while git works
+
+	REQUIRE(git(L"add -A") == 0);
+	REQUIRE(git(L"commit -q -m base") == 0);
+	REQUIRE(git(L"checkout -q -b teammate") == 0);
+	std::ofstream(scene, std::ios::binary | std::ios::trunc) << MergeSide([](auto& j) { MergeObj(j, 20)["translation"] = { 7, 0, 0 }; });
+	REQUIRE(git(L"commit -q -am theirs") == 0);
+	REQUIRE(git(L"checkout -q -") == 0);
+	std::ofstream(scene, std::ios::binary | std::ios::trunc) << MergeSide([](auto& j) { MergeObj(j, 20)["translation"] = { 5, 0, 0 }; });
+	REQUIRE(git(L"commit -q -am mine") == 0);
+	CHECK(git(L"merge -q --no-edit teammate") == 0); // the driver made valid JSON: git sees no conflict
+
+	const fs::path report = root / "Assets" / "Scenes" / "Main.scene.json.merge.json";
+	CHECK_MSG(fs::exists(report), ReadFileText(scene));
+	REQUIRE(s.LoadScene(scene.string()));
+	const auto& conflicts = A::MergeConflicts(s).conflicts;
+	REQUIRE(conflicts.size() == 1u);
+	CHECK(conflicts[0].objectId == 20u);
+	CHECK(conflicts[0].field == "translation");
+	CHECK(conflicts[0].theirs == "[7,0,0]");
+	CHECK(A::MergeConflictsWindowOpen(s));
+	CHECK(s.FindGameObjectById(20, false)->translation.x == 5.0f); // mine until decided
+
+	A::ProjectRoot(s) = savedRoot;
+	A::CurrentDirectory(s) = savedDirectory;
+	A::SyncScripts(s);
+	s.NewScene();
+	removeRepo();
 }
 
 

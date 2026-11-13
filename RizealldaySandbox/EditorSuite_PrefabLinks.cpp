@@ -409,6 +409,7 @@ bool EditorSuite::OpenPrefabMode(const std::string& prefabName)
 	ResetUndoHistory();
 	isSceneDirty_ = false;
 	LogMessage(std::format("[Prefab] Editing '{}'. Save writes the prefab; Back to Scene returns.", prefabName), 0);
+	LoadMergeReport();
 	return true;
 }
 
@@ -438,6 +439,7 @@ void EditorSuite::ClosePrefabMode()
 	undoCommands_ = std::move(prefabModeUndo_);
 	redoCommands_ = std::move(prefabModeRedo_);
 	isSceneDirty_ = state.sceneDirty; // a sync is not an edit: the scene file stores links, not copies
+	LoadMergeReport(); // the scene's own report again (the prefab's one replaced it)
 }
 
 void EditorSuite::DrawPrefabModeBar()

@@ -75,6 +75,7 @@ void EditorSuite::DrawEditorUI(float deltaTime)
 	else if (materialValueEditing_ || (materialEditor_.dirty && !materialSaveFailed_)) FlushMaterialGraph(); // closed with its X
 	DrawAutoSaveRestoreModal();
 	if (showInputActionsWindow_) DrawInputActionsWindow();
+	if (showMergeConflictsWindow_) DrawMergeConflictsWindow();
 #endif
 }
 
@@ -252,6 +253,9 @@ void EditorSuite::DrawMainMenuBar()
 			if (ImGui::MenuItem(TrId("Animator"), nullptr, showAnimatorWindow_)) {
 				showAnimatorWindow_ = !showAnimatorWindow_;
 			}
+			if (ImGui::MenuItem(TrId("Merge Conflicts"), nullptr, showMergeConflictsWindow_)) {
+				showMergeConflictsWindow_ = !showMergeConflictsWindow_;
+			}
 			if (ImGui::MenuItem(TrId("Profiler"), "Ctrl+P", showProfiler_)) {
 				showProfiler_ = !showProfiler_;
 			}
@@ -293,6 +297,12 @@ void EditorSuite::DrawMainMenuBar()
 		if (ImGui::BeginMenu(TrId("Help"))) {
 			DrawHelpMenu();
 			ImGui::EndMenu();
+		}
+		if (!mergeConflicts_.conflicts.empty()) {
+			// Pushing a half-decided merge ships values nobody chose: keep it in sight until every conflict is decided
+			ImGui::Separator();
+			ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), Tr("%d merge conflict(s) undecided (Window > Merge Conflicts)"), static_cast<int>(mergeConflicts_.conflicts.size()));
+			if (ImGui::IsItemClicked()) showMergeConflictsWindow_ = true;
 		}
 		if (ProjectIsReadOnly()) {
 			// Saving would drop what this older editor does not know: say so where it is always seen

@@ -126,6 +126,9 @@
     <ClCompile Include="MergeDriver.cpp">
       <Filter>editor</Filter>
     </ClCompile>
+    <ClCompile Include="EditorSuite_MergeConflicts.cpp">
+      <Filter>editor</Filter>
+    </ClCompile>
     <ClCompile Include="SceneMerge.cpp">
       <Filter>editor</Filter>
     </ClCompile>

@@ -34,6 +34,7 @@
 #include "AnimatorController.h"
 #include "InputActions.h"
 #include "NavGrid.h"
+#include "SceneMerge.h"
 #ifdef USE_IMGUI
 #include <imgui.h>
 #else
@@ -1344,6 +1345,23 @@ private:
 	void InstallMergeDriver();
 	bool mergeDriverInstallInTests_ = false; // self-tests must never touch the git config of the repository they run in
 	bool gitMissingLogged_ = false;
+	// Merge Conflicts window (EditorSuite_MergeConflicts.cpp): the report the merge driver left next to the open file
+	struct MergeConflictState {
+		std::string reportPath; ///< empty = no report for the open scene / prefab
+		std::vector<SceneMerge::Conflict> conflicts; ///< undecided only
+		std::vector<SceneMerge::Note> notes;
+		std::unordered_map<uint32_t, int> prefabNodeKeys; ///< Prefab Mode: file object id -> prefabNodeKey of the instance
+	};
+	MergeConflictState mergeConflicts_;
+	bool showMergeConflictsWindow_ = false;
+	/// Reads `<open file>.merge.json` (after LoadScene / OpenPrefabMode / ClosePrefabMode) and opens the window
+	void LoadMergeReport();
+	/// Applies ours or theirs of one undecided conflict to the open scene (one undo step), then drops it from the report
+	bool ResolveMergeConflict(size_t index, bool useTheirs);
+	void ResolveAllMergeConflicts(bool useTheirs);
+	void DrawMergeConflictsWindow();
+	bool ApplyMergeValue(const SceneMerge::Conflict& conflict, bool useTheirs);
+	void WriteMergeReport(); ///< remaining entries back to the file; deleted when no conflict is left
 	/// Where new object ids start after a scene is opened: random and clear of the scene's ids (see the .cpp)
 	static uint32_t PickObjectIdBase(const std::unordered_set<uint32_t>& used);
 	bool randomObjectIdsInTests_ = false; // self-tests keep sequential ids unless a test asks

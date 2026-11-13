@@ -207,6 +207,7 @@ if exist "$(ProjectDir)Resources" xcopy "$(ProjectDir)Resources" "$(OutDir)Resou
     <ClCompile Include="AutoSave.cpp" />
     <ClCompile Include="SceneMerge.cpp" />
     <ClCompile Include="MergeDriver.cpp" />
+    <ClCompile Include="EditorSuite_MergeConflicts.cpp" />
     <ClCompile Include="MapchipTileSet.cpp" />
     <ClCompile Include="EditorSuite_AutoSave.cpp" />
     <ClCompile Include="Terrain.cpp" />

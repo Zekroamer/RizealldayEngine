@@ -1038,6 +1038,7 @@ bool EditorSuite::LoadScene(const std::string& filePath)
 	CheckForAutoSave(filePath);
 
 	LogMessage(std::format("[Scene] Loaded scene from: {} ({} objects)", filePath, gameObjects_.size()), 0);
+	LoadMergeReport();
 	return true;
 }
 
@@ -1057,6 +1058,7 @@ void EditorSuite::NewScene()
 	pendingDuplicateIndex_ = -1;
 	extraSelection_.clear();
 	gameObjects_.clear();
+	mergeConflicts_ = {};
 	currentSceneName_ = "SampleScene";
 	currentScenePath_ = (GetScenesDirectory() / "SampleScene.scene.json").string();
 	isSceneDirty_ = false;
