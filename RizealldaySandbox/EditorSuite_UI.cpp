@@ -76,6 +76,7 @@ void EditorSuite::DrawEditorUI(float deltaTime)
 	DrawAutoSaveRestoreModal();
 	if (showInputActionsWindow_) DrawInputActionsWindow();
 	if (showMergeConflictsWindow_) DrawMergeConflictsWindow();
+	else DiscardMergePreviews(); // closed without Apply: the scene shows mine again, the report stays
 	if (showUIEditorWindow_) DrawUIEditorWindow();
 #endif
 }
@@ -506,6 +507,7 @@ void EditorSuite::DrawHierarchyPanel()
 			if (entered || ImGui::IsItemDeactivated()) isEditingSceneName_ = false;
 		} else {
 			// OpenOnArrow: the double-click that starts a rename must not also collapse the scene
+			if (hierarchyScrollToId_ != 0) ImGui::SetNextItemOpen(true);
 			bool nodeOpen = ImGui::TreeNodeEx("##SceneTreeHeader", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow, "%s", sceneLabel.c_str());
 
 			if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
@@ -564,6 +566,7 @@ void EditorSuite::DrawHierarchyPanel()
 					}
 				}
 				std::vector<bool> visited(gameObjects_.size(), false);
+				const std::unordered_map<uint32_t, int> mergeCounts = MergeConflictCountsByObject();
 
 				auto drawRow = [&](auto&& self, size_t i) -> void {
 					auto& obj = gameObjects_[i];
@@ -603,14 +606,26 @@ void EditorSuite::DrawHierarchyPanel()
 					if (IsSelected(obj.id)) nodeFlags |= ImGuiTreeNodeFlags_Selected;
 
 					const bool isPrefabLinked = !obj.prefabSource.empty();
-					if (!obj.isActive) {
+					const auto mergeCount = mergeCounts.find(obj.id);
+					const int conflictCount = mergeCount == mergeCounts.end() ? 0 : mergeCount->second;
+					const bool coloured = conflictCount > 0 || !obj.isActive || isPrefabLinked;
+					if (conflictCount > 0) {
+						ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.2f, 1.0f));
+					} else if (!obj.isActive) {
 						ImGui::PushStyleColor(ImGuiCol_Text, isPrefabLinked ? ImVec4(0.35f, 0.52f, 0.68f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
 					} else if (isPrefabLinked) {
 						ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.52f, 0.80f, 1.0f, 1.0f));
 					}
+					if (kids && hierarchyScrollToId_ != 0 && IsDescendantOf(hierarchyScrollToId_, obj.id)) ImGui::SetNextItemOpen(true);
 					ImGui::SetNextItemAllowOverlap();
-					const bool nodeIsOpen = ImGui::TreeNodeEx("##Row", nodeFlags, "%s", obj.name.c_str());
-					if (!obj.isActive || isPrefabLinked) ImGui::PopStyleColor();
+					const bool nodeIsOpen = conflictCount > 0 ? ImGui::TreeNodeEx("##Row", nodeFlags, "%s  (!)", obj.name.c_str())
+						: ImGui::TreeNodeEx("##Row", nodeFlags, "%s", obj.name.c_str());
+					if (coloured) ImGui::PopStyleColor();
+					if (conflictCount > 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("%s: %d %s", Tr("Merge conflict"), conflictCount, Tr("field(s)"));
+					if (obj.id == hierarchyScrollToId_) {
+						ImGui::SetScrollHereY(0.5f);
+						hierarchyScrollToId_ = 0;
+					}
 
 					if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
 						if (ImGui::GetIO().KeyShift) {

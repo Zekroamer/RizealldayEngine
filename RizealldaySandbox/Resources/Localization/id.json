@@ -1251,5 +1251,19 @@
 	"Kept (deleted on one side)": "Dipertahankan (dihapus di satu sisi)",
 	"Moved to the root": "Dipindah ke root",
 	"New id": "ID baru",
-	"merge conflict(s) undecided (Window > Merge Conflicts)": "konflik merge belum diputuskan (Window > Merge Conflicts)"
+	"merge conflict(s) undecided (Window > Merge Conflicts)": "konflik merge belum diputuskan (Window > Merge Conflicts)",
+	"Merge conflict": "Konflik merge",
+	"field(s)": "field",
+	"On": "Aktif",
+	"Off": "Nonaktif",
+	"All Mine": "Semua milikku",
+	"All Theirs": "Semua milik mereka",
+	"Apply choices": "Terapkan pilihan",
+	"Pick your value for every field": "Pilih nilaimu untuk semua field",
+	"Pick the other side's value for every field": "Pilih nilai pihak lain untuk semua field",
+	"Keep every pick and finish the merge (Ctrl+Z undoes it)": "Simpan semua pilihan dan selesaikan merge (Ctrl+Z membatalkannya)",
+	"A git merge changed these fields on both sides. Pick Mine or Theirs for each field: the scene shows your pick right away. Nothing is decided until you press Apply choices.": "Merge git mengubah field ini di kedua sisi. Pilih Milikku atau Milik mereka untuk tiap field: scene langsung menampilkan pilihanmu. Belum ada yang diputuskan sampai kamu menekan Terapkan pilihan.",
+	"Scene settings": "Pengaturan scene",
+	"Click to select it in the Hierarchy": "Klik untuk memilihnya di Hierarchy",
+	"(not in the scene)": "(tidak ada di scene)"
 }

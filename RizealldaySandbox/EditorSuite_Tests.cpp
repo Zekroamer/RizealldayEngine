@@ -186,8 +186,14 @@ struct EditorSuiteTestAccess {
 	static bool& RandomIdsInTests(EditorSuite& s) { return s.randomObjectIdsInTests_; }
 	static EditorSuite::MergeConflictState& MergeConflicts(EditorSuite& s) { return s.mergeConflicts_; }
 	static bool MergeConflictsWindowOpen(const EditorSuite& s) { return s.showMergeConflictsWindow_; }
-	static bool ResolveMergeConflict(EditorSuite& s, size_t index, bool useTheirs) { return s.ResolveMergeConflict(index, useTheirs); }
-	static void ResolveAllMergeConflicts(EditorSuite& s, bool useTheirs) { s.ResolveAllMergeConflicts(useTheirs); }
+	static void PreviewMergeChoice(EditorSuite& s, size_t index, bool useTheirs) { s.PreviewMergeChoice(index, useTheirs); }
+	static void PreviewAllMergeChoices(EditorSuite& s, bool useTheirs) { s.PreviewMergeChoices(std::vector<uint8_t>(s.mergeConflicts_.conflicts.size(), useTheirs ? 1 : 0)); }
+	static void ApplyMergeChoices(EditorSuite& s) { s.ApplyMergeChoices(); }
+	static void DiscardMergePreviews(EditorSuite& s) { s.DiscardMergePreviews(); }
+	static std::unordered_map<uint32_t, int> MergeConflictCounts(EditorSuite& s) { return s.MergeConflictCountsByObject(); }
+	static void FocusInHierarchy(EditorSuite& s, uint32_t id) { s.FocusGameObjectInHierarchy(id); }
+	static uint32_t HierarchyScrollTo(const EditorSuite& s) { return s.hierarchyScrollToId_; }
+	static std::string MergeValueText(const std::string& json) { return EditorSuite::MergeValueText(json); }
 	static void UseRecordedPrefabIds(EditorSuite& s, const std::string& recorded, SceneJson::Json& prefab)
 	{
 		const std::string saved = s.openFileRecord_.text;
@@ -12257,76 +12263,195 @@ size_t MergeConflictIndex(EditorSuite& s, const std::string& field)
 }
 }
 
-TEST_CASE(MergeConflicts, DecideInEditor)
+namespace {
+// Writes base/mine/theirs into `dir`, runs the merge driver and returns the merged scene (its report sits next to it; empty = the driver failed)
+template <typename Mine, typename Theirs>
+std::filesystem::path WriteMergedScene(const std::filesystem::path& dir, Mine mine, Theirs theirs)
 {
 	namespace fs = std::filesystem;
-	const fs::path dir = A::TempRoot() / "MergeConflictsWindow";
 	std::error_code ec;
 	fs::remove_all(dir, ec);
 	fs::create_directories(dir, ec);
 	const fs::path scene = dir / "Level.scene.json";
-	const fs::path report = dir / "Level.scene.json.merge.json";
 	std::ofstream(dir / "base.json", std::ios::binary) << kMergeBase;
-	std::ofstream(scene, std::ios::binary) << MergeSide([](auto& j) {
+	std::ofstream(scene, std::ios::binary) << MergeSide(mine);
+	std::ofstream(dir / "theirs.json", std::ios::binary) << MergeSide(theirs);
+	std::string message;
+	if (MergeDriver::MergeFiles(dir / "base.json", scene, dir / "theirs.json", scene.string() + MergeDriver::kReportSuffix, &message) != 0) return {};
+	return scene;
+}
+
+// Enemy (id 20): translation 5 vs 7 and colour red vs blue; Animator speed 2 vs 3; fog 0.7 vs 0.9; Ground edited vs deleted (a note)
+std::filesystem::path WriteEnemyMergeScene(const std::filesystem::path& dir)
+{
+	return WriteMergedScene(dir, [](auto& j) {
 		MergeObj(j, 20)["translation"] = { 5, 0, 0 };
+		MergeObj(j, 20)["materialColor"] = { 1, 0, 0, 1 };
 		MergeObj(j, 20)["components"]["Animator"]["speed"] = 2;
 		j["postProcess"]["fogDensity"] = 0.7;
-		MergeObj(j, 10)["name"] = "Floor"; // edited here, deleted there: kept with a note
-	});
-	std::ofstream(dir / "theirs.json", std::ios::binary) << MergeSide([](auto& j) {
+		MergeObj(j, 10)["name"] = "Floor";
+	}, [](auto& j) {
 		MergeObj(j, 20)["translation"] = { 7, 0, 0 };
+		MergeObj(j, 20)["materialColor"] = { 0, 0, 1, 1 };
 		MergeObj(j, 20)["components"]["Animator"]["speed"] = 3;
 		j["postProcess"]["fogDensity"] = 0.9;
 		j["gameObjects"].erase(0);
 	});
-	std::string message;
-	REQUIRE_MSG(MergeDriver::MergeFiles(dir / "base.json", scene, dir / "theirs.json", report, &message) == 0, message);
-	REQUIRE(fs::exists(report));
+}
+}
 
-	// Opening the scene loads the report and opens the window; the menu-bar notice shows while conflicts remain
+TEST_CASE(MergeConflicts, PreviewIsNotAnEdit)
+{
+	namespace fs = std::filesystem;
+	const fs::path dir = A::TempRoot() / "MergeConflictsPreview";
+	const fs::path scene = WriteEnemyMergeScene(dir);
 	REQUIRE(s.LoadScene(scene.string()));
 	auto& state = A::MergeConflicts(s);
-	REQUIRE(state.conflicts.size() == 3u);
+	REQUIRE(state.conflicts.size() == 4u);
 	CHECK(state.notes.size() == 1u);
 	CHECK(A::MergeConflictsWindowOpen(s));
 	auto enemy = [&] { return s.FindGameObjectById(20, false); };
-	auto speed = [&] { return enemy()->components.Get<AnimatorComponent>("Animator")->speed; };
 	REQUIRE(enemy() != nullptr);
 	CHECK(enemy()->translation.x == 5.0f);
+	enemy()->prefabSource = "MergePreviewPrefab"; // a linked instance: a preview must not become an override
+	s.ResetUndoHistory();
 
-	// Use theirs on one field: applied at once, the report keeps the other two
-	REQUIRE(A::ResolveMergeConflict(s, MergeConflictIndex(s, "translation"), true));
+	// Theirs shows at once, mine shows again; neither is an undo step or an override, not even after the next edit poll
+	A::PreviewMergeChoice(s, MergeConflictIndex(s, "translation"), true);
 	CHECK(std::abs(enemy()->translation.x - 7.0f) < 1e-4f);
-	CHECK(state.conflicts.size() == 2u);
-	std::vector<SceneMerge::Conflict> left;
-	std::vector<SceneMerge::Note> notes;
-	REQUIRE(SceneMerge::ReportFromJson(ReadFileText(report), left, notes));
-	CHECK(left.size() == 2u);
-	CHECK(notes.size() == 1u);
-
-	// Undo restores my value
-	s.Undo();
+	s.PushUndoSnapshot();
+	CHECK(A::UndoCount(s) == 0u);
+	CHECK(enemy()->prefabOverrides.empty());
+	A::PreviewMergeChoice(s, MergeConflictIndex(s, "translation"), false);
 	CHECK(std::abs(enemy()->translation.x - 5.0f) < 1e-4f);
+	s.PushUndoSnapshot();
+	CHECK(A::UndoCount(s) == 0u);
+	CHECK(enemy()->prefabOverrides.empty());
+	CHECK(state.conflicts.size() == 4u); // nothing decided
 
-	// Use mine on a data component field, then theirs for the rest (a scene setting)
-	REQUIRE(A::ResolveMergeConflict(s, MergeConflictIndex(s, "components/Animator/speed"), false));
-	CHECK(std::abs(speed() - 2.0f) < 1e-4f);
-	CHECK(state.conflicts.size() == 1u);
-	A::ResolveAllMergeConflicts(s, true);
+	// All Theirs previews every row, a scene setting too; Save keeps the report until Apply
+	A::PreviewAllMergeChoices(s, true);
 	CHECK(std::abs(A::PostSettings(s).fogDensity - 0.9f) < 1e-4f);
-	CHECK(std::abs(speed() - 2.0f) < 1e-4f);
-	CHECK(state.conflicts.empty()); // notice gone
+	CHECK(std::abs(enemy()->components.Get<AnimatorComponent>("Animator")->speed - 3.0f) < 1e-4f);
+	REQUIRE(s.SaveScene(scene.string()));
+	CHECK(fs::exists(scene.string() + MergeDriver::kReportSuffix));
+	CHECK(state.conflicts.size() == 4u);
+	s.NewScene();
+	std::error_code ec;
+	fs::remove_all(dir, ec);
+}
+
+TEST_CASE(MergeConflicts, ApplyMixesChoicesInOneUndoStep)
+{
+	namespace fs = std::filesystem;
+	const fs::path dir = A::TempRoot() / "MergeConflictsApply";
+	const fs::path scene = WriteEnemyMergeScene(dir);
+	const fs::path report = scene.string() + MergeDriver::kReportSuffix;
+	REQUIRE(s.LoadScene(scene.string()));
+	auto& state = A::MergeConflicts(s);
+	REQUIRE(state.conflicts.size() == 4u);
+	auto enemy = [&] { return s.FindGameObjectById(20, false); };
+	REQUIRE(enemy() != nullptr);
+	CHECK(std::abs(enemy()->materialColor.x - 1.0f) < 1e-4f);
+
+	// Position from mine, colour from theirs; the rest stays on mine (the default)
+	A::PreviewAllMergeChoices(s, true);
+	A::PreviewMergeChoice(s, MergeConflictIndex(s, "translation"), false);
+	A::PreviewMergeChoice(s, MergeConflictIndex(s, "components/Animator/speed"), false);
+	A::PreviewMergeChoice(s, MergeConflictIndex(s, "postProcess/fogDensity"), false);
+	const size_t undoBefore = A::UndoCount(s);
+	A::ApplyMergeChoices(s);
+	CHECK(std::abs(enemy()->translation.x - 5.0f) < 1e-4f);
+	CHECK(std::abs(enemy()->materialColor.x - 0.0f) < 1e-4f);
+	CHECK(std::abs(enemy()->materialColor.z - 1.0f) < 1e-4f);
+	CHECK(std::abs(A::PostSettings(s).fogDensity - 0.7f) < 1e-4f);
+	CHECK(state.conflicts.empty()); // menu-bar notice gone
 	CHECK(!fs::exists(report));
 	CHECK(state.notes.size() == 1u); // notes stay listed until another scene is opened
+	CHECK(A::UndoCount(s) == undoBefore + 1);
+
+	// One Undo restores both of mine
 	s.Undo();
-	CHECK(std::abs(A::PostSettings(s).fogDensity - 0.7f) < 1e-4f);
+	CHECK(std::abs(enemy()->translation.x - 5.0f) < 1e-4f);
+	CHECK(std::abs(enemy()->materialColor.x - 1.0f) < 1e-4f);
+	CHECK(std::abs(enemy()->materialColor.z - 0.0f) < 1e-4f);
 
 	// Opening again: nothing left to decide
 	REQUIRE(s.LoadScene(scene.string()));
 	CHECK(A::MergeConflicts(s).conflicts.empty());
 	CHECK(A::MergeConflicts(s).notes.empty());
 	s.NewScene();
+	std::error_code ec;
 	fs::remove_all(dir, ec);
+}
+
+TEST_CASE(MergeConflicts, DiscardShowsMineAndKeepsTheReport)
+{
+	namespace fs = std::filesystem;
+	const fs::path dir = A::TempRoot() / "MergeConflictsDiscard";
+	const fs::path scene = WriteEnemyMergeScene(dir);
+	const fs::path report = scene.string() + MergeDriver::kReportSuffix;
+	REQUIRE(s.LoadScene(scene.string()));
+	auto enemy = [&] { return s.FindGameObjectById(20, false); };
+	REQUIRE(enemy() != nullptr);
+	A::PreviewAllMergeChoices(s, true);
+	CHECK(std::abs(enemy()->translation.x - 7.0f) < 1e-4f);
+
+	// What closing the window does
+	A::DiscardMergePreviews(s);
+	CHECK(std::abs(enemy()->translation.x - 5.0f) < 1e-4f);
+	CHECK(std::abs(enemy()->materialColor.x - 1.0f) < 1e-4f);
+	CHECK(std::abs(A::PostSettings(s).fogDensity - 0.7f) < 1e-4f);
+	CHECK(A::MergeConflicts(s).conflicts.size() == 4u);
+	CHECK(fs::exists(report));
+	CHECK(A::UndoCount(s) == 0u);
+
+	// Opening another scene while previewing: the report stays, and opening the scene again starts on mine
+	A::PreviewAllMergeChoices(s, true);
+	s.NewScene();
+	CHECK(fs::exists(report));
+	REQUIRE(s.LoadScene(scene.string()));
+	REQUIRE(A::MergeConflicts(s).conflicts.size() == 4u);
+	for (uint8_t theirs : A::MergeConflicts(s).showsTheirs) CHECK(theirs == 0);
+	CHECK(std::abs(enemy()->translation.x - 5.0f) < 1e-4f);
+	s.NewScene();
+	std::error_code ec;
+	fs::remove_all(dir, ec);
+}
+
+TEST_CASE(MergeConflicts, HierarchyMarksAndFocus)
+{
+	namespace fs = std::filesystem;
+	const fs::path dir = A::TempRoot() / "MergeConflictsFocus";
+	const fs::path scene = WriteEnemyMergeScene(dir);
+	REQUIRE(s.LoadScene(scene.string()));
+
+	// Enemy has three undecided fields (the fog conflict is a scene setting, Ground only has a note)
+	auto counts = A::MergeConflictCounts(s);
+	CHECK(counts.size() == 1u);
+	CHECK(counts[20] == 3);
+
+	A::FocusInHierarchy(s, 20);
+	REQUIRE(A::Primary(s) >= 0);
+	CHECK(A::Objects(s)[A::Primary(s)].id == 20u);
+	CHECK(A::HierarchyScrollTo(s) == 20u);
+
+	A::ApplyMergeChoices(s);
+	CHECK(A::MergeConflictCounts(s).empty());
+	s.NewScene();
+	std::error_code ec;
+	fs::remove_all(dir, ec);
+}
+
+TEST_CASE(MergeConflicts, ValuesReadClearly)
+{
+	CHECK(A::MergeValueText("") == Tr("(missing)"));
+	CHECK(A::MergeValueText("true") == Tr("On"));
+	CHECK(A::MergeValueText("false") == Tr("Off"));
+	CHECK(A::MergeValueText("[1,0.5,2]") == "1.000, 0.500, 2.000");
+	CHECK(A::MergeValueText("0.25") == "0.250");
+	CHECK(A::MergeValueText("3") == "3");
+	CHECK(A::MergeValueText("\"Enemy\"") == "Enemy");
 }
 
 TEST_CASE(MergeDriver, InstallWaitsWhileGitIsBusy)
@@ -12440,7 +12565,8 @@ TEST_CASE(MergeConflicts, ReportFollowsSceneRenameAndMove)
 	CHECK(!fs::exists(renamedReport));
 
 	// Deciding still updates the report where it now is
-	A::ResolveAllMergeConflicts(s, true);
+	A::PreviewAllMergeChoices(s, true);
+	A::ApplyMergeChoices(s);
 	CHECK(!fs::exists(finalReport));
 
 	A::ProjectRoot(s) = savedRoot;
@@ -12627,7 +12753,8 @@ TEST_CASE(PullWhileOpen, DirtySceneMergesPulledChanges)
 	CHECK(A::MergeConflictsWindowOpen(s));
 
 	// Theirs from the window, then Save keeps everything
-	REQUIRE(A::ResolveMergeConflict(s, 0, true));
+	A::PreviewMergeChoice(s, 0, true);
+	A::ApplyMergeChoices(s);
 	CHECK(std::abs(s.FindGameObjectById(crate, false)->translation.x - 7.0f) < 1e-4f);
 	REQUIRE(s.SaveScene(scene.string()));
 	const std::string saved = ReadFileText(scene);

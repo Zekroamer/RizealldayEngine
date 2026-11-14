@@ -1430,16 +1430,27 @@ private:
 	struct MergeConflictState {
 		std::string reportPath; ///< empty = no report for the open scene / prefab
 		std::vector<SceneMerge::Conflict> conflicts; ///< undecided only
+		std::vector<uint8_t> showsTheirs; ///< per conflict: the open scene previews "theirs" (1) or shows "mine" (0)
 		std::vector<SceneMerge::Note> notes;
 		std::unordered_map<uint32_t, int> prefabNodeKeys; ///< Prefab Mode: file object id -> prefabNodeKey of the instance
 	};
 	MergeConflictState mergeConflicts_;
 	bool showMergeConflictsWindow_ = false;
+	uint32_t hierarchyScrollToId_ = 0; ///< the Hierarchy opens the parents of this object and scrolls to it once
 	/// Reads `<open file>.merge.json` (after LoadScene / OpenPrefabMode / ClosePrefabMode) and opens the window
 	void LoadMergeReport();
-	/// Applies ours or theirs of one undecided conflict to the open scene (one undo step), then drops it from the report
-	bool ResolveMergeConflict(size_t index, bool useTheirs);
-	void ResolveAllMergeConflicts(bool useTheirs);
+	/// Shows mine or theirs of each conflict in the open scene without deciding: no undo step, no prefab override
+	void PreviewMergeChoices(const std::vector<uint8_t>& showTheirs);
+	void PreviewMergeChoice(size_t index, bool useTheirs);
+	void DiscardMergePreviews(); ///< every row back to mine; the report stays
+	/// Decides every conflict as previewed (one undo step from mine) and deletes the report
+	void ApplyMergeChoices();
+	/// Open-scene object id -> number of undecided conflicts on it (Hierarchy marks)
+	std::unordered_map<uint32_t, int> MergeConflictCountsByObject();
+	int MergeConflictObjectIndex(uint32_t reportObjectId); ///< index in gameObjects_ (Prefab Mode maps the file ids), -1 = gone
+	/// Selects the object and makes the Hierarchy show it
+	void FocusGameObjectInHierarchy(uint32_t id);
+	static std::string MergeValueText(const std::string& json); ///< "1.000, 2.000, 3.000", On/Off, "(missing)"
 	void DrawMergeConflictsWindow();
 	bool ApplyMergeValue(const SceneMerge::Conflict& conflict, bool useTheirs);
 	void WriteMergeReport(); ///< remaining entries back to the file; deleted when no conflict is left

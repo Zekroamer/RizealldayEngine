@@ -1251,5 +1251,19 @@
 	"Kept (deleted on one side)": "保持（片方で削除）",
 	"Moved to the root": "ルートに移動",
 	"New id": "新しい ID",
-	"merge conflict(s) undecided (Window > Merge Conflicts)": "件のマージ競合が未決定（Window > Merge Conflicts）"
+	"merge conflict(s) undecided (Window > Merge Conflicts)": "件のマージ競合が未決定（Window > Merge Conflicts）",
+	"Merge conflict": "マージ競合",
+	"field(s)": "項目",
+	"On": "オン",
+	"Off": "オフ",
+	"All Mine": "すべて自分",
+	"All Theirs": "すべて相手",
+	"Apply choices": "選択を適用",
+	"Pick your value for every field": "すべての項目で自分の値を選ぶ",
+	"Pick the other side's value for every field": "すべての項目で相手の値を選ぶ",
+	"Keep every pick and finish the merge (Ctrl+Z undoes it)": "選んだ値をすべて確定してマージを終える（Ctrl+Z で元に戻せます）",
+	"A git merge changed these fields on both sides. Pick Mine or Theirs for each field: the scene shows your pick right away. Nothing is decided until you press Apply choices.": "git のマージで、これらの項目が両側で変更されました。項目ごとに「自分」か「相手」を選ぶと、シーンにすぐ反映されます。「選択を適用」を押すまでは確定しません。",
+	"Scene settings": "シーン設定",
+	"Click to select it in the Hierarchy": "クリックでヒエラルキー上で選択",
+	"(not in the scene)": "(シーンにありません)"
 }

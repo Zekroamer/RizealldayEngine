@@ -114,6 +114,7 @@ bool EditorSuite::ApplyOpenFileChange()
 bool EditorSuite::MergeOpenSceneWith(const std::string& theirs)
 {
 	if (sceneState_ != EditorSceneState::Edit) return false;
+	DiscardMergePreviews(); // "mine" is what the report says; the reloaded report starts on mine again
 	const SceneMerge::Result result = SceneMerge::Merge(openFileRecord_.text, SerializeSceneToString(), theirs);
 	if (!result.ok) {
 		LogMessage(std::format("[Scene] {} changed on disk but could not be merged with the open scene: {}", openFileRecord_.path, result.error), 2);

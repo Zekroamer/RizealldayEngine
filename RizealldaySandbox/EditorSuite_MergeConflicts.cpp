@@ -1,12 +1,15 @@
 ﻿#include "EditorSuiteInternal.h"
 #include "SceneJson.h"
 #include "MergeDriver.h"
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <sstream>
 
 // Merge Conflicts window: decides the conflicts the scene merge driver (MergeDriver.cpp) kept as "ours" and wrote to
-// `<file>.merge.json`. Each choice is applied to the open scene at once and is one undo step; the report shrinks with
-// every decision and is deleted when no conflict is left.
+// `<file>.merge.json`. Each row picks Mine or Theirs; the open scene previews the pick at once (no undo step, no prefab
+// override). Apply choices decides every row as one undo step and deletes the report; closing the window without Apply
+// shows mine again and keeps the report.
 
 namespace {
 	using SceneJson::Json;
@@ -77,6 +80,7 @@ void EditorSuite::LoadMergeReport()
 		return;
 	}
 	mergeConflicts_.reportPath = reportPath;
+	mergeConflicts_.showsTheirs.assign(mergeConflicts_.conflicts.size(), 0); // the file holds mine
 	if (prefabMode_.active) {
 		// Prefab Mode shows an instance with new ids: the report names the ids written in the prefab file
 		std::ifstream prefabIn(currentScenePath_, std::ios::binary);
@@ -157,15 +161,7 @@ bool EditorSuite::ApplyMergeValue(const SceneMerge::Conflict& conflict, bool use
 		return true;
 	}
 
-	int index = -1;
-	if (prefabMode_.active) {
-		const auto key = mergeConflicts_.prefabNodeKeys.find(conflict.objectId);
-		for (size_t i = 0; key != mergeConflicts_.prefabNodeKeys.end() && i < gameObjects_.size(); ++i) {
-			if (gameObjects_[i].prefabSource == prefabMode_.prefab && gameObjects_[i].prefabNodeKey == key->second) index = static_cast<int>(i);
-		}
-	} else {
-		index = FindGameObjectIndexById(conflict.objectId);
-	}
+	const int index = MergeConflictObjectIndex(conflict.objectId);
 	if (index < 0) return false;
 	Json o = Json::object();
 	WriteGameObjectJson(gameObjects_[index], &o);
@@ -180,40 +176,113 @@ bool EditorSuite::ApplyMergeValue(const SceneMerge::Conflict& conflict, bool use
 	return true;
 }
 
-bool EditorSuite::ResolveMergeConflict(size_t index, bool useTheirs)
+int EditorSuite::MergeConflictObjectIndex(uint32_t reportObjectId)
 {
-	if (index >= mergeConflicts_.conflicts.size() || sceneState_ != EditorSceneState::Edit) return false;
-	PushUndoSnapshot(); // a pending edit is its own step
-	const SceneMerge::Conflict conflict = mergeConflicts_.conflicts[index];
-	if (!ApplyMergeValue(conflict, useTheirs)) {
-		LogMessage(std::format("[Merge] '{}' of {} could not be applied (the object or field is gone); the open value stays.",
-			conflict.field, conflict.objectId ? conflict.objectName : std::string("the scene")), 1);
+	if (reportObjectId == 0) return -1;
+	if (!prefabMode_.active) return FindGameObjectIndexById(reportObjectId);
+	const auto key = mergeConflicts_.prefabNodeKeys.find(reportObjectId);
+	if (key == mergeConflicts_.prefabNodeKeys.end()) return -1;
+	for (size_t i = 0; i < gameObjects_.size(); ++i) {
+		if (gameObjects_[i].prefabSource == prefabMode_.prefab && gameObjects_[i].prefabNodeKey == key->second) return static_cast<int>(i);
 	}
-	FinishMergeEdit();
-	mergeConflicts_.conflicts.erase(mergeConflicts_.conflicts.begin() + index);
-	WriteMergeReport();
-	return true;
+	return -1;
 }
 
-void EditorSuite::ResolveAllMergeConflicts(bool useTheirs)
+std::unordered_map<uint32_t, int> EditorSuite::MergeConflictCountsByObject()
+{
+	std::unordered_map<uint32_t, int> counts;
+	for (const SceneMerge::Conflict& c : mergeConflicts_.conflicts) {
+		if (const int index = MergeConflictObjectIndex(c.objectId); index >= 0) ++counts[gameObjects_[index].id];
+	}
+	return counts;
+}
+
+void EditorSuite::FocusGameObjectInHierarchy(uint32_t id)
+{
+	const int index = FindGameObjectIndexById(id);
+	if (index < 0) return;
+	SelectObject(index, false);
+	hierarchyScrollToId_ = id;
+}
+
+void EditorSuite::PreviewMergeChoices(const std::vector<uint8_t>& showTheirs)
+{
+	std::vector<uint8_t>& shown = mergeConflicts_.showsTheirs;
+	if (sceneState_ != EditorSceneState::Edit || showTheirs.size() != mergeConflicts_.conflicts.size() || shown.size() != showTheirs.size()) return;
+	if (shown == showTheirs) return;
+	PushUndoSnapshot(); // a pending edit is its own step, never mixed with a preview
+	for (size_t i = 0; i < showTheirs.size(); ++i) {
+		if (shown[i] == showTheirs[i]) continue;
+		const SceneMerge::Conflict& conflict = mergeConflicts_.conflicts[i];
+		if (!ApplyMergeValue(conflict, showTheirs[i] != 0)) {
+			LogMessage(std::format("[Merge] '{}' of {} could not be shown (the object or field is gone); the open value stays.",
+				conflict.field, conflict.objectId ? conflict.objectName : std::string("the scene")), 1);
+		}
+	}
+	shown = showTheirs;
+	RebuildHierarchyLinks();
+	UpdateWorldMatrices();
+	EnsureEditModeScriptInstances();
+	RefreshAllScriptObjectViews();
+	isSceneDirty_ = true;
+	// The baseline takes the preview, so it is neither an undo step nor a prefab override (PushUndoSnapshot diffs against it)
+	undoBaseline_ = CaptureUndoState();
+	undoMergeAllowed_ = false;
+}
+
+void EditorSuite::PreviewMergeChoice(size_t index, bool useTheirs)
+{
+	if (index >= mergeConflicts_.showsTheirs.size()) return;
+	std::vector<uint8_t> choices = mergeConflicts_.showsTheirs;
+	choices[index] = useTheirs ? 1 : 0;
+	PreviewMergeChoices(choices);
+}
+
+void EditorSuite::DiscardMergePreviews()
+{
+	if (std::find(mergeConflicts_.showsTheirs.begin(), mergeConflicts_.showsTheirs.end(), uint8_t(1)) == mergeConflicts_.showsTheirs.end()) return;
+	PreviewMergeChoices(std::vector<uint8_t>(mergeConflicts_.conflicts.size(), 0));
+}
+
+void EditorSuite::ApplyMergeChoices()
 {
 	if (mergeConflicts_.conflicts.empty() || sceneState_ != EditorSceneState::Edit) return;
+	const std::vector<uint8_t> chosen = mergeConflicts_.showsTheirs;
+	DiscardMergePreviews(); // the undo step goes from mine to the choices
 	PushUndoSnapshot();
-	for (const SceneMerge::Conflict& conflict : mergeConflicts_.conflicts) {
-		if (!ApplyMergeValue(conflict, useTheirs)) {
+	for (size_t i = 0; i < mergeConflicts_.conflicts.size(); ++i) {
+		const SceneMerge::Conflict& conflict = mergeConflicts_.conflicts[i];
+		if (!ApplyMergeValue(conflict, i < chosen.size() && chosen[i] != 0)) {
 			LogMessage(std::format("[Merge] '{}' of {} could not be applied (the object or field is gone); the open value stays.",
 				conflict.field, conflict.objectId ? conflict.objectName : std::string("the scene")), 1);
 		}
 	}
 	FinishMergeEdit(); // all of them are one undo step
 	mergeConflicts_.conflicts.clear();
+	mergeConflicts_.showsTheirs.clear();
 	WriteMergeReport();
+}
+
+std::string EditorSuite::MergeValueText(const std::string& json)
+{
+	if (json.empty()) return Tr("(missing)");
+	const std::optional<Json> v = SceneJson::Parse(json);
+	if (!v) return json;
+	if (v->is_boolean()) return v->get<bool>() ? Tr("On") : Tr("Off");
+	if (v->is_number_float()) return std::format("{:.3f}", v->get<double>());
+	if (v->is_string()) return v->get<std::string>();
+	if (v->is_array() && !v->empty() && std::all_of(v->begin(), v->end(), [](const Json& e) { return e.is_number(); })) {
+		std::string text;
+		for (const Json& e : *v) text += std::format("{}{:.3f}", text.empty() ? "" : ", ", e.get<double>());
+		return text;
+	}
+	return v->dump(-1, ' ', false, Json::error_handler_t::replace);
 }
 
 void EditorSuite::DrawMergeConflictsWindow()
 {
 #ifdef USE_IMGUI
-	ImGui::SetNextWindowSize(ImVec2(720.0f, 360.0f), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(720.0f, 420.0f), ImGuiCond_FirstUseEver);
 	if (!ImGui::Begin(TrId("Merge Conflicts"), &showMergeConflictsWindow_)) {
 		ImGui::End();
 		return;
@@ -222,52 +291,116 @@ void EditorSuite::DrawMergeConflictsWindow()
 	if (mergeConflicts_.conflicts.empty() && mergeConflicts_.notes.empty()) {
 		ImGui::TextDisabled("%s", Tr("The open scene has no merge conflicts."));
 	}
-	if (!mergeConflicts_.conflicts.empty()) {
-		ImGui::TextWrapped("%s", Tr("A git merge changed these fields differently on both sides. The scene shows your value until you decide. Save the scene after deciding."));
+	const size_t count = mergeConflicts_.conflicts.size();
+	if (count > 0 && mergeConflicts_.showsTheirs.size() == count) {
+		ImGui::TextWrapped("%s", Tr("A git merge changed these fields on both sides. Pick Mine or Theirs for each field: the scene shows your pick right away. Nothing is decided until you press Apply choices."));
 		if (!canEdit) ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "%s", Tr("Stop Play to decide merge conflicts."));
 		ImGui::BeginDisabled(!canEdit);
-		if (ImGui::Button(TrId("Use Mine for All"))) ResolveAllMergeConflicts(false);
+		bool allMine = false;
+		bool allTheirs = false;
+		bool apply = false;
+		if (ImGui::Button(TrId("All Mine"))) allMine = true;
+		ImGui::SetItemTooltip("%s", Tr("Pick your value for every field"));
 		ImGui::SameLine();
-		if (ImGui::Button(TrId("Use Theirs for All"))) ResolveAllMergeConflicts(true);
+		if (ImGui::Button(TrId("All Theirs"))) allTheirs = true;
+		ImGui::SetItemTooltip("%s", Tr("Pick the other side's value for every field"));
+		ImGui::SameLine();
+		ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.48f, 0.26f, 1.0f));
+		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.58f, 0.32f, 1.0f));
+		if (ImGui::Button(TrId("Apply choices"))) apply = true;
+		ImGui::PopStyleColor(2);
+		ImGui::SetItemTooltip("%s", Tr("Keep every pick and finish the merge (Ctrl+Z undoes it)"));
 		ImGui::EndDisabled();
 
-		size_t decide = SIZE_MAX;
-		bool decideTheirs = false;
-		const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY;
-		const float tableHeight = mergeConflicts_.notes.empty() ? 0.0f : ImGui::GetContentRegionAvail().y * 0.65f;
-		if (ImGui::BeginTable("##MergeConflictTable", 5, flags, ImVec2(0.0f, tableHeight))) {
-			ImGui::TableSetupScrollFreeze(0, 1);
-			ImGui::TableSetupColumn(Tr("Object"));
-			ImGui::TableSetupColumn(Tr("Field"));
-			ImGui::TableSetupColumn(Tr("Mine"));
-			ImGui::TableSetupColumn(Tr("Theirs"));
-			ImGui::TableSetupColumn("##MergeChoice", ImGuiTableColumnFlags_WidthFixed);
-			ImGui::TableHeadersRow();
-			auto valueText = [](const std::string& v) { return v.empty() ? std::string(Tr("(missing)")) : v; };
-			for (size_t i = 0; i < mergeConflicts_.conflicts.size(); ++i) {
-				const SceneMerge::Conflict& c = mergeConflicts_.conflicts[i];
-				ImGui::PushID(static_cast<int>(i));
-				ImGui::TableNextRow();
-				ImGui::TableNextColumn();
-				if (c.objectId == 0) ImGui::TextUnformatted(Tr("Scene setting"));
-				else ImGui::TextUnformatted(std::format("{} ({})", c.objectName, c.objectId).c_str());
-				ImGui::TableNextColumn();
-				ImGui::TextUnformatted(c.field.c_str());
-				ImGui::TableNextColumn();
-				ImGui::TextWrapped("%s", valueText(c.ours).c_str());
-				ImGui::TableNextColumn();
-				ImGui::TextWrapped("%s", valueText(c.theirs).c_str());
-				ImGui::TableNextColumn();
-				ImGui::BeginDisabled(!canEdit);
-				if (ImGui::SmallButton(TrId("Use Mine"))) decide = i;
-				ImGui::SameLine();
-				if (ImGui::SmallButton(TrId("Use Theirs"))) { decide = i; decideTheirs = true; }
-				ImGui::EndDisabled();
-				ImGui::PopID();
-			}
-			ImGui::EndTable();
+		// One group per object, in report order; scene settings (object id 0) under their own header
+		std::vector<uint32_t> groupOrder;
+		std::unordered_map<uint32_t, std::vector<size_t>> groups;
+		for (size_t i = 0; i < count; ++i) {
+			const uint32_t id = mergeConflicts_.conflicts[i].objectId;
+			if (groups[id].empty()) groupOrder.push_back(id);
+			groups[id].push_back(i);
 		}
-		if (decide != SIZE_MAX) ResolveMergeConflict(decide, decideTheirs); // after the loop: it shrinks the list
+		auto colorOf = [](const SceneMerge::Conflict& c, const std::string& json, ImVec4& color) {
+			std::string field = c.field.substr(c.field.find_last_of('/') + 1);
+			std::transform(field.begin(), field.end(), field.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+			if (field.find("color") == std::string::npos && field.find("colour") == std::string::npos) return false;
+			const std::optional<Json> v = SceneJson::Parse(json);
+			if (!v || !v->is_array() || v->size() < 3 || v->size() > 4) return false;
+			float rgba[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+			for (size_t k = 0; k < v->size(); ++k) {
+				if (!(*v)[k].is_number()) return false;
+				rgba[k] = (*v)[k].get<float>();
+			}
+			color = ImVec4(rgba[0], rgba[1], rgba[2], rgba[3]);
+			return true;
+		};
+
+		size_t pick = SIZE_MAX;
+		bool pickTheirs = false;
+		const float listHeight = mergeConflicts_.notes.empty() ? 0.0f : ImGui::GetContentRegionAvail().y * 0.65f;
+		ImGui::BeginChild("##MergeRows", ImVec2(0.0f, listHeight), ImGuiChildFlags_Borders);
+		for (uint32_t objectId : groupOrder) {
+			ImGui::PushID(static_cast<int>(objectId));
+			const std::vector<size_t>& rows = groups[objectId];
+			if (objectId == 0) {
+				ImGui::SeparatorText(Tr("Scene settings"));
+			} else {
+				const int index = MergeConflictObjectIndex(objectId);
+				const std::string& name = mergeConflicts_.conflicts[rows.front()].objectName;
+				if (index >= 0) {
+					ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.2f, 1.0f));
+					if (ImGui::Selectable(std::format("{}  (!)", name).c_str(), IsSelected(gameObjects_[index].id))) FocusGameObjectInHierarchy(gameObjects_[index].id);
+					ImGui::PopStyleColor();
+					ImGui::SetItemTooltip("%s", Tr("Click to select it in the Hierarchy"));
+				} else {
+					ImGui::TextDisabled("%s", std::format("{} {}", name, Tr("(not in the scene)")).c_str());
+				}
+			}
+			if (ImGui::BeginTable("##MergeRowsTable", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
+				ImGui::TableSetupColumn(Tr("Field"), ImGuiTableColumnFlags_WidthStretch, 0.8f);
+				ImGui::TableSetupColumn(Tr("Mine"), ImGuiTableColumnFlags_WidthStretch, 1.0f);
+				ImGui::TableSetupColumn(Tr("Theirs"), ImGuiTableColumnFlags_WidthStretch, 1.0f);
+				ImGui::TableHeadersRow();
+				for (size_t i : rows) {
+					const SceneMerge::Conflict& c = mergeConflicts_.conflicts[i];
+					const bool theirs = mergeConflicts_.showsTheirs[i] != 0;
+					ImGui::PushID(static_cast<int>(i));
+					ImGui::TableNextRow();
+					ImGui::TableNextColumn();
+					ImGui::TextUnformatted(c.field.c_str());
+					for (int side = 0; side < 2; ++side) {
+						ImGui::TableNextColumn();
+						const bool chosen = (side == 1) == theirs;
+						if (chosen) ImGui::TableSetBgColor(ImGuiTableBgTarget_CellBg, IM_COL32(46, 110, 64, 140));
+						const std::string& json = side == 0 ? c.ours : c.theirs;
+						ImGui::PushID(side);
+						ImGui::BeginDisabled(!canEdit);
+						if (ImGui::RadioButton(MergeValueText(json).c_str(), chosen) && !chosen) {
+							pick = i;
+							pickTheirs = side == 1;
+						}
+						ImGui::EndDisabled();
+						ImVec4 color;
+						if (colorOf(c, json, color)) {
+							ImGui::SameLine();
+							ImGui::ColorButton("##Swatch", color, ImGuiColorEditFlags_AlphaPreviewHalf, ImVec2(ImGui::GetFontSize() * 1.5f, ImGui::GetFontSize()));
+						}
+						ImGui::PopID();
+					}
+					ImGui::PopID();
+				}
+				ImGui::EndTable();
+			}
+			ImGui::Spacing();
+			ImGui::PopID();
+		}
+		ImGui::EndChild();
+
+		// After the rows: these change the list the loop reads
+		if (pick != SIZE_MAX) PreviewMergeChoice(pick, pickTheirs);
+		if (allMine) PreviewMergeChoices(std::vector<uint8_t>(count, 0));
+		if (allTheirs) PreviewMergeChoices(std::vector<uint8_t>(count, 1));
+		if (apply) ApplyMergeChoices();
 	}
 	if (!mergeConflicts_.notes.empty()) {
 		ImGui::SeparatorText(Tr("Notes"));
