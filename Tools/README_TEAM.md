@@ -20,7 +20,7 @@
   the open scene reloads by itself, and unsaved edits are merged with the pulled file (a pull during Play applies after Stop).
 - Several people may edit the same scene: scenes and prefabs merge object by object and field by field.
   When both sides changed the same field, the editor shows a yellow notice: decide each one in
-  **Window > Merge Conflicts** (**Use Mine** / **Use Theirs**), then save and commit.
+  **Window > Merge Conflicts** (pick **Mine** / **Theirs** per field, it previews in the scene, then **Apply choices**), then save and commit.
 - **Never** press "Keep Current" / "Take Incoming" in Visual Studio on a `*.scene.json` or `*.prefab.json`: it throws away
   the other person's changes. If a scene shows up there, Abort the merge, open the project in the editor once, and pull again.
 - GitHub says a pull request "has conflicts"? Do not fix scenes on the web. In Visual Studio, merge `origin/master` into the branch
@@ -48,7 +48,7 @@ If the editor says a project was saved with a newer engine, install the newest z
 - Ekstrak zip, jalankan `Editor\RizealldaySandbox.exe`. Project game disimpan di luar folder engine.
 - Anggota baru: `git clone` → File > Open Project → script ter-build otomatis.
 - Pull/push lewat Visual Studio, editor boleh tetap terbuka (scene yang terbuka dimuat ulang atau digabung otomatis). Satu scene boleh diedit beberapa orang. Commit file `.meta`.
-- Kalau muncul tulisan kuning konflik merge: buka **Window > Merge Conflicts**, pilih **Use Mine** / **Use Theirs**, lalu simpan dan commit.
+- Kalau muncul tulisan kuning konflik merge: buka **Window > Merge Conflicts**, pilih **Mine** / **Theirs** per field (langsung terlihat di scene), klik **Apply choices**, lalu simpan dan commit.
 - **Jangan** pakai "Keep Current" / "Take Incoming" di Visual Studio untuk file scene/prefab. Pull request yang konflik di GitHub: merge `origin/master` ke branch di Visual Studio, lalu push.
 - UI game: **GameObject > UI** (Canvas, Panel, Image, Text, Progress Bar, Button); script mengubahnya lewat nama (`SetUIText`, `OnUIButton`).
 - Update engine: **Help > Install Engine Update...** lalu pilih zip baru (atau drag zip ke editor).
@@ -58,7 +58,7 @@ If the editor says a project was saved with a newer engine, install the newest z
 - zip を展開して `Editor\RizealldaySandbox.exe` を起動。ゲームプロジェクトはエンジンのフォルダーの外に置く。
 - 参加するとき: `git clone` → File > Open Project → スクリプトは自動でビルドされる。
 - pull / push は Visual Studio で。エディターは開いたままでよい（開いているシーンは自動で読み込み直し・マージされる）。同じシーンを複数人で編集してよい。`.meta` もコミットする。
-- メニューバーに黄色のマージ競合の表示が出たら **Window > Merge Conflicts** で **Use Mine** / **Use Theirs** を選び、保存してコミット。
+- メニューバーに黄色のマージ競合の表示が出たら **Window > Merge Conflicts** で項目ごとに **Mine** / **Theirs** を選び（シーンでプレビューされる）、**Apply choices** を押して保存・コミット。
 - シーン・プレハブに Visual Studio の「Keep Current」/「Take Incoming」は**使わない**。GitHub でマージできないプルリクエストは、Visual Studio で `origin/master` をブランチにマージしてから push。詳しくは `GUIDE_JA.md` の 4 章。
 - ゲーム UI: **GameObject > UI**（Canvas・Panel・Image・Text・Progress Bar・Button）。スクリプトからは名前で操作（`SetUIText`、`OnUIButton`）。
 - エンジン更新: **Help > Install Engine Update...** で新しい zip を選ぶ (zip をエディターにドロップしても可)。
