@@ -21,8 +21,16 @@ namespace MergeDriver {
 		const std::filesystem::path& reportFile, std::string* message);
 
 	/// Adds the result's conflicts and notes to the report file (created when missing). An entry for the same object
-	/// and field replaces the older one; undecided entries of an earlier merge stay.
-	bool WriteReport(const std::filesystem::path& reportFile, const SceneMerge::Result& result);
+	/// and field replaces the older one; undecided entries of an earlier merge stay. `fileHash` (ContentHash of the
+	/// scene file the report belongs to, empty = any) lets the editor ignore the report on another branch.
+	bool WriteReport(const std::filesystem::path& reportFile, const SceneMerge::Result& result, const std::string& fileHash);
+
+	/// Report JSON with its file hash (see WriteReport)
+	std::string ReportJson(const SceneMerge::Result& result, const std::string& fileHash);
+	std::string ReportFileHash(const std::string& reportText); ///< empty when the report has none
+
+	/// Hash of a scene file's text that ignores line endings (git may check the merged file out with CRLF)
+	std::string ContentHash(const std::string& text);
 
 	/// Value of `git config merge.rizescene.driver` for this exe (quoted, forward slashes for git's sh)
 	std::string DriverCommand(const std::filesystem::path& exe);

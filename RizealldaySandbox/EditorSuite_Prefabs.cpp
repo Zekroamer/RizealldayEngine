@@ -312,6 +312,7 @@ bool EditorSuite::SavePrefab(uint32_t rootId, const std::string& prefabName, con
 	ClearPrefabCache();
 	if (openInPrefabMode) {
 		RecordOpenFile(path.string(), &text);
+		NoteSceneSavedForMergeReport(path.string(), text);
 		if (merged.ok) {
 			LogMessage(std::format("[Prefab] {} changed on disk (a git pull?): merged it with your edits before saving.", path.string()), 1);
 			ReloadPrefabModeInstance(); // the stage shows the pulled changes too

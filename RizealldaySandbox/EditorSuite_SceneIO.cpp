@@ -1005,6 +1005,7 @@ bool EditorSuite::SaveScene(const std::string& filePath)
 		return false;
 	}
 	RecordOpenFile(targetPath, &text);
+	NoteSceneSavedForMergeReport(targetPath, text);
 	if (sceneFileOldFormat_) {
 		sceneFileOldFormat_ = false;
 		LogMessage(std::format("[Scene] {} was rewritten once in the git-friendly layout (objects in id order, a sibling order per object). "

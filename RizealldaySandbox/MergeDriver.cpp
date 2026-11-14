@@ -1,5 +1,6 @@
 ﻿#include "MergeDriver.h"
 #include "SceneMerge.h"
+#include "SceneJson.h"
 #include "EditorSuiteInternal.h" // EditorSuiteDetail::WriteFileAtomic
 #include <windows.h>
 #include <shellapi.h>
@@ -81,7 +82,7 @@ int MergeFiles(const fs::path& base, const fs::path& ours, const fs::path& their
 		if (message) *message = "merged cleanly.";
 		return 0;
 	}
-	const bool reportWritten = WriteReport(reportFile, result);
+	const bool reportWritten = WriteReport(reportFile, result, ContentHash(result.mergedText));
 	if (message) {
 		*message = std::format("merged; {} conflict(s) kept your value, {} note(s). {} Decide them in the editor: Window > Merge Conflicts.",
 			result.conflicts.size(), result.notes.size(),
@@ -90,7 +91,32 @@ int MergeFiles(const fs::path& base, const fs::path& ours, const fs::path& their
 	return 0;
 }
 
-bool WriteReport(const fs::path& reportFile, const SceneMerge::Result& result)
+std::string ContentHash(const std::string& text)
+{
+	uint64_t h = 1469598103934665603ull; // FNV-1a 64
+	for (const char c : text) {
+		if (c == '\r') continue;
+		h = (h ^ static_cast<uint8_t>(c)) * 1099511628211ull;
+	}
+	return std::format("{:016x}", h);
+}
+
+std::string ReportJson(const SceneMerge::Result& result, const std::string& fileHash)
+{
+	std::optional<SceneJson::Json> json = SceneJson::Parse(SceneMerge::ReportToJson(result));
+	if (!json || !json->is_object()) return SceneMerge::ReportToJson(result);
+	if (!fileHash.empty()) (*json)["fileHash"] = fileHash;
+	return SceneJson::DumpCompact(*json);
+}
+
+std::string ReportFileHash(const std::string& reportText)
+{
+	std::string hash;
+	if (const std::optional<SceneJson::Json> json = SceneJson::Parse(reportText); json && json->is_object()) SceneJson::Read(*json, "fileHash", hash);
+	return hash;
+}
+
+bool WriteReport(const fs::path& reportFile, const SceneMerge::Result& result, const std::string& fileHash)
 {
 	SceneMerge::Result all;
 	if (const std::optional<std::string> old = ReadAll(reportFile)) SceneMerge::ReportFromJson(*old, all.conflicts, all.notes); // unreadable: replaced
@@ -100,7 +126,7 @@ bool WriteReport(const fs::path& reportFile, const SceneMerge::Result& result)
 	});
 	all.conflicts.insert(all.conflicts.end(), result.conflicts.begin(), result.conflicts.end());
 	all.notes.insert(all.notes.end(), result.notes.begin(), result.notes.end());
-	return WriteAll(reportFile, SceneMerge::ReportToJson(all));
+	return WriteAll(reportFile, ReportJson(all, fileHash));
 }
 
 std::string DriverCommand(const fs::path& exe)

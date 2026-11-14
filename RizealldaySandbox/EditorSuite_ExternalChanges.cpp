@@ -51,6 +51,7 @@ void EditorSuite::PollOpenFileChanges(float deltaTime)
 		InstallMergeDriver();
 	}
 	ApplyOpenFileChange();
+	PollMergeReport();
 	ApplyAssetFileChanges();
 }
 
@@ -146,7 +147,7 @@ void EditorSuite::AddMergeResult(const SceneMerge::Result& result)
 	}
 	// Added to the report on disk, which may also hold undecided entries of a merge driver run
 	const std::string reportPath = currentScenePath_ + MergeDriver::kReportSuffix;
-	if (!MergeDriver::WriteReport(reportPath, result)) LogMessage(std::format("[Merge] Could not write the merge report {}.", reportPath), 2);
+	if (!MergeDriver::WriteReport(reportPath, result, {})) LogMessage(std::format("[Merge] Could not write the merge report {}.", reportPath), 2);
 	LoadMergeReport(); // opens the window, and in Prefab Mode maps the file ids to the stage
 }
 

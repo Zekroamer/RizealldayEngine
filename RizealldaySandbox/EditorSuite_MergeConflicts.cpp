@@ -69,6 +69,11 @@ void EditorSuite::LoadMergeReport()
 	mergeConflicts_ = {};
 	if (IsStandaloneMode() || currentScenePath_.empty()) return;
 	const std::string reportPath = currentScenePath_ + MergeDriver::kReportSuffix;
+	std::error_code ec;
+	const std::filesystem::file_time_type reportTime = std::filesystem::last_write_time(reportPath, ec);
+	const bool reportChanged = reportPath != mergeReportSeenPath_ || reportTime != mergeReportSeenTime_;
+	mergeReportSeenPath_ = reportPath;
+	mergeReportSeenTime_ = reportTime;
 	std::ifstream in(reportPath, std::ios::binary);
 	if (!in.is_open()) return;
 	const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -79,7 +84,22 @@ void EditorSuite::LoadMergeReport()
 		mergeConflicts_ = {};
 		return;
 	}
+	// The report is gitignored, so it stays when git checks out another branch: it only belongs to the scene text it was made for
+	const std::string fileHash = MergeDriver::ReportFileHash(text);
+	if (!fileHash.empty()) {
+		std::ifstream sceneIn(currentScenePath_, std::ios::binary);
+		const std::string sceneText((std::istreambuf_iterator<char>(sceneIn)), std::istreambuf_iterator<char>());
+		if (MergeDriver::ContentHash(sceneText) != fileHash) {
+			if (reportChanged) {
+				LogMessage(std::format("[Merge] {} has a merge report for another version of this scene (another branch?): not shown. "
+					"It shows again when that version is checked out.", currentScenePath_), 0);
+			}
+			mergeConflicts_ = {};
+			return;
+		}
+	}
 	mergeConflicts_.reportPath = reportPath;
+	mergeConflicts_.fileHash = fileHash;
 	mergeConflicts_.showsTheirs.assign(mergeConflicts_.conflicts.size(), 0); // the file holds mine
 	if (prefabMode_.active) {
 		// Prefab Mode shows an instance with new ids: the report names the ids written in the prefab file
@@ -115,8 +135,30 @@ void EditorSuite::WriteMergeReport()
 	remaining.ok = true;
 	remaining.conflicts = mergeConflicts_.conflicts;
 	remaining.notes = mergeConflicts_.notes;
-	std::ofstream out(mergeConflicts_.reportPath, std::ios::binary | std::ios::trunc);
-	out << SceneMerge::ReportToJson(remaining);
+	{
+		std::ofstream out(mergeConflicts_.reportPath, std::ios::binary | std::ios::trunc);
+		out << MergeDriver::ReportJson(remaining, mergeConflicts_.fileHash);
+	}
+	mergeReportSeenTime_ = std::filesystem::last_write_time(mergeConflicts_.reportPath, ec); // our own write: the poll must not reload it
+}
+
+void EditorSuite::NoteSceneSavedForMergeReport(const std::string& path, const std::string& text)
+{
+	if (mergeConflicts_.reportPath.empty() || path != currentScenePath_) return;
+	mergeConflicts_.fileHash = MergeDriver::ContentHash(text); // the report now belongs to the saved text
+	WriteMergeReport();
+}
+
+void EditorSuite::PollMergeReport()
+{
+	if (IsStandaloneMode() || currentScenePath_.empty() || sceneState_ != EditorSceneState::Edit) return;
+	const std::string reportPath = currentScenePath_ + MergeDriver::kReportSuffix;
+	std::error_code ec;
+	const std::filesystem::file_time_type time = std::filesystem::last_write_time(reportPath, ec);
+	if (ec || (reportPath == mergeReportSeenPath_ && time == mergeReportSeenTime_)) return;
+	// A merge that kept every one of my values leaves the scene file as it was: only the report appears
+	DiscardMergePreviews();
+	LoadMergeReport();
 }
 
 void EditorSuite::FollowMovedSceneReport(const std::string& oldScenePath)

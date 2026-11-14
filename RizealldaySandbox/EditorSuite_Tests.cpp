@@ -12300,6 +12300,68 @@ std::filesystem::path WriteEnemyMergeScene(const std::filesystem::path& dir)
 }
 }
 
+TEST_CASE(MergeConflicts, ReportFollowsTheBranchItWasMadeOn)
+{
+	// The user's case: master and abcd both move the Enemy; merging abcd into master keeps master's value, so the
+	// scene file does not change at all and only the report appears. Switching to abcd must not show master's report.
+	namespace fs = std::filesystem;
+	const fs::path dir = A::TempRoot() / "MergeReportBranch";
+	std::error_code ec;
+	fs::remove_all(dir, ec);
+	fs::create_directories(dir, ec);
+	const fs::path scene = dir / "Level.scene.json";
+	const fs::path report = scene.string() + MergeDriver::kReportSuffix;
+	auto read = [](const fs::path& f) { std::ifstream in(f, std::ios::binary); return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()); };
+	// Each write gets its own file time: writes within one clock tick (~15 ms) share it, a pull never does
+	int tick = 0;
+	auto write = [&](const fs::path& f, const std::string& text) {
+		std::ofstream(f, std::ios::binary | std::ios::trunc) << text;
+		fs::last_write_time(f, fs::file_time_type::clock::now() + std::chrono::seconds(++tick));
+	};
+
+	// master: the scene as the editor saves it, Enemy at x = 5
+	write(scene, MergeSide([](auto& j) { MergeObj(j, 20)["translation"] = { 5, 0, 0 }; }));
+	REQUIRE(s.LoadScene(scene.string()));
+	REQUIRE(s.SaveScene(scene.string()));
+	const std::string master = read(scene);
+	REQUIRE(s.LoadScene(scene.string()));
+	A::ExternalWatchInTests(s) = true;
+
+	// git merge abcd (Enemy at x = 7) runs the driver: same bytes, plus a report
+	write(dir / "base.json", kMergeBase);
+	write(dir / "theirs.json", MergeSide([](auto& j) { MergeObj(j, 20)["translation"] = { 7, 0, 0 }; }));
+	std::string message;
+	REQUIRE(MergeDriver::MergeFiles(dir / "base.json", scene, dir / "theirs.json", report, &message) == 0);
+	REQUIRE(fs::exists(report));
+	CHECK_MSG(read(scene) == master, "the driver kept mine, so the file is unchanged");
+	A::PollOpenFile(s, 1.0f);
+	CHECK(A::MergeConflicts(s).conflicts.size() == 1u);
+	CHECK(A::MergeConflictsWindowOpen(s));
+
+	// git checkout abcd: the scene changes, the (gitignored) report stays on disk but belongs to master
+	write(scene, read(dir / "theirs.json"));
+	A::PollOpenFile(s, 1.0f);
+	REQUIRE(s.FindGameObjectById(20, false) != nullptr);
+	CHECK(std::abs(s.FindGameObjectById(20, false)->translation.x - 7.0f) < 1e-4f);
+	CHECK(A::MergeConflicts(s).conflicts.empty());
+	CHECK(fs::exists(report));
+
+	// git checkout master again: the report is shown again
+	write(scene, master);
+	A::PollOpenFile(s, 1.0f);
+	CHECK(A::MergeConflicts(s).conflicts.size() == 1u);
+
+	// Saving another edit while the report is open keeps it valid for this scene
+	s.FindGameObjectById(20, false)->name = "Boss";
+	REQUIRE(s.SaveScene(scene.string()));
+	REQUIRE(s.LoadScene(scene.string()));
+	CHECK(A::MergeConflicts(s).conflicts.size() == 1u);
+
+	A::ExternalWatchInTests(s) = false;
+	s.NewScene();
+	fs::remove_all(dir, ec);
+}
+
 TEST_CASE(MergeConflicts, PreviewIsNotAnEdit)
 {
 	namespace fs = std::filesystem;

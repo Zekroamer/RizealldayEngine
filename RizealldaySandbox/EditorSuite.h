@@ -1433,8 +1433,14 @@ private:
 		std::vector<uint8_t> showsTheirs; ///< per conflict: the open scene previews "theirs" (1) or shows "mine" (0)
 		std::vector<SceneMerge::Note> notes;
 		std::unordered_map<uint32_t, int> prefabNodeKeys; ///< Prefab Mode: file object id -> prefabNodeKey of the instance
+		std::string fileHash; ///< MergeDriver::ContentHash of the scene text the report belongs to; empty = any
 	};
 	MergeConflictState mergeConflicts_;
+	std::string mergeReportSeenPath_; ///< report the poll last looked at, and its time: a new or changed one is loaded
+	std::filesystem::file_time_type mergeReportSeenTime_{};
+	void PollMergeReport();
+	/// SaveScene wrote `text` to `path`: the open report now belongs to that text
+	void NoteSceneSavedForMergeReport(const std::string& path, const std::string& text);
 	bool showMergeConflictsWindow_ = false;
 	uint32_t hierarchyScrollToId_ = 0; ///< the Hierarchy opens the parents of this object and scrolls to it once
 	/// Reads `<open file>.merge.json` (after LoadScene / OpenPrefabMode / ClosePrefabMode) and opens the window
