@@ -732,7 +732,11 @@ public:
 	void RefreshGitBranch();
 	/// `git switch <branch>` (a remote-only "origin/x" creates the local tracking branch), then reloads the open scene,
 	/// assets and scripts. Unsaved edits are saved or dropped first by `unsaved`. False (and gitBranchError_) when refused.
-	bool SwitchGitBranch(const std::string& branch, UnsavedChoice unsaved);
+	/// `keepAside`: uncommitted changes go into a git stash named after the current branch first (offered back by
+	/// RestoreChangesAside when that branch is checked out again); put back at once when the switch still fails.
+	bool SwitchGitBranch(const std::string& branch, UnsavedChoice unsaved, bool keepAside = false);
+	/// Applies and drops the stash kept aside for the current branch, then reloads the scene and assets
+	bool RestoreChangesAside();
 	/// `git switch -c <name>` from the current branch; the name is checked with `git check-ref-format --branch`
 	bool CreateGitBranch(const std::string& name);
 	const std::string& GitBranchLabel() const { return gitBranch_; }
@@ -1446,6 +1450,11 @@ private:
 	std::string pendingBranchSwitch_;       ///< waits for the unsaved-changes choice
 	bool showBranchSaveModal_ = false;
 	bool showBranchErrorModal_ = false;
+	bool gitBranchCanKeepAside_ = false;    ///< the last refusal was "local changes would be overwritten": offer the stash
+	std::string changesAsideBranch_;        ///< current branch has changes kept aside: the restore modal is shown
+	/// "stash@{n}" of the changes kept aside for `branch`, empty when there are none
+	std::string FindChangesAside(const std::string& branch);
+	void ReloadAfterCheckout(); ///< the open scene (or startup scene), assets and scripts after git changed the files
 	bool showNewBranchModal_ = false;
 	bool branchMenuOpen_ = false;
 	char newBranchNameBuf_[128] = {};

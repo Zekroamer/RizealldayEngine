@@ -1282,5 +1282,12 @@
 	"Nothing was changed. Git says:": "何も変更されていません。Git のメッセージ:",
 	"OK": "OK",
 	"Made from:": "元のブランチ:",
-	"Create": "作成"
+	"Create": "作成",
+	"Your saved changes are not committed yet. Keep them aside to switch now: nothing is lost, and the editor offers them back when you come back to this branch.": "保存した変更はまだコミットされていません。変更をいったん取っておけば今すぐ切り替えられます。何も失われず、このブランチに戻ったときにエディターが元に戻すか聞きます。",
+	"Keep my changes aside and switch": "変更を取っておいて切り替える",
+	"Changes Kept Aside": "取っておいた変更",
+	"You kept changes aside on this branch:": "このブランチで取っておいた変更があります:",
+	"Put them back into the project now?": "今プロジェクトに戻しますか？",
+	"Restore my changes": "変更を戻す",
+	"Later": "あとで"
 }

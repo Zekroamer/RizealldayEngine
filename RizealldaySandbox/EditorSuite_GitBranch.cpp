@@ -2,6 +2,7 @@
 #include "EngineUpdate.h"
 #include "SceneJson.h"
 #include "Localization.h"
+#include <sstream>
 
 // Branch menu: a team member sees and changes the project's git branch without leaving the editor. Commit, pull and
 // push stay in Visual Studio. git runs hidden (EngineUpdate::RunHiddenProcess); its own message is shown when it refuses.
@@ -22,6 +23,9 @@ namespace {
 	std::wstring Wide(const std::string& utf8) { return std::filesystem::path(utf8).wstring(); } // the process code page is UTF-8
 
 	constexpr const char* kDetachedHead = "(detached)";
+
+	/// Stash message of changes kept aside on `branch` (FindChangesAside looks for it)
+	std::string AsideMessage(const std::string& branch) { return "Rizeallday: kept aside on " + branch; }
 }
 
 void EditorSuite::RefreshGitBranch()
@@ -47,9 +51,10 @@ void EditorSuite::PollGitHead()
 	RefreshGitBranch(); // another project, or a switch made in Visual Studio
 }
 
-bool EditorSuite::SwitchGitBranch(const std::string& branch, UnsavedChoice unsaved)
+bool EditorSuite::SwitchGitBranch(const std::string& branch, UnsavedChoice unsaved, bool keepAside)
 {
 	gitBranchError_.clear();
+	gitBranchCanKeepAside_ = false;
 	auto refuse = [&](std::string message) {
 		gitBranchError_ = std::move(message);
 		LogMessage("[Git] " + gitBranchError_, 2);
@@ -71,17 +76,43 @@ bool EditorSuite::SwitchGitBranch(const std::string& branch, UnsavedChoice unsav
 	// A remote-only "origin/x" becomes `git switch x`, which creates the local branch that tracks it
 	const bool remote = std::find(gitBranchList_.remoteOnly.begin(), gitBranchList_.remoteOnly.end(), branch) != gitBranchList_.remoteOnly.end();
 	const std::string target = remote ? GitBranches::LocalNameOf(branch) : branch;
+	const std::string from = gitBranch_;
 	std::string output;
+	bool stashed = false;
+	if (keepAside) {
+		// Changes to tracked files only: new files travel with the switch as git always does (and the editor makes .meta
+		// files again after a checkout, which would block putting a stashed copy back)
+		if (EngineUpdate::RunHiddenProcess(L"git stash push -m \"" + Wide(AsideMessage(from)) + L"\"", currentProjectRoot_, &output) != 0) {
+			showBranchErrorModal_ = true;
+			return refuse(Trimmed(output));
+		}
+		stashed = output.find("No local changes") == std::string::npos;
+		output.clear();
+	}
 	const int code = EngineUpdate::RunHiddenProcess(L"git switch \"" + Wide(target) + L"\"", currentProjectRoot_, &output);
 	if (code != 0) {
+		if (stashed) {
+			std::string popOutput; // the switch failed for another reason: the changes go back where they were
+			EngineUpdate::RunHiddenProcess(L"git stash pop --index", currentProjectRoot_, &popOutput);
+		}
+		pendingBranchSwitch_ = branch;
+		gitBranchCanKeepAside_ = !keepAside && output.find("would be overwritten") != std::string::npos;
 		showBranchErrorModal_ = true;
 		return refuse(code == -1 ? std::string("Git is not installed (not on PATH).") : Trimmed(output));
 	}
 	RefreshGitBranch();
-	LogMessage(std::format("[Git] Switched to branch {}.", gitBranch_), 0);
+	LogMessage(stashed ? std::format("[Git] Switched to branch {}. Your changes on {} are kept aside; they are offered back when you switch to {} again.", gitBranch_, from, from)
+		: std::format("[Git] Switched to branch {}.", gitBranch_), 0);
 
-	// The files are the other branch's now: reload what the editor holds of them
 	if (prefabMode_.active) ClosePrefabMode(); // unsaved prefab edits were the user's "without saving" choice
+	ReloadAfterCheckout();
+	changesAsideBranch_ = FindChangesAside(gitBranch_).empty() ? std::string{} : gitBranch_;
+	return true;
+}
+
+void EditorSuite::ReloadAfterCheckout()
+{
+	// The files are another version now: reload what the editor holds of them
 	const std::string scenePath = currentScenePath_;
 	std::error_code ec;
 	if (!scenePath.empty() && std::filesystem::exists(scenePath, ec)) {
@@ -100,6 +131,45 @@ bool EditorSuite::SwitchGitBranch(const std::string& branch, UnsavedChoice unsav
 	ResetEditorHistory();
 	AssetDb().Refresh();
 	SyncScriptModuleWithProject(); // builds when the branch has other scripts than the DLL
+}
+
+std::string EditorSuite::FindChangesAside(const std::string& branch)
+{
+	if (branch.empty() || currentProjectRoot_.empty()) return {};
+	std::string list;
+	if (EngineUpdate::RunHiddenProcess(L"git stash list --format=%gd%x09%s", currentProjectRoot_, &list) != 0) return {};
+	const std::string wanted = AsideMessage(branch);
+	std::istringstream lines(list);
+	for (std::string line; std::getline(lines, line);) {
+		if (!line.empty() && line.back() == '\r') line.pop_back();
+		const size_t tab = line.find('\t');
+		if (tab != std::string::npos && line.ends_with(": " + wanted)) return line.substr(0, tab); // "On <branch>: <message>"
+	}
+	return {};
+}
+
+bool EditorSuite::RestoreChangesAside()
+{
+	gitBranchError_.clear();
+	const std::string ref = FindChangesAside(gitBranch_);
+	changesAsideBranch_.clear();
+	if (ref.empty()) return true; // already restored or dropped by hand
+	if (sceneState_ != EditorSceneState::Edit || AssetDatabase::GitIsBusy(currentProjectRoot_) || isSceneDirty_) {
+		changesAsideBranch_ = gitBranch_;
+		gitBranchError_ = "Save the scene, stop Play mode and wait for git, then restore the changes.";
+		return false;
+	}
+	std::string output;
+	if (EngineUpdate::RunHiddenProcess(L"git stash apply --index \"" + Wide(ref) + L"\"", currentProjectRoot_, &output) != 0) {
+		gitBranchError_ = Trimmed(output);
+		LogMessage("[Git] Could not restore the changes kept aside: " + gitBranchError_, 2);
+		showBranchErrorModal_ = true;
+		return false;
+	}
+	output.clear();
+	EngineUpdate::RunHiddenProcess(L"git stash drop \"" + Wide(ref) + L"\"", currentProjectRoot_, &output);
+	LogMessage(std::format("[Git] Restored the changes kept aside on {}.", gitBranch_), 0);
+	ReloadAfterCheckout();
 	return true;
 }
 
@@ -222,8 +292,38 @@ void EditorSuite::DrawGitBranchModals()
 			ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.4f, 1.0f), "%s", gitBranchError_.c_str());
 			ImGui::PopTextWrapPos();
 			ImGui::Spacing();
-			if (ImGui::Button(TrId("OK"))) {
+			if (gitBranchCanKeepAside_) {
+				ImGui::Spacing();
+				ImGui::TextWrapped("%s", Tr("Your saved changes are not committed yet. Keep them aside to switch now: nothing is lost, and the editor offers them back when you come back to this branch."));
+				if (ImGui::Button(TrId("Keep my changes aside and switch"))) {
+					showBranchErrorModal_ = false;
+					ImGui::CloseCurrentPopup();
+					SwitchGitBranch(pendingBranchSwitch_, UnsavedChoice::Discard, true);
+				}
+				ImGui::SameLine();
+			}
+			if (ImGui::Button(TrId(gitBranchCanKeepAside_ ? "Cancel" : "OK"))) {
 				showBranchErrorModal_ = false;
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+	}
+	if (!changesAsideBranch_.empty() && !showBranchErrorModal_ && !showBranchSaveModal_) {
+		const char* popupId = TrId("Changes Kept Aside");
+		ImGui::OpenPopup(popupId);
+		ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+		if (ImGui::BeginPopupModal(popupId, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+			ImGui::TextUnformatted(std::format("{} {}", Tr("You kept changes aside on this branch:"), changesAsideBranch_).c_str());
+			ImGui::TextUnformatted(Tr("Put them back into the project now?"));
+			ImGui::Spacing();
+			if (ImGui::Button(TrId("Restore my changes"))) {
+				ImGui::CloseCurrentPopup();
+				RestoreChangesAside();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button(TrId("Later"))) {
+				changesAsideBranch_.clear(); // asked again at the next switch to this branch
 				ImGui::CloseCurrentPopup();
 			}
 			ImGui::EndPopup();

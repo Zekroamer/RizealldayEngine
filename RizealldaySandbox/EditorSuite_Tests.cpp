@@ -85,6 +85,7 @@ struct EditorSuiteTestAccess {
 	static double LastAutoSave(const EditorSuite& s) { return s.lastAutoSaveTime_; }
 	static bool& Dirty(EditorSuite& s) { return s.isSceneDirty_; }
 	static const std::string& GitBranchError(const EditorSuite& s) { return s.gitBranchError_; }
+	static const std::string& ChangesAsideOffer(const EditorSuite& s) { return s.changesAsideBranch_; }
 	static bool ScriptsNeedRebuild(const std::filesystem::path& dir, const std::filesystem::path& dll) { return EditorSuite::ScriptsNeedRebuild(dir, dll); }
 	static std::string Wild(const std::string& text, bool filters) { return EditorSuite::UseScriptWildcards(text, filters); }
 	static std::vector<std::vector<int>>& MapGrid(EditorSuite& s) { return s.mapLayers_[0]; }
@@ -12806,6 +12807,23 @@ TEST_CASE(GitBranch, SwitchReloadsSceneAndRefusalChangesNothing)
 	std::string head;
 	EngineUpdate::RunHiddenProcess(L"git branch --show-current", root, &head);
 	CHECK_MSG(head.starts_with("same"), head);
+
+	// Keep my changes aside: the saved Lamp goes into a stash for "same", the switch to main works
+	REQUIRE_MSG(s.SwitchGitBranch("main", EditorSuite::UnsavedChoice::Discard, true), A::GitBranchError(s));
+	CHECK(s.GitBranchLabel() == "main");
+	CHECK(has("Barrel"));
+	CHECK(!has("Lamp"));
+	CHECK(A::ChangesAsideOffer(s).empty()); // nothing kept aside for main
+	// Back on "same": the editor offers them back, and restoring brings the Lamp again and removes the stash
+	REQUIRE_MSG(s.SwitchGitBranch("same", EditorSuite::UnsavedChoice::Discard), A::GitBranchError(s));
+	CHECK(!has("Lamp"));
+	CHECK(A::ChangesAsideOffer(s) == "same");
+	REQUIRE_MSG(s.RestoreChangesAside(), A::GitBranchError(s));
+	CHECK(has("Lamp"));
+	CHECK(A::ChangesAsideOffer(s).empty());
+	std::string stashes;
+	EngineUpdate::RunHiddenProcess(L"git stash list", root, &stashes);
+	CHECK_MSG(stashes.empty(), stashes);
 
 	// New branch: a bad name is refused, a good one is created from the current branch and switched to
 	CHECK(!s.CreateGitBranch("bad..name"));

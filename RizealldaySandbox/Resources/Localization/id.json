@@ -1282,5 +1282,12 @@
 	"Nothing was changed. Git says:": "Tidak ada yang berubah. Pesan Git:",
 	"OK": "OK",
 	"Made from:": "Dibuat dari:",
-	"Create": "Buat"
+	"Create": "Buat",
+	"Your saved changes are not committed yet. Keep them aside to switch now: nothing is lost, and the editor offers them back when you come back to this branch.": "Perubahan yang sudah disimpan belum di-commit. Simpan sementara agar bisa pindah sekarang: tidak ada yang hilang, dan editor menawarkan mengembalikannya saat kamu kembali ke branch ini.",
+	"Keep my changes aside and switch": "Simpan sementara perubahanku lalu pindah",
+	"Changes Kept Aside": "Perubahan yang Disimpan Sementara",
+	"You kept changes aside on this branch:": "Kamu menyimpan sementara perubahan di branch ini:",
+	"Put them back into the project now?": "Kembalikan ke project sekarang?",
+	"Restore my changes": "Kembalikan perubahanku",
+	"Later": "Nanti"
 }
