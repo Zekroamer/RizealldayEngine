@@ -132,6 +132,12 @@
     <ClCompile Include="EditorSuite_ExternalChanges.cpp">
       <Filter>editor</Filter>
     </ClCompile>
+    <ClCompile Include="EditorSuite_GitBranch.cpp">
+      <Filter>editor</Filter>
+    </ClCompile>
+    <ClCompile Include="GitBranches.cpp">
+      <Filter>editor</Filter>
+    </ClCompile>
     <ClCompile Include="SceneMerge.cpp">
       <Filter>editor</Filter>
     </ClCompile>
@@ -201,6 +207,9 @@
       <Filter>editor</Filter>
     </ClInclude>
     <ClInclude Include="MergeDriver.h">
+      <Filter>editor</Filter>
+    </ClInclude>
+    <ClInclude Include="GitBranches.h">
       <Filter>editor</Filter>
     </ClInclude>
     <ClInclude Include="SceneMerge.h">

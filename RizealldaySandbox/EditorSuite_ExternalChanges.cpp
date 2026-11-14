@@ -50,6 +50,7 @@ void EditorSuite::PollOpenFileChanges(float deltaTime)
 	if (!mergeDriverChecked_ && !currentProjectRoot_.empty() && std::filesystem::exists(currentProjectRoot_ / ".git", gitEc)) {
 		InstallMergeDriver();
 	}
+	PollGitHead();
 	ApplyOpenFileChange();
 	PollMergeReport();
 	ApplyAssetFileChanges();

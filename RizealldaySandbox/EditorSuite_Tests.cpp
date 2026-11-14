@@ -84,6 +84,7 @@ struct EditorSuiteTestAccess {
 	static void RunAutoSave(EditorSuite& s, double now) { s.UpdateAutoSave(now); }
 	static double LastAutoSave(const EditorSuite& s) { return s.lastAutoSaveTime_; }
 	static bool& Dirty(EditorSuite& s) { return s.isSceneDirty_; }
+	static const std::string& GitBranchError(const EditorSuite& s) { return s.gitBranchError_; }
 	static bool ScriptsNeedRebuild(const std::filesystem::path& dir, const std::filesystem::path& dll) { return EditorSuite::ScriptsNeedRebuild(dir, dll); }
 	static std::string Wild(const std::string& text, bool filters) { return EditorSuite::UseScriptWildcards(text, filters); }
 	static std::vector<std::vector<int>>& MapGrid(EditorSuite& s) { return s.mapLayers_[0]; }
@@ -12702,6 +12703,129 @@ TEST_CASE(MergeConflicts, GitMergeShowsConflictInEditor)
 	A::CurrentDirectory(s) = savedDirectory;
 	A::SyncScripts(s);
 	s.NewScene();
+	removeRepo();
+}
+
+// ===========================================================================
+// Branch menu: switch the project's git branch from the editor
+// ===========================================================================
+
+TEST_CASE(GitBranch, ParsesBranchList)
+{
+	// `git branch -a --format=%(HEAD)%(refname)` output, as git 2.4x prints it
+	const GitBranches::List list = GitBranches::Parse(
+		"*refs/heads/main\n refs/heads/feature/hud\n refs/remotes/origin/HEAD\n refs/remotes/origin/main\n"
+		" refs/remotes/origin/level-2\n refs/remotes/upstream/level-2\n refs/remotes/origin/team/ui\r\n");
+	CHECK(list.current == "main");
+	const std::vector<std::string> local{ "main", "feature/hud" };
+	const std::vector<std::string> remote{ "origin/level-2", "origin/team/ui" }; // no origin/HEAD, no origin/main, no second level-2
+	CHECK(list.local == local);
+	CHECK(list.remoteOnly == remote);
+	CHECK(GitBranches::LocalNameOf("origin/team/ui") == "team/ui");
+
+	const GitBranches::List detached = GitBranches::Parse("*(HEAD detached at 0549cae)\n refs/heads/main\n");
+	CHECK(detached.current.empty());
+	CHECK(detached.local.size() == 1u && detached.local[0] == "main");
+	CHECK(GitBranches::Parse("").local.empty());
+}
+
+TEST_CASE(GitBranch, SwitchReloadsSceneAndRefusalChangesNothing)
+{
+	namespace fs = std::filesystem;
+	std::string output;
+	if (EngineUpdate::RunHiddenProcess(L"git --version", {}, &output) == -1) {
+		A::Log(s, "[Tests] GitBranch.SwitchReloadsSceneAndRefusalChangesNothing skipped: git is not on PATH.", 1);
+		return;
+	}
+	const fs::path root = A::TempRoot() / "GitBranchSwitch";
+	std::error_code ec;
+	auto removeRepo = [&] { // git keeps its objects read-only, which remove_all cannot delete
+		for (auto it = fs::recursive_directory_iterator(root, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+			fs::permissions(it->path(), fs::perms::owner_write, fs::perm_options::add, ec);
+		}
+		fs::remove_all(root, ec);
+	};
+	removeRepo();
+	fs::create_directories(root / "ProjectSettings", ec);
+	fs::create_directories(root / "Assets" / "Scenes", ec);
+	const fs::path scene = root / "Assets" / "Scenes" / "Main.scene.json";
+	std::ofstream(root / "ProjectSettings" / "project.json") << R"({"projectName": "Team", "startupScene": "Assets/Scenes/Main.scene.json"})";
+	auto git = [&](const wchar_t* args) {
+		std::string out;
+		const int code = EngineUpdate::RunHiddenProcess(std::wstring(L"git ") + args, root, &out);
+		if (code != 0) A::Log(s, "[Tests] git failed: " + out, 2);
+		return code;
+	};
+	REQUIRE(git(L"init -q -b main") == 0);
+	REQUIRE(git(L"config --local user.name Tester") == 0);
+	REQUIRE(git(L"config --local user.email tester@example.invalid") == 0);
+	REQUIRE(git(L"config --local core.autocrlf false") == 0);
+
+	const fs::path savedRoot = A::ProjectRoot(s);
+	const fs::path savedDirectory = A::CurrentDirectory(s);
+	REQUIRE(s.OpenProject(root.string()));
+	s.NewScene();
+	s.CreateCube("Crate", { 1.0f, 0.0f, 0.0f });
+	REQUIRE(s.SaveScene(scene.string()));
+	REQUIRE(git(L"add -A") == 0);
+	REQUIRE(git(L"commit -q -m base") == 0);
+	REQUIRE(git(L"branch other") == 0); // "other": Crate only
+	s.CreateCube("Barrel", { -1.0f, 0.0f, 0.0f });
+	REQUIRE(s.SaveScene(scene.string()));
+	REQUIRE(git(L"commit -q -am barrel") == 0); // "main": Crate + Barrel
+	s.RefreshGitBranch();
+	CHECK(s.GitBranchLabel() == "main");
+	auto has = [&](const char* name) { return s.FindGameObjectByName(name, false) != nullptr; };
+
+	// Switch without saving: the unsaved Lamp is dropped, the scene is the other branch's
+	s.CreateCube("Lamp", { 0.0f, 2.0f, 0.0f });
+	A::Dirty(s) = true;
+	REQUIRE_MSG(s.SwitchGitBranch("other", EditorSuite::UnsavedChoice::Discard), A::GitBranchError(s));
+	CHECK(s.GitBranchLabel() == "other");
+	CHECK(has("Crate"));
+	CHECK(!has("Barrel"));
+	CHECK(!has("Lamp"));
+	CHECK(!s.IsSceneDirty());
+	CHECK(fs::path(A::ScenePath(s)) == scene);
+
+	// Save and switch to a branch with the same scene file: git carries the saved edit over
+	REQUIRE(git(L"branch same") == 0);
+	s.CreateCube("Lamp", { 0.0f, 2.0f, 0.0f });
+	A::Dirty(s) = true;
+	REQUIRE_MSG(s.SwitchGitBranch("same", EditorSuite::UnsavedChoice::Save), A::GitBranchError(s));
+	CHECK(s.GitBranchLabel() == "same");
+	CHECK(has("Lamp"));
+	CHECK(!has("Barrel"));
+
+	// git refuses: the saved Lamp is an uncommitted change and main's scene differs. Nothing changes.
+	CHECK(!s.SwitchGitBranch("main", EditorSuite::UnsavedChoice::Discard));
+	CHECK_MSG(A::GitBranchError(s).find("Main.scene.json") != std::string::npos, A::GitBranchError(s)); // git's own message
+	CHECK(s.GitBranchLabel() == "same");
+	CHECK(has("Lamp"));
+	CHECK(!has("Barrel"));
+	std::string head;
+	EngineUpdate::RunHiddenProcess(L"git branch --show-current", root, &head);
+	CHECK_MSG(head.starts_with("same"), head);
+
+	// New branch: a bad name is refused, a good one is created from the current branch and switched to
+	CHECK(!s.CreateGitBranch("bad..name"));
+	CHECK(!A::GitBranchError(s).empty());
+	CHECK(s.GitBranchLabel() == "same");
+	REQUIRE_MSG(s.CreateGitBranch("feature/hud"), A::GitBranchError(s));
+	CHECK(s.GitBranchLabel() == "feature/hud");
+	CHECK(has("Lamp")); // same files: nothing reloaded away
+
+	// A switch made outside the editor (Visual Studio) changes .git/HEAD: the poll updates the label
+	REQUIRE(git(L"switch -q same") == 0);
+	A::ExternalWatchInTests(s) = true;
+	A::PollOpenFile(s, 1.0f);
+	A::ExternalWatchInTests(s) = false;
+	CHECK(s.GitBranchLabel() == "same");
+
+	A::ProjectRoot(s) = savedRoot;
+	A::CurrentDirectory(s) = savedDirectory;
+	A::SyncScripts(s);
+	s.NewScene(); // the label follows the restored project at the next poll (gitHeadRoot_ differs)
 	removeRepo();
 }
 

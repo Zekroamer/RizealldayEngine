@@ -1265,5 +1265,22 @@
 	"A git merge changed these fields on both sides. Pick Mine or Theirs for each field: the scene shows your pick right away. Nothing is decided until you press Apply choices.": "Merge git mengubah field ini di kedua sisi. Pilih Milikku atau Milik mereka untuk tiap field: scene langsung menampilkan pilihanmu. Belum ada yang diputuskan sampai kamu menekan Terapkan pilihan.",
 	"Scene settings": "Pengaturan scene",
 	"Click to select it in the Hierarchy": "Klik untuk memilihnya di Hierarchy",
-	"(not in the scene)": "(tidak ada di scene)"
+	"(not in the scene)": "(tidak ada di scene)",
+	"Branch:": "Branch:",
+	"(detached)": "(tanpa branch)",
+	"Stop Play mode to switch the branch.": "Hentikan mode Play untuk mengganti branch.",
+	"Git is busy": "Git sedang sibuk",
+	"On the server only": "Hanya ada di server",
+	"New Branch...": "Branch Baru...",
+	"New Branch": "Branch Baru",
+	"Switch Branch": "Ganti Branch",
+	"Switch to branch:": "Ganti ke branch:",
+	"The scene has unsaved changes.": "Scene punya perubahan yang belum disimpan.",
+	"Save and switch": "Simpan lalu ganti",
+	"Switch without saving": "Ganti tanpa menyimpan",
+	"Git did not switch the branch": "Git tidak mengganti branch",
+	"Nothing was changed. Git says:": "Tidak ada yang berubah. Pesan Git:",
+	"OK": "OK",
+	"Made from:": "Dibuat dari:",
+	"Create": "Buat"
 }

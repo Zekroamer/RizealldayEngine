@@ -55,6 +55,7 @@ void EditorSuite::DrawEditorUI(float deltaTime)
 	if (showUnsavedCloseModal_) DrawUnsavedChangesModal();
 	if (showEngineUpdateModal_) DrawEngineUpdateModal();
 	if (showAboutModal_) DrawAboutModal();
+	DrawGitBranchModals();
 
 	if (showLightingSettings_) {
 		ImGui::SetNextWindowSize(ImVec2(380.0f, 420.0f), ImGuiCond_FirstUseEver);
@@ -316,6 +317,7 @@ void EditorSuite::DrawMainMenuBar()
 			ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", Tr("READ-ONLY: this project needs a newer engine (Help > Install Engine Update...)"));
 			ImGui::SetItemTooltip("%s", projectEngineWarning_.c_str());
 		}
+		DrawGitBranchMenu();
 		ImGui::EndMainMenuBar();
 	}
 #endif

@@ -36,6 +36,7 @@
 #include "InputActions.h"
 #include "NavGrid.h"
 #include "SceneMerge.h"
+#include "GitBranches.h"
 #ifdef USE_IMGUI
 #include <imgui.h>
 #else
@@ -725,6 +726,16 @@ public:
 	/// True (and the migration is retried once git is done) while git works in the project
 	bool DeferWhileGitBusy();
 	void RunProjectFileMigrations();
+	// Branch menu (EditorSuite_GitBranch.cpp): the project's git branch at the right of the main menu bar
+	enum class UnsavedChoice { Save, Discard };
+	/// Reads the current branch (empty label = no git or not a working tree) and remembers .git/HEAD's time
+	void RefreshGitBranch();
+	/// `git switch <branch>` (a remote-only "origin/x" creates the local tracking branch), then reloads the open scene,
+	/// assets and scripts. Unsaved edits are saved or dropped first by `unsaved`. False (and gitBranchError_) when refused.
+	bool SwitchGitBranch(const std::string& branch, UnsavedChoice unsaved);
+	/// `git switch -c <name>` from the current branch; the name is checked with `git check-ref-format --branch`
+	bool CreateGitBranch(const std::string& name);
+	const std::string& GitBranchLabel() const { return gitBranch_; }
 	void AddMergeResult(const SceneMerge::Result& result); ///< conflicts into the report + Merge Conflicts window
 	PrefabModeState prefabMode_;
 	bool HasPrefab(const std::string& prefabName);
@@ -1426,6 +1437,22 @@ private:
 	bool mergeDriverInstallInTests_ = false; // self-tests must never touch the git config of the repository they run in
 	bool gitMissingLogged_ = false;
 	bool mergeDriverChecked_ = false; ///< false while the project is not in a git working tree yet (git init after opening it)
+	// Branch menu (EditorSuite_GitBranch.cpp)
+	std::string gitBranch_;                 ///< label; empty = no button (no git, or not a working tree)
+	std::filesystem::path gitHeadRoot_;     ///< project whose .git/HEAD time is gitHeadTime_
+	std::filesystem::file_time_type gitHeadTime_{};
+	GitBranches::List gitBranchList_;       ///< read when the menu opens
+	std::string gitBranchError_;            ///< why the last switch / new branch failed ("" = it worked)
+	std::string pendingBranchSwitch_;       ///< waits for the unsaved-changes choice
+	bool showBranchSaveModal_ = false;
+	bool showBranchErrorModal_ = false;
+	bool showNewBranchModal_ = false;
+	bool branchMenuOpen_ = false;
+	char newBranchNameBuf_[128] = {};
+	/// Polled with the open-file watcher: a switch made outside the editor (Visual Studio) changes .git/HEAD
+	void PollGitHead();
+	void DrawGitBranchMenu();
+	void DrawGitBranchModals();
 	// Merge Conflicts window (EditorSuite_MergeConflicts.cpp): the report the merge driver left next to the open file
 	struct MergeConflictState {
 		std::string reportPath; ///< empty = no report for the open scene / prefab

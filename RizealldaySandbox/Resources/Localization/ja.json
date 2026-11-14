@@ -1265,5 +1265,22 @@
 	"A git merge changed these fields on both sides. Pick Mine or Theirs for each field: the scene shows your pick right away. Nothing is decided until you press Apply choices.": "git のマージで、これらの項目が両側で変更されました。項目ごとに「自分」か「相手」を選ぶと、シーンにすぐ反映されます。「選択を適用」を押すまでは確定しません。",
 	"Scene settings": "シーン設定",
 	"Click to select it in the Hierarchy": "クリックでヒエラルキー上で選択",
-	"(not in the scene)": "(シーンにありません)"
+	"(not in the scene)": "(シーンにありません)",
+	"Branch:": "ブランチ:",
+	"(detached)": "(ブランチなし)",
+	"Stop Play mode to switch the branch.": "ブランチを切り替えるにはプレイを停止してください。",
+	"Git is busy": "Git が処理中です",
+	"On the server only": "サーバーにだけあるブランチ",
+	"New Branch...": "新しいブランチ...",
+	"New Branch": "新しいブランチ",
+	"Switch Branch": "ブランチの切り替え",
+	"Switch to branch:": "切り替え先のブランチ:",
+	"The scene has unsaved changes.": "シーンに保存していない変更があります。",
+	"Save and switch": "保存して切り替える",
+	"Switch without saving": "保存せずに切り替える",
+	"Git did not switch the branch": "Git がブランチを切り替えませんでした",
+	"Nothing was changed. Git says:": "何も変更されていません。Git のメッセージ:",
+	"OK": "OK",
+	"Made from:": "元のブランチ:",
+	"Create": "作成"
 }
