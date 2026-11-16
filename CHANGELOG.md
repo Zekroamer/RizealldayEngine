@@ -2,18 +2,28 @@
 
 ## [Unreleased]
 
+## [2.13.0] — 2026-11-16
+
 ### Kerja tim: merge scene
 - **Scene dan prefab disimpan dalam format yang ramah git.** Objek ditulis berurutan menurut ID, dan urutan di Hierarchy disimpan per objek (urutan saudara). Dua orang yang menambah objek atau mengubah objek yang bersebelahan kini biasanya bisa di-merge langsung, juga lewat tombol merge di GitHub web. Menyimpan scene tanpa perubahan menghasilkan file yang sama persis. Scene lama ditulis ulang satu kali saat pertama disimpan (Console mengingatkan untuk meng-commit perubahan itu sendiri).
 - Hierarchy: klik kanan > **Move Up** / **Move Down** untuk mengubah urutan. Hanya objek yang dipindah yang berubah di file.
 - **Merge driver.** Saat project dibuka, editor otomatis menambahkan `*.scene.json` / `*.prefab.json` ke `.gitattributes` dan mendaftarkan dirinya di git config lokal (Console menampilkan "[Git] Scene merge driver set up"). Saat pull di Visual Studio (atau git di PC), scene dan prefab digabung per objek dan per field, Mapchip per petak, pengaturan scene per pengaturan. Objek yang dihapus satu pihak tapi diubah pihak lain tetap disimpan, dan anak dari objek yang dihapus dipindah ke root.
 - **Window > Merge Conflicts.** Kalau dua orang mengubah field yang sama dengan nilai berbeda, scene sementara memakai nilai sendiri dan konfliknya dicatat di `<file>.merge.json` (di-gitignore). Saat scene dibuka, window ini menampilkan konflik per objek (klik nama objek untuk memilihnya; objek yang konflik ditandai kuning **(!)** di Hierarchy). Pilih **Mine** atau **Theirs** per field: nilainya langsung terlihat di scene sebagai preview, jadi bisa dicampur (misalnya posisi milikku, warna milik mereka). **Apply choices** menerapkan semuanya sebagai satu langkah undo; menutup window tanpa Apply mengembalikan nilai milikku dan konfliknya tetap tersimpan. Selama masih ada yang belum diputuskan, menu bar menampilkan tulisan kuning. Layar konflik Visual Studio tidak lagi muncul untuk scene.
 - File yang tidak bisa dibaca atau versi formatnya lebih baru tidak disentuh merge driver, jadi git memakai penanganan konflik biasa.
+- Window Merge Conflicts terbuka di branch tempat merge dilakukan, juga kalau semua nilai milikku yang dipakai (file scene tidak berubah, hanya laporannya yang muncul). Laporan menyimpan versi scene tempat ia dibuat, jadi tidak muncul di branch lain.
+- Merge driver juga dipasang kalau repo git dibuat setelah project dibuka (misalnya "Create Git Repository" di Visual Studio).
 
 ### Kerja tim: pull dengan editor tetap terbuka
 - Scene yang terbuka (dan prefab di Prefab Mode) dimuat ulang otomatis kalau berubah karena pull, dengan kamera dan seleksi tetap. Kalau ada perubahan yang belum disimpan, editor menggabungkannya dengan versi hasil pull (konflik masuk ke Merge Conflicts). Pull saat Play diterapkan setelah Stop.
 - **Save tidak pernah menimpa** file yang berubah di disk sejak dibaca: editor merge dulu, baru menulis.
 - Tile set dan Timeline ikut dimuat ulang setelah pull. Kalau ada editan lokal yang belum disimpan, versi hasil pull yang dipakai dan editan sendiri disimpan di `Library/Conflicts`.
 - Selama git bekerja (`.git/index.lock` ada), editor tidak membuat `.meta`, tidak mengubah `.gitignore`/`.vcxproj`, dan menunda reload. Pull tidak lagi gagal karena "untracked file would be overwritten".
+
+### Fitur Baru: pindah branch dari editor
+- Tombol **Branch: <nama>** di kanan menu bar: daftar branch lokal dan branch yang hanya ada di server, klik untuk pindah. **New Branch...** membuat branch baru dari branch sekarang.
+- Perubahan yang belum disimpan: pilih **Save and switch** / **Switch without saving** / **Cancel**. Setelah pindah, scene, asset dan script dimuat ulang.
+- Kalau git menolak karena ada perubahan yang belum di-commit, **Keep my changes aside and switch** menyimpannya sementara (git stash). Saat kembali ke branch itu, editor menawarkan **Restore my changes**.
+- Pindah branch di Visual Studio juga langsung terlihat di tombol ini. Commit, pull dan push tetap lewat Visual Studio.
 
 ### Fitur Baru: UI game di scene
 - **GameObject > UI**: Canvas, Panel, Image, Text, Progress Bar, Button. Elemen UI adalah objek scene biasa, jadi ikut undo, prefab, merge, save/load dan export.
